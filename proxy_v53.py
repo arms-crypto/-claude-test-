@@ -639,7 +639,7 @@ def ask_ai(session_id, user_input):
     try:
         if tool_info:
             # 검색 모드: 도구가 가져온 정보 + LLM 정리
-            prompt = f"현재 시각: {current_time_str}\n사용자 질문: {user_message}\n도구 정보와 함께 한국어로 답변해줘:"
+            prompt = f"현재 시각: {current_time_str}\n사용자 질문: {user_message}\n도구 정보와 함께 한국어로 답변:"
             answer = call_qwen(prompt)
         else:
             # 일반 대화 모드
