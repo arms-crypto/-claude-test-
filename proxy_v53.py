@@ -639,26 +639,8 @@ def ask_ai(session_id, user_input):
     try:
         if tool_info:
             # 검색 모드: 도구가 가져온 정보 + LLM 정리
-            tool_info_str = "\n".join(tool_info)
-            prompt = f"""
-현재 시각: {current_time_str}
-
-사용자 핵심 정보:
-{my_facts}
-
-이전 대화:
-{chat_history_str}
-
-질문: {user_input}
-
-(도구가 가져온 정보)
-{tool_info_str}
-
-지시:
-- 위 정보를 자연스럽게 정리하고, 사용자에게 설명하라.
-- 주가, 뉴스, 순매수량, 종목 코드 등이 포함되면 그것도 명확히 말하라.
-- JSON이 아니라, 일반 텍스트로 한국어로 답변하라.
-            """
+            newline = "\n"
+            prompt = f"현재 시각: {current_time_str}{newline}사용자 질문: {user_input}{newline}주식/뉴스/순매수 데이터와 함께 한국어로 답변:"
             answer = call_qwen(prompt)
         else:
             # 일반 대화 모드
