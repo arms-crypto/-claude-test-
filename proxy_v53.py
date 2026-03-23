@@ -34,7 +34,7 @@ CORS(app)
 # -------------------------
 # 로깅 설정
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-logger = logging.getLogger("proxy_v53_qwen")
+logger = logging.getLogger("proxy_v53")
 
 # -------------------------
 # 민감정보 (요청대로 원본 포함)
@@ -55,66 +55,6 @@ URL = "https://openapivts.koreainvestment.com:443"
 # 실시간 검색 설정 (SearXNG + Perplexica)
 SEARXNG_URL = "http://localhost:8080"       # Docker 포트 매핑
 PERPLEXICA_URL = "http://localhost:3001"    # Perplexica Backend API
-
-# -------------------------
-# 1) 집 데스크탑 Ollama에 있는 mistral-small:24b 호출
-def call_qwen(prompt, system="당신은 한국어로 답변하는 AI 전문가입니다."):
-    try:
-        r = requests.post(
-            QWEN_URL,
-            json={
-                "model": QWEN_MODEL,
-                "messages": [
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": prompt}
-                ],
-                "options": {
-                    "temperature": 0.7,
-                    "num_predict": 2048,
-                },
-                "stream": False
-            },
-            timeout=60,
-        )
-        r.raise_for_status()
-
-        # 1) 단순 dict/string으로 받아도 되도록 JSONDecodeError 방어
-        try:
-            data = r.json()
-            # 1‑1) Ollama / qwen streaming이 아닐 때의 기본 형태
-            if isinstance(data, dict) and "message" in data:
-                return data["message"]["content"]
-            elif isinstance(data, list) and len(data) > 0:
-                # streaming 응답이 여러 줄 찍힐 때 리스트처럼 올 수도 있음
-                items = data
-                texts = []
-                for item in items:
-                    if isinstance(item, dict) and "message" in item:
-                        texts.append(item["message"]["content"])
-                return "\n".join(texts)
-            else:
-                # 그냥 문자열 응답이라면
-                return str(data)
-        except (json.decoder.JSONDecodeError, requests.exceptions.JSONDecodeError):
-            # JSONDecodeError: Extra data 같은 경우
-            # 그냥 content를 그대로 문자열로 취급
-            raw_text = r.text.strip()
-            if raw_text.startswith("{") and not raw_text.endswith("}"):
-                # 중간에 끊긴 JSON이면, 가장 완전한 줄만 파싱
-                lines = raw_text.splitlines()
-                for line in reversed(lines):
-                    try:
-                        trial = json.loads(line)
-                        if isinstance(trial, dict) and "message" in trial:
-                            return trial["message"].get("content", raw_text)
-                    except Exception:
-                        continue
-            # 그래도 안 되면 raw_text 전부를 리턴
-            return raw_text
-
-    except Exception as e:
-        logger.exception("mistral-small:24b 호출 실패 (예외: %s)", str(e))
-        return "LLM 응답 생성 실패"
 
 # -------------------------
 # 전역 캐시 및 스토어
@@ -455,78 +395,88 @@ def korea_invest_stock(query: str) -> str:
     return f"❌ '{q}' 모름. 종목코드(예:005930)를 알려주세요!"
 
 # -------------------------
-# mistral-small:24b HTTP 호출 헬퍼
+# mistral-small:24b 단독 사용 설정 (다른 모델 사용 불가)
 
 REMOTE_OLLAMA_IP = "221.144.111.116"
-QWEN_URL = f"http://{REMOTE_OLLAMA_IP}:11434/api/chat"
-QWEN_MODEL = "mistral-small:24b"
+QWEN_URL         = f"http://{REMOTE_OLLAMA_IP}:11434/api/chat"
+QWEN_MODEL       = "mistral-small:24b"   # 유일하게 허용된 모델
+MISTRAL_MAX_RETRY = 3
 
-def call_qwen(prompt, system="당신은 한국어로 답변하는 AI 전문가입니다."):
+
+def _parse_ollama_response(r) -> str:
+    """Ollama chat 응답에서 텍스트 추출 (JSON / NDJSON 모두 처리)."""
+    raw_text = r.text.strip()
     try:
-        r = requests.post(
-            QWEN_URL,  # --> "http://221.144.111.116:11434/api/chat"
-            json={
-                "model": QWEN_MODEL,  # --> "mistral-small:24b"
-                "messages": [
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": prompt}
-                ],
-                "options": {
-                    "temperature": 0.7,
-                    "num_predict": 2048
-                },
-                "stream": False
-            },
-            timeout=60
-        )
-        r.raise_for_status()
-
-        # 1) JSONDecodeError가 뜨더라도 r.text를 먼저 챙기기
-        raw_text = r.text.strip()
-
-        try:
-            data = r.json()
-            # 1‑1) Ollama 기본 chat 응답
-            if isinstance(data, dict) and "message" in data:
+        data = r.json()
+        if isinstance(data, dict):
+            if "message" in data:
                 return data["message"]["content"]
-            elif isinstance(data, dict) and "response" in data:
+            if "response" in data:
                 return data["response"]
-            elif isinstance(data, list) and len(data) > 0:
-                # streaming처럼 여러 줄 응답이 온 경우
-                texts = []
-                for item in data:
-                    if isinstance(item, dict):
-                        if "message" in item:
-                            texts.append(item["message"].get("content", ""))
-                        elif "response" in item:
-                            texts.append(item["response"])
-                return "\n".join(texts).strip()
-            else:
-                return str(data)
-        except (json.decoder.JSONDecodeError, requests.exceptions.JSONDecodeError):
-            # 2) JSONDecodeError: Extra data -> 그냥 raw_text로 회수
-            if raw_text.startswith("{") and "\n" in raw_text:
-                # 여러 줄 JSON, 중간에 끊김
-                lines = raw_text.splitlines()
-                for line in reversed(lines):
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        trial = json.loads(line)
-                        if isinstance(trial, dict):
-                            if "message" in trial:
-                                return trial["message"].get("content", "")
-                            elif "response" in trial:
-                                return trial["response"]
-                    except Exception:
-                        continue
-            # 3) 그래도 안 되면, raw_text 전부를 그대로 문자열로 리턴
-            return raw_text
+        if isinstance(data, list):
+            parts = []
+            for item in data:
+                if isinstance(item, dict):
+                    if "message" in item:
+                        parts.append(item["message"].get("content", ""))
+                    elif "response" in item:
+                        parts.append(item["response"])
+            return "\n".join(parts).strip()
+        return str(data)
+    except (json.JSONDecodeError, ValueError):
+        # NDJSON (여러 줄 JSON) 처리
+        for line in reversed(raw_text.splitlines()):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+                if isinstance(obj, dict):
+                    if "message" in obj:
+                        return obj["message"].get("content", "")
+                    if "response" in obj:
+                        return obj["response"]
+            except Exception:
+                continue
+        return raw_text
 
-    except Exception as e:
-        logger.exception("mistral-small:24b 호출 실패 (예외: %s)", str(e)[:200])
-        return "LLM 응답 생성 실패"
+
+def call_mistral_only(prompt: str, system: str = "당신은 한국어로 답변하는 AI 전문가입니다.") -> str:
+    """
+    mistral-small:24b 단독 호출. 3회 재시도 후 최종 실패 시 안내 메시지 반환.
+    다른 모델로의 폴백은 없음.
+    """
+    payload = {
+        "model": QWEN_MODEL,
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user",   "content": prompt},
+        ],
+        "options": {"temperature": 0.7, "num_predict": 2048},
+        "stream": False,
+    }
+    last_exc = None
+    for attempt in range(1, MISTRAL_MAX_RETRY + 1):
+        try:
+            r = requests.post(QWEN_URL, json=payload, timeout=60)
+            r.raise_for_status()
+            result = _parse_ollama_response(r)
+            if result:
+                return result
+        except Exception as e:
+            last_exc = e
+            wait = 2 ** (attempt - 1)   # 1s → 2s → 4s
+            logger.warning("mistral-small:24b 시도 %d/%d 실패 (%s) — %ds 후 재시도",
+                           attempt, MISTRAL_MAX_RETRY, str(e)[:80], wait)
+            if attempt < MISTRAL_MAX_RETRY:
+                time.sleep(wait)
+
+    logger.error("mistral-small:24b %d회 모두 실패: %s", MISTRAL_MAX_RETRY, str(last_exc)[:200])
+    return "⚠️ mistral 서버 불안정. 잠시 후 다시 시도해주세요.\n모의투자(/mock)는 정상 작동 중입니다."
+
+
+# 기존 call_qwen 호출부 호환성 유지
+call_qwen = call_mistral_only
 # -------------------------
 # Chat history helpers
 def get_session_history(session_id):
