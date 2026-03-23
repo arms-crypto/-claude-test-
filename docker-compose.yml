@@ -1,0 +1,56 @@
+version: "3.8"
+
+# ============================================================
+# Perplexica + SearXNG Docker Compose (Oracle Server)
+# - SearXNG  : 실시간 웹 검색 엔진  (포트 8080)
+# - Perplexica Backend : AI 검색 API (포트 3001)
+# - Ollama  : 외부 서버 221.144.111.116:11434 그대로 사용
+# ============================================================
+
+services:
+  # ----------------------------------------------------------
+  # 1. SearXNG - 메타 검색 엔진
+  # ----------------------------------------------------------
+  searxng:
+    image: searxng/searxng:latest
+    container_name: searxng
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./searxng:/etc/searxng:rw
+    environment:
+      - SEARXNG_BASE_URL=http://localhost:8080/
+      - SEARXNG_SECRET_KEY=perplexica-searxng-secret-key-change-me
+    networks:
+      - perplexica-net
+
+  # ----------------------------------------------------------
+  # 2. Perplexica Backend - AI 검색 API
+  # ----------------------------------------------------------
+  perplexica-backend:
+    image: itzcrazykns1337/perplexica-backend:main
+    container_name: perplexica-backend
+    restart: unless-stopped
+    ports:
+      - "3001:3001"
+    depends_on:
+      - searxng
+    volumes:
+      - ./perplexica-config:/home/perplexica/config
+      - perplexica-uploads:/home/perplexica/uploads
+      - perplexica-db:/home/perplexica/data
+    environment:
+      - PORT=3001
+    networks:
+      - perplexica-net
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+networks:
+  perplexica-net:
+    driver: bridge
+
+volumes:
+  perplexica-uploads:
+  perplexica-db:

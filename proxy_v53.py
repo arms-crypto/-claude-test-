@@ -51,6 +51,11 @@ DB_WALLET_PASS = "Flavor121212"
 URL = "https://openapivts.koreainvestment.com:443"
 
 # -------------------------
+# 실시간 검색 설정 (SearXNG + Perplexica)
+SEARXNG_URL = "http://localhost:8080"       # Docker 포트 매핑
+PERPLEXICA_URL = "http://localhost:3001"    # Perplexica Backend API
+
+# -------------------------
 # 1) 집 데스크탑 Ollama에 있는 mistral-small:24b 호출
 def call_qwen(prompt, system="당신은 한국어로 답변하는 AI 전문가입니다."):
     try:
@@ -793,12 +798,155 @@ def init_stock_codes_db():
                 logger.exception("init_stock_codes_db 예외")
 
 # -------------------------
+# 실시간 검색 유틸 함수
+
+def searxng_search(query: str, categories: str = "general", max_results: int = 5) -> list:
+    """SearXNG에서 실시간 검색 결과를 가져온다."""
+    try:
+        r = requests.get(
+            f"{SEARXNG_URL}/search",
+            params={"q": query, "format": "json", "categories": categories, "language": "ko-KR"},
+            timeout=10,
+        )
+        r.raise_for_status()
+        data = r.json()
+        results = data.get("results", [])[:max_results]
+        return [
+            {
+                "title": item.get("title", ""),
+                "url": item.get("url", ""),
+                "content": item.get("content", ""),
+            }
+            for item in results
+        ]
+    except Exception:
+        logger.exception("SearXNG 검색 실패: %s", query)
+        return []
+
+
+def perplexica_search(query: str, focus_mode: str = "webSearch") -> str:
+    """Perplexica Backend API를 통해 AI 검색 응답을 받는다.
+    focus_mode: webSearch | academicSearch | writingAssistant | wolframAlphaSearch | youtubeSearch | redditSearch
+    """
+    try:
+        payload = {
+            "chatModel": {
+                "provider": "ollama",
+                "model": QWEN_MODEL,
+                "customOpenAIBaseURL": f"http://{REMOTE_OLLAMA_IP}:11434",
+                "customOpenAIKey": "",
+            },
+            "embeddingModel": {
+                "provider": "ollama",
+                "model": "nomic-embed-text:latest",
+            },
+            "optimizationMode": "speed",
+            "focusMode": focus_mode,
+            "query": query,
+            "history": [],
+        }
+        r = requests.post(
+            f"{PERPLEXICA_URL}/api/chat",
+            json=payload,
+            timeout=60,
+        )
+        r.raise_for_status()
+        # Perplexica는 NDJSON 스트림으로 응답
+        lines = r.text.strip().splitlines()
+        answer_parts = []
+        sources = []
+        for line in lines:
+            try:
+                obj = json.loads(line)
+                if obj.get("type") == "response":
+                    answer_parts.append(obj.get("data", ""))
+                elif obj.get("type") == "sources":
+                    sources = obj.get("data", [])
+            except Exception:
+                continue
+        answer = "".join(answer_parts)
+        if sources:
+            src_lines = "\n".join(
+                f"- [{s.get('metadata', {}).get('title', s.get('pageContent','')[:40])}]({s.get('metadata', {}).get('url', '')})"
+                for s in sources[:3]
+            )
+            answer += f"\n\n**출처:**\n{src_lines}"
+        return answer if answer else "검색 결과를 찾지 못했습니다."
+    except Exception:
+        logger.exception("Perplexica 검색 실패: %s", query)
+        return None
+
+
+def search_and_summarize(query: str) -> str:
+    """SearXNG로 검색 후 Ollama(mistral-small:24b)로 요약 - Perplexica 장애 시 폴백."""
+    results = searxng_search(query, max_results=5)
+    if not results:
+        return "검색 결과가 없습니다."
+    snippets = "\n\n".join(
+        f"[{i+1}] {r['title']}\n{r['content']}\nURL: {r['url']}"
+        for i, r in enumerate(results)
+    )
+    prompt = (
+        f"다음은 '{query}'에 대한 실시간 웹 검색 결과입니다.\n\n"
+        f"{snippets}\n\n"
+        "위 검색 결과를 바탕으로 핵심 내용을 한국어로 간결하게 요약해 주세요. "
+        "출처 URL도 함께 언급해 주세요."
+    )
+    return call_qwen(prompt)
+
+
+# -------------------------
 # Flask 엔드포인트
 @app.route('/ask', methods=['POST'])
 def ask():
     msg = request.json.get("message", "")
     reply_text, _ = ask_ai("web_user", msg)
     return jsonify({"reply": reply_text})
+
+
+@app.route('/search', methods=['POST'])
+def search():
+    """
+    실시간 웹 검색 엔드포인트.
+
+    Request JSON:
+        {
+            "query": "검색할 내용",
+            "mode": "perplexica" | "searxng" | "auto"  (기본: "auto"),
+            "focus": "webSearch" | "academicSearch" | ...  (Perplexica 전용, 기본: "webSearch")
+        }
+
+    Response JSON:
+        {
+            "query": "...",
+            "answer": "...",
+            "mode_used": "perplexica" | "searxng"
+        }
+    """
+    data = request.json or {}
+    query = data.get("query", "").strip()
+    mode = data.get("mode", "auto")
+    focus = data.get("focus", "webSearch")
+
+    if not query:
+        return jsonify({"error": "query 파라미터가 필요합니다."}), 400
+
+    logger.info("/search 요청: query=%s mode=%s", query, mode)
+
+    answer = None
+    mode_used = mode
+
+    # Perplexica 우선 시도 (mode=perplexica 또는 auto)
+    if mode in ("perplexica", "auto"):
+        answer = perplexica_search(query, focus_mode=focus)
+        mode_used = "perplexica"
+
+    # Perplexica 실패 시 또는 mode=searxng이면 SearXNG+Ollama 폴백
+    if not answer or mode == "searxng":
+        answer = search_and_summarize(query)
+        mode_used = "searxng"
+
+    return jsonify({"query": query, "answer": answer, "mode_used": mode_used})
 
 # -------------------------
 # 메인 실행부
