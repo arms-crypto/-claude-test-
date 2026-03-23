@@ -639,8 +639,7 @@ def ask_ai(session_id, user_input):
     try:
         if tool_info:
             # 검색 모드: 도구가 가져온 정보 + LLM 정리
-            newline = "\n"
-            prompt = f"현재 시각: {current_time_str}{newline}사용자 질문: {user_input}{newline}주식/뉴스/순매수 데이터와 함께 한국어로 답변:"
+            prompt = f"현재 시각: {current_time_str}\n사용자 질문: {user_message}\n도구 정보와 함께 한국어로 답변해줘:"
             answer = call_qwen(prompt)
         else:
             # 일반 대화 모드
