@@ -24,6 +24,7 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 import oracledb
 import pytz
+from mock_trading.telegram_handler import parse_mock_command
 
 # -------------------------
 # 앱 생성
@@ -726,7 +727,13 @@ def handle_tg():
                     last_id = up["update_id"]
                     msg = up.get("message", {})
                     if str(msg.get("chat", {}).get("id", "")) == CHAT_ID and "text" in msg:
-                        reply_text, image_path = ask_ai(CHAT_ID, msg["text"])
+                        msg_text = msg["text"]
+                        # /mock 명령어는 모의투자 핸들러로 라우팅
+                        if msg_text.strip().startswith("/mock"):
+                            reply_text = parse_mock_command(msg_text, oracle_pool=get_db_pool())
+                            requests.post(f"{base_url}/sendMessage", json={"chat_id": CHAT_ID, "text": reply_text})
+                            continue
+                        reply_text, image_path = ask_ai(CHAT_ID, msg_text)
                         requests.post(f"{base_url}/sendMessage", json={"chat_id": CHAT_ID, "text": reply_text})
                         if image_path and os.path.exists(image_path):
                             with open(image_path, "rb") as photo:
@@ -778,6 +785,30 @@ def init_stock_codes_db():
                 logger.warning("테이블 이미 존재")
             else:
                 logger.exception("init_stock_codes_db 예외")
+        # mock_trades 테이블 (모의투자 거래내역 Oracle 백업)
+        try:
+            with p.acquire() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("""
+                        CREATE TABLE mock_trades (
+                            id         NUMBER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+                            ticker     VARCHAR2(10),
+                            name       VARCHAR2(50),
+                            action     VARCHAR2(4),
+                            price      NUMBER,
+                            qty        NUMBER,
+                            amount     NUMBER,
+                            cash_after NUMBER,
+                            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                        )
+                    """)
+                    conn.commit()
+                    logger.info("mock_trades 테이블 생성")
+        except Exception as e:
+            if "ORA-00955" in str(e):
+                logger.info("mock_trades 테이블 이미 존재")
+            else:
+                logger.exception("mock_trades 테이블 생성 실패 (무시)")
 
 # -------------------------
 # 실시간 검색 유틸 함수
@@ -888,6 +919,30 @@ def ask():
     msg = request.json.get("message", "")
     reply_text, _ = ask_ai("web_user", msg)
     return jsonify({"reply": reply_text})
+
+
+@app.route('/mock', methods=['POST'])
+def mock_trade():
+    """
+    모의투자 REST 엔드포인트.
+
+    Request JSON:
+        { "command": "/mock 현황" }
+        { "command": "/mock 삼성전자 100만원 매수" }
+        { "command": "/mock 매도 005930" }
+
+    Response JSON:
+        { "result": "..." }
+    """
+    data = request.json or {}
+    command = data.get("command", "").strip()
+    if not command:
+        return jsonify({"error": "command 파라미터가 필요합니다."}), 400
+    if not command.startswith("/mock"):
+        command = "/mock " + command
+    logger.info("/mock 요청: %s", command)
+    result = parse_mock_command(command, oracle_pool=get_db_pool())
+    return jsonify({"result": result})
 
 
 @app.route('/search', methods=['POST'])
