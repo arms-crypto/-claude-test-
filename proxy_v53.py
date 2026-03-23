@@ -879,6 +879,10 @@ def search_and_summarize(query: str) -> str:
 
 # -------------------------
 # Flask 엔드포인트
+@app.route('/health', methods=['GET'])
+def health():
+    return jsonify({"status": "ok"}), 200
+
 @app.route('/ask', methods=['POST'])
 def ask():
     msg = request.json.get("message", "")
