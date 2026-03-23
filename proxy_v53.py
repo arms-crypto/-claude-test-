@@ -639,6 +639,7 @@ def ask_ai(session_id, user_input):
     try:
         if tool_info:
             # 검색 모드: 도구가 가져온 정보 + LLM 정리
+            tool_info_str = "\n".join(tool_info)
             prompt = f"""
 현재 시각: {current_time_str}
 
@@ -651,7 +652,7 @@ def ask_ai(session_id, user_input):
 질문: {user_input}
 
 (도구가 가져온 정보)
-{"\\n".join(tool_info)}
+{tool_info_str}
 
 지시:
 - 위 정보를 자연스럽게 정리하고, 사용자에게 설명하라.
