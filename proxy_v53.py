@@ -575,7 +575,8 @@ def ask_ai(session_id, user_input):
             tool_info.append("🇰🇷 국내 주가: " + korea)
 
     # b) 뉴스/검색/related 정보 요청이면
-    if any(k in user_input.lower() for k in ["뉴스", "검색", "관련", "최신", "오늘", "동향", "전망", "분석"]):
+    search_triggered = any(k in user_input.lower() for k in ["뉴스", "검색", "관련", "최신", "오늘", "동향", "전망", "분석"])
+    if search_triggered:
         news = naver_news(user_input)
         if news:
             tool_info.append("📰 네이버 뉴스: " + news)
@@ -583,6 +584,9 @@ def ask_ai(session_id, user_input):
         web_result = search_and_summarize(user_input)
         if web_result and web_result != "검색 결과가 없습니다.":
             tool_info.append("🌐 웹 검색 요약: " + web_result)
+        # 검색 트리거됐는데 결과 없으면 명시적 안내 추가
+        if not tool_info:
+            tool_info.append("⚠️ 실시간 검색 결과 없음: 검색 엔진(SearXNG)에 연결할 수 없거나 결과가 없습니다. 최신 정보를 제공할 수 없습니다.")
 
     # c) 외국인/기관/순매수 요청이면
     if "순매수" in user_input.lower() or "순매매" in user_input.lower():
@@ -608,7 +612,7 @@ def ask_ai(session_id, user_input):
 
 사용자 질문: {user_input}
 
-위 도구 정보를 최대한 활용하되, 도구 정보가 불충분하거나 관련 내용이 없으면 네 자체 지식을 활용하여 한국어로 정확하게 답변:"""
+위 도구 정보를 활용하여 한국어로 답변. 단, 도구 정보에 관련 내용이 없으면 "실시간 검색 결과에 해당 정보가 없습니다. 검색 엔진을 확인해주세요." 라고 안내:"""
             answer = call_qwen(prompt)
         else:
             # 일반 대화 모드
