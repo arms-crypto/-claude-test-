@@ -596,6 +596,20 @@ def ask_ai(session_id, user_input):
         if preview:
             tool_info.append("🗞️ 시황/프리뷰: " + preview)
 
+    # e) 글로벌 주식 키워드 → Perplexica 실시간 검색
+    GLOBAL_KEYWORDS = [
+        "테슬라", "tsla", "나스닥", "nasdaq", "애플", "aapl",
+        "구글", "google", "googl", "알파벳", "엔비디아", "nvda",
+        "아마존", "amzn", "마이크로소프트", "msft", "메타", "meta",
+        "s&p", "다우", "dow", "해외주식", "미국주식", "글로벌"
+    ]
+    if any(k in user_input.lower() for k in GLOBAL_KEYWORDS):
+        perp = perplexica_search(user_input, focus_mode='webSearch')
+        if not perp:
+            perp = search_and_summarize(user_input)
+        if perp:
+            tool_info.append("🌍 글로벌 주식 검색: " + perp)
+
     # 5) LLM 호출 (이 부분이 핵심)
     try:
         if tool_info:
