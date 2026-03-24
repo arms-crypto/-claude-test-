@@ -608,7 +608,7 @@ def ask_ai(session_id, user_input):
 
 사용자 질문: {user_input}
 
-위 도구 정보를 활용하여 한국어로 답변:"""
+위 도구 정보를 최대한 활용하되, 도구 정보가 불충분하거나 관련 내용이 없으면 네 자체 지식을 활용하여 한국어로 정확하게 답변:"""
             answer = call_qwen(prompt)
         else:
             # 일반 대화 모드
