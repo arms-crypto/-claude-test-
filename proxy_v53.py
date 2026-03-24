@@ -12,6 +12,7 @@
 import os
 import json
 import re
+import random
 import time
 import threading
 import datetime
@@ -562,11 +563,18 @@ def ask_ai(session_id, user_input):
     past_messages = history[-10:] if len(history) > 0 else []
     chat_history_str = "\\n".join(past_messages)
 
-    # 4) 도구(주가/뉴스/순매수) 실행 로직
-    tool_info = []  # 여기에 실제 결과를 모음
+    # 4) 도구(주가/뉴스/순매수) 실행 로직 — 자동 검색 모드 v2
+    tool_info = []
+    q = user_input.lower()
 
-    # a) 주가/가격/얼마 관련 키워드면 도구 호출
-    if any(k in user_input.lower() for k in ["주가", "가격", "얼마", "증권", "시세", "开盘", "종가", "시가"]):
+    # a) 주가/가격 키워드 (국내+해외) — 30개
+    PRICE_KEYWORDS = [
+        "주가", "가격", "얼마", "증권", "시세", "종가", "시가", "开盘",
+        "차트", "등락", "수익률", "투자", "매수", "매도", "포트폴리오",
+        "상장", "코스피", "코스닥", "etf", "지수", "배당", "per", "pbr",
+        "52주", "고가", "저가", "거래량", "시총", "stock", "price"
+    ]
+    if any(k in q for k in PRICE_KEYWORDS):
         overseas = stock_price_overseas(user_input)
         korea = korea_invest_stock(user_input)
         if overseas:
@@ -574,47 +582,99 @@ def ask_ai(session_id, user_input):
         if korea:
             tool_info.append("🇰🇷 국내 주가: " + korea)
 
-    # b) 뉴스/검색/related 정보 요청이면
-    if "뉴스" in user_input.lower() or "검색" in user_input.lower() or "관련" in user_input.lower():
+    # b) 뉴스/검색/동향 키워드 — 20개
+    NEWS_KEYWORDS = [
+        "뉴스", "검색", "관련", "최신", "동향", "트렌드", "이슈",
+        "소식", "업데이트", "분석", "전망", "예측", "보고서", "리포트",
+        "공시", "실적", "발표", "발행", "공매도", "news"
+    ]
+    if any(k in q for k in NEWS_KEYWORDS):
         news = naver_news(user_input)
         if news:
             tool_info.append("📰 뉴스: " + news)
 
-    # c) 외국인/기관/순매수 요청이면
-    if "순매수" in user_input.lower() or "순매매" in user_input.lower():
-        fnb = foreign_net_buy(user_input)
+    # c) 순매수/수급 키워드 — 10개
+    FLOW_KEYWORDS = [
+        "순매수", "순매매", "수급", "기관매수", "외국인매수",
+        "기관순매수", "외인", "프로그램매수", "매수세", "매도세"
+    ]
+    if any(k in q for k in FLOW_KEYWORDS):
+        fnb = get_foreign_net_buy(user_input)
         if fnb:
             tool_info.append("📈 순매수/매매 동향: " + fnb)
 
-    # d) 시황/장시작/장마감/프리뷰 키워드 → SearXNG + pykrx 실시간
+    # d) 시황/프리뷰 키워드 — 15개 → SearXNG + pykrx
     PREVIEW_KEYWORDS = [
         "장시작", "장마감", "프리뷰", "ai 프리뷰", "오늘 전망",
-        "장전", "장후", "시황", "market preview"
+        "장전", "장후", "시황", "market preview", "개장", "폐장",
+        "선물", "옵션", "야간선물", "vix"
     ]
-    if any(k in user_input.lower() for k in PREVIEW_KEYWORDS):
+    if any(k in q for k in PREVIEW_KEYWORDS):
         preview = get_market_preview(user_input)
         if preview:
             tool_info.append("🗞️ 시황/프리뷰: " + preview)
 
-    # e) 글로벌 주식 키워드 → Perplexica 실시간 검색
+    # e) 글로벌 주식/지수/암호화폐/경제지표 키워드 — 40개 → Perplexica
     GLOBAL_KEYWORDS = [
-        "테슬라", "tsla", "나스닥", "nasdaq", "애플", "aapl",
-        "구글", "google", "googl", "알파벳", "엔비디아", "nvda",
-        "아마존", "amzn", "마이크로소프트", "msft", "메타", "meta",
-        "s&p", "다우", "dow", "해외주식", "미국주식", "글로벌"
+        # 미국 개별주
+        "테슬라", "tsla", "애플", "aapl", "구글", "google", "googl", "알파벳",
+        "엔비디아", "nvda", "아마존", "amzn", "마이크로소프트", "msft",
+        "메타", "meta", "넷플릭스", "nflx", "팔란티어", "pltr",
+        # 지수
+        "나스닥", "nasdaq", "s&p", "s&p500", "다우", "dow", "러셀", "russell",
+        "해외주식", "미국주식", "글로벌", "월스트리트", "뉴욕증시",
+        # 암호화폐
+        "비트코인", "bitcoin", "btc", "이더리움", "ethereum", "eth",
+        "리플", "xrp", "코인", "crypto", "가상화폐",
+        # 경제지표
+        "금리", "환율", "달러", "엔화", "유로", "인플레이션", "cpi", "gdp",
+        "연준", "fed", "fomc", "금값", "유가", "wti"
     ]
-    if any(k in user_input.lower() for k in GLOBAL_KEYWORDS):
+    if any(k in q for k in GLOBAL_KEYWORDS):
         perp = perplexica_search(user_input, focus_mode='webSearch')
         if not perp:
             perp = search_and_summarize(user_input)
         if perp:
-            tool_info.append("🌍 글로벌 주식 검색: " + perp)
+            tool_info.append("🌍 글로벌 주식/지수: " + perp)
 
-    # 5) LLM 호출 (이 부분이 핵심)
+    # f) 키워드 미매칭 → LLM 검색 필요 여부 판단
+    if not tool_info:
+        intent_prompt = (
+            "다음 질문이 주식/금융/경제/뉴스/시황/투자에 관한 것이면 YES, "
+            "일상 대화/잡담이면 NO 한 단어만 답하라.\n질문: " + user_input[:120]
+        )
+        try:
+            intent = call_mistral_only(intent_prompt).strip().upper()[:10]
+            if "YES" in intent:
+                perp = perplexica_search(user_input, focus_mode='webSearch')
+                if not perp:
+                    perp = search_and_summarize(user_input)
+                if perp:
+                    tool_info.append("🔍 AI 자동검색: " + perp)
+        except Exception:
+            logger.exception("intent detection 실패")
+
+    # g) 50% 확률 Perplexica 폴백 (모든 질문 대상)
+    if not tool_info and random.random() < 0.5:
+        try:
+            perp = perplexica_search(user_input, focus_mode='webSearch')
+            if not perp:
+                perp = search_and_summarize(user_input)
+            if perp:
+                tool_info.append("🎲 검색 보강: " + perp)
+        except Exception:
+            logger.exception("50% 폴백 Perplexica 실패")
+
+    # 5) LLM 호출
     try:
         if tool_info:
-            # 검색 모드: 도구가 가져온 정보 + LLM 정리
-            prompt = f"현재 시각: {current_time_str}\n사용자 질문: {user_input}\n도구 정보와 함께 한국어로 답변:"
+            tool_str = "\n\n".join(tool_info)
+            prompt = (
+                f"현재 시각: {current_time_str}\n\n"
+                f"[실시간 데이터]\n{tool_str}\n\n"
+                f"사용자 질문: {user_input}\n\n"
+                "위 실시간 데이터를 바탕으로 핵심만 한국어로 답변:"
+            )
             answer = call_qwen(prompt)
         else:
             # 일반 대화 모드
