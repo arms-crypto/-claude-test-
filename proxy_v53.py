@@ -577,16 +577,28 @@ def ask_ai(session_id, user_input):
     # b) 뉴스/검색/related 정보 요청이면
     search_triggered = any(k in user_input.lower() for k in ["뉴스", "검색", "관련", "최신", "오늘", "동향", "전망", "분석"])
     if search_triggered:
-        news = naver_news(user_input)
-        if news:
-            tool_info.append("📰 네이버 뉴스: " + news)
-        # SearXNG 웹 검색 보강
-        web_result = search_and_summarize(user_input)
-        if web_result and web_result != "검색 결과가 없습니다.":
-            tool_info.append("🌐 웹 검색 요약: " + web_result)
-        # 검색 트리거됐는데 결과 없으면 명시적 안내 추가
+        # 1순위: Perplexica (AI 검색 - 가장 정확)
+        perplexica_result = perplexica_search(user_input)
+        if perplexica_result and perplexica_result != "검색 결과를 찾지 못했습니다.":
+            tool_info.append("🔍 Perplexica AI 검색:\n" + perplexica_result)
+        else:
+            # 2순위: 네이버 뉴스 + SearXNG 폴백
+            news = naver_news(user_input)
+            if news:
+                tool_info.append("📰 네이버 뉴스: " + news)
+            web_result = search_and_summarize(user_input)
+            if web_result and web_result != "검색 결과가 없습니다.":
+                tool_info.append("🌐 SearXNG 웹 검색: " + web_result)
+
+        # 검색 트리거됐는데 결과가 하나도 없으면 명시적 안내
         if not tool_info:
-            tool_info.append("⚠️ 실시간 검색 결과 없음: 검색 엔진(SearXNG)에 연결할 수 없거나 결과가 없습니다. 최신 정보를 제공할 수 없습니다.")
+            tool_info.append(
+                "⚠️ 실시간 검색 불가\n"
+                "- Perplexica(포트 3001) 또는 SearXNG(포트 8080)가 응답하지 않습니다.\n"
+                "- 확인 방법: docker compose ps\n"
+                "- 재시작 방법: docker compose up -d\n"
+                "최신 정보가 필요한 질문에는 답변드리기 어렵습니다."
+            )
 
     # c) 외국인/기관/순매수 요청이면
     if "순매수" in user_input.lower() or "순매매" in user_input.lower():

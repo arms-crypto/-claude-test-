@@ -1,38 +1,23 @@
 # SearXNG 설정 - Perplexica 연동용
-# Oracle 서버에서 실행
-
 use_default_settings: true
 
 general:
   debug: false
   instance_name: "SearXNG (Perplexica)"
-  privacypolicy_url: false
-  donation_url: false
-  contact_url: false
-  enable_metrics: false
 
 server:
   port: 8080
   bind_address: "0.0.0.0"
   secret_key: "perplexica-searxng-secret-key-change-me"
-  base_url: false
-  image_proxy: false
 
 ui:
-  static_use_hash: false
   default_locale: "ko"
-  query_in_title: false
-  infinite_scroll: false
   default_theme: simple
-  center_alignment: false
 
-# API 접근 허용 (Perplexica가 JSON API로 쿼리)
 search:
   safe_search: 0
   autocomplete: ""
   default_lang: "ko-KR"
-  ban_time_on_fail: 5
-  max_ban_time_on_fail: 120
   formats:
     - html
     - json
@@ -56,37 +41,14 @@ engines:
     categories: general
     disabled: false
 
-  - name: naver
-    engine: naver
-    shortcut: nv
-    categories: general
-    disabled: false
-
   - name: google news
     engine: google_news
     shortcut: gn
     categories: news
     disabled: false
 
-  - name: bing news
-    engine: bing_news
-    shortcut: bn
-    categories: news
-    disabled: false
-
-categories_as_tabs:
-  general:
-    name: General
-  news:
-    name: News
-  images:
-    name: Images
-  it:
-    name: IT
-
 outgoing:
   request_timeout: 10.0
   max_request_timeout: 15.0
-  useragent_suffix: ""
   pool_connections: 100
   pool_maxsize: 20

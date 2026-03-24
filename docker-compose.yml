@@ -22,6 +22,12 @@ services:
     environment:
       - SEARXNG_BASE_URL=http://localhost:8080/
       - SEARXNG_SECRET_KEY=perplexica-searxng-secret-key-change-me
+      - SEARXNG_BIND_ADDRESS=0.0.0.0:8080
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        sed -i 's|exec /usr/local/searxng/.venv/bin/granian searx.webapp:app|exec /usr/local/searxng/.venv/bin/granian --host 0.0.0.0 --port 8080 --workers 1 searx.webapp:app|' /usr/local/searxng/entrypoint.sh
+        exec /usr/local/searxng/entrypoint.sh
     networks:
       - perplexica-net
 
@@ -37,7 +43,7 @@ services:
     depends_on:
       - searxng
     volumes:
-      - ./perplexica-config:/home/perplexica/config
+      - ./perplexica-config/config.toml:/home/perplexica/config.toml
       - perplexica-uploads:/home/perplexica/uploads
       - perplexica-db:/home/perplexica/data
     environment:
