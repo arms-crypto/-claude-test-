@@ -586,6 +586,16 @@ def ask_ai(session_id, user_input):
         if fnb:
             tool_info.append("📈 순매수/매매 동향: " + fnb)
 
+    # d) 시황/장시작/장마감/프리뷰 키워드 → SearXNG + pykrx 실시간
+    PREVIEW_KEYWORDS = [
+        "장시작", "장마감", "프리뷰", "ai 프리뷰", "오늘 전망",
+        "장전", "장후", "시황", "market preview"
+    ]
+    if any(k in user_input.lower() for k in PREVIEW_KEYWORDS):
+        preview = get_market_preview(user_input)
+        if preview:
+            tool_info.append("🗞️ 시황/프리뷰: " + preview)
+
     # 5) LLM 호출 (이 부분이 핵심)
     try:
         if tool_info:
@@ -860,7 +870,7 @@ def get_smart_recommendations():
     try:
         with p.acquire() as conn:
             with conn.cursor() as cur:
-                q7 = "SYSTIMESTAMP - " + INTERVAL_7
+                q7 = "SYSTIMESTAMP - INTERVAL '7' DAY"
                 cur.execute(
                     "SELECT ticker, name, "
                     "COUNT(DISTINCT date_str) AS days_count, "
@@ -918,6 +928,61 @@ def searxng_search(query: str, categories: str = "general", max_results: int = 5
     except Exception:
         logger.exception("SearXNG 검색 실패: %s", query)
         return []
+
+
+def get_market_preview(query: str) -> str:
+    """장시작/장마감/시황 키워드 → SearXNG 실시간 뉴스 + pykrx 순매수 TOP5 반환"""
+    try:
+        from pykrx import stock as krx_stock
+        kst = pytz.timezone('Asia/Seoul')
+        d = datetime.datetime.now(kst)
+        if d.weekday() == 5:
+            d -= datetime.timedelta(days=1)
+        elif d.weekday() == 6:
+            d -= datetime.timedelta(days=2)
+        date_str = d.strftime('%Y%m%d')
+
+        # SearXNG 실시간 뉴스 검색
+        search_q = query if query else '오늘 주식시장 시황 전망'
+        news_results = searxng_search(search_q, categories='news', max_results=5)
+        if not news_results:
+            news_results = searxng_search('한국 증시 시황', categories='general', max_results=5)
+        news_text = ''
+        if news_results:
+            news_text = '\n'.join(
+                f"[{i+1}] {r['title']} — {r['content'][:80]}"
+                for i, r in enumerate(news_results)
+            )
+
+        # pykrx 기관+외국인 순매수 TOP5
+        krx_text = ''
+        try:
+            lines = []
+            for investor_type in ['기관합계', '외국인합계']:
+                df = krx_stock.get_market_net_purchases_of_equities_by_ticker(
+                    date_str, date_str, 'KOSPI', investor_type
+                )
+                if not df.empty:
+                    top5 = df.sort_values(by='순매수거래대금', ascending=False).head(5)
+                    label = '기관' if '기관' in investor_type else '외국인'
+                    items = ', '.join(
+                        f"{top5.loc[t, '종목명']}({top5.loc[t, '순매수거래대금']//100000000:,}억)"
+                        for t in top5.index
+                    )
+                    lines.append(f'{label} TOP5: {items}')
+            krx_text = '\n'.join(lines)
+        except Exception:
+            logger.exception('get_market_preview pykrx 실패')
+
+        parts = []
+        if news_text:
+            parts.append(f'📰 실시간 시황 뉴스:\n{news_text}')
+        if krx_text:
+            parts.append(f'📊 [{date_str}] 순매수 동향:\n{krx_text}')
+        return '\n\n'.join(parts) if parts else '시황 데이터를 가져올 수 없습니다.'
+    except Exception:
+        logger.exception('get_market_preview 예외')
+        return '시황 조회 실패'
 
 
 def perplexica_search(query: str, focus_mode: str = "webSearch") -> str:
