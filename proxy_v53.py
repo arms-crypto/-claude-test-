@@ -575,14 +575,18 @@ def ask_ai(session_id, user_input):
             tool_info.append("🇰🇷 국내 주가: " + korea)
 
     # b) 뉴스/검색/related 정보 요청이면
-    if "뉴스" in user_input.lower() or "검색" in user_input.lower() or "관련" in user_input.lower():
+    if any(k in user_input.lower() for k in ["뉴스", "검색", "관련", "최신", "오늘", "동향", "전망", "분석"]):
         news = naver_news(user_input)
         if news:
-            tool_info.append("📰 뉴스: " + news)
+            tool_info.append("📰 네이버 뉴스: " + news)
+        # SearXNG 웹 검색 보강
+        web_result = search_and_summarize(user_input)
+        if web_result and web_result != "검색 결과가 없습니다.":
+            tool_info.append("🌐 웹 검색 요약: " + web_result)
 
     # c) 외국인/기관/순매수 요청이면
     if "순매수" in user_input.lower() or "순매매" in user_input.lower():
-        fnb = foreign_net_buy(user_input)
+        fnb = get_foreign_net_buy(user_input)
         if fnb:
             tool_info.append("📈 순매수/매매 동향: " + fnb)
 
@@ -590,7 +594,21 @@ def ask_ai(session_id, user_input):
     try:
         if tool_info:
             # 검색 모드: 도구가 가져온 정보 + LLM 정리
-            prompt = f"현재 시각: {current_time_str}\n사용자 질문: {user_input}\n도구 정보와 함께 한국어로 답변:"
+            tool_str = "\n".join(tool_info)
+            prompt = f"""현재 시각: {current_time_str}
+
+사용자 핵심 정보:
+{my_facts}
+
+이전 대화:
+{chat_history_str}
+
+[수집된 도구 정보]
+{tool_str}
+
+사용자 질문: {user_input}
+
+위 도구 정보를 활용하여 한국어로 답변:"""
             answer = call_qwen(prompt)
         else:
             # 일반 대화 모드
