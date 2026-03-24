@@ -878,6 +878,139 @@ def init_stock_codes_db():
                 logger.info("mock_trades 테이블 이미 존재")
             else:
                 logger.exception("mock_trades 테이블 생성 실패 (무시)")
+        # mock_smart_flows 테이블 (기관/외국인 순매수 TOP100, 6개월 보존)
+        try:
+            with p.acquire() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("""
+                        CREATE TABLE mock_smart_flows (
+                            id             NUMBER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+                            collected_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                            date_str       VARCHAR2(8),
+                            investor_type  VARCHAR2(10),
+                            rank_no        NUMBER,
+                            ticker         VARCHAR2(10),
+                            name           VARCHAR2(50),
+                            net_buy_amount NUMBER
+                        )
+                    """)
+                    conn.commit()
+                    logger.info("mock_smart_flows 테이블 생성")
+        except Exception as e:
+            if "ORA-00955" in str(e):
+                logger.info("mock_smart_flows 테이블 이미 존재")
+            else:
+                logger.exception("mock_smart_flows 테이블 생성 실패 (무시)")
+
+# -------------------------
+# 스마트머니 순매수 TOP100 수집 (기관/외국인)
+def collect_smart_flows(date_str=None):
+    """KRX API로 기관합계/외국인합계 순매수 TOP100 수집 후 DB 저장"""
+    from pykrx import stock as krx_stock
+    kst = pytz.timezone('Asia/Seoul')
+    if not date_str:
+        d = datetime.datetime.now(kst)
+        if d.weekday() == 5:
+            d -= datetime.timedelta(days=1)
+        elif d.weekday() == 6:
+            d -= datetime.timedelta(days=2)
+        date_str = d.strftime('%Y%m%d')
+
+    results = []
+    for investor_type in ["기관합계", "외국인합계"]:
+        try:
+            df = krx_stock.get_market_net_purchases_of_equities_by_ticker(
+                date_str, date_str, "KOSPI", investor_type
+            )
+            days_back = 1
+            while df.empty and days_back <= 10:
+                d2 = datetime.datetime.strptime(date_str, '%Y%m%d') - datetime.timedelta(days=days_back)
+                df = krx_stock.get_market_net_purchases_of_equities_by_ticker(
+                    d2.strftime('%Y%m%d'), d2.strftime('%Y%m%d'), 'KOSPI', investor_type
+                )
+                days_back += 1
+            if df.empty:
+                logger.warning("collect_smart_flows: %s 데이터 없음", investor_type)
+                continue
+            top100 = df.sort_values(by="순매수거래대금", ascending=False).head(100)
+            for rank, ticker in enumerate(top100.index, 1):
+                results.append({
+                    "date_str": date_str,
+                    "investor_type": investor_type,
+                    "rank_no": rank,
+                    "ticker": ticker,
+                    "name": str(top100.loc[ticker, "종목명"]),
+                    "net_buy_amount": int(top100.loc[ticker, "순매수거래대금"])
+                })
+        except Exception:
+            logger.exception("collect_smart_flows: %s 수집 실패", investor_type)
+
+    if not results:
+        return False, "수집된 데이터 없음"
+    p = get_db_pool()
+    if not p:
+        return False, "DB 연결 실패"
+    try:
+        with p.acquire() as conn:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM mock_smart_flows WHERE date_str = :1", [date_str])
+                cur.execute("DELETE FROM mock_smart_flows WHERE collected_at < ADD_MONTHS(SYSTIMESTAMP, -6)")
+                for row in results:
+                    cur.execute(
+                        "INSERT INTO mock_smart_flows "
+                        "(date_str, investor_type, rank_no, ticker, name, net_buy_amount) "
+                        "VALUES (:1, :2, :3, :4, :5, :6)",
+                        [row["date_str"], row["investor_type"], row["rank_no"],
+                         row["ticker"], row["name"], row["net_buy_amount"]]
+                    )
+                conn.commit()
+        logger.info("collect_smart_flows: %d건 저장 (date=%s)", len(results), date_str)
+        return True, f"{date_str} 기준 {len(results)}건 저장 완료"
+    except Exception:
+        logger.exception("collect_smart_flows DB 저장 실패")
+        return False, "DB 저장 실패"
+
+
+def get_smart_recommendations():
+    """최근 7일 기관+외국인 중복 TOP100 종목 중 TOP10 추천"""
+    p = get_db_pool()
+    if not p:
+        return None, "DB 연결 실패"
+    try:
+        with p.acquire() as conn:
+            with conn.cursor() as cur:
+                q7 = "SYSTIMESTAMP - " + INTERVAL_7
+                cur.execute(
+                    "SELECT ticker, name, "
+                    "COUNT(DISTINCT date_str) AS days_count, "
+                    "COUNT(DISTINCT investor_type) AS investor_count, "
+                    "SUM(net_buy_amount) AS total_net_buy "
+                    "FROM mock_smart_flows "
+                    "WHERE collected_at >= " + q7 + " "
+                    "GROUP BY ticker, name "
+                    "HAVING COUNT(DISTINCT investor_type) >= 2 "
+                    "ORDER BY days_count DESC, total_net_buy DESC "
+                    "FETCH FIRST 10 ROWS ONLY"
+                )
+                rows = cur.fetchall()
+                if not rows:
+                    cur.execute(
+                        "SELECT ticker, name, "
+                        "COUNT(DISTINCT date_str) AS days_count, "
+                        "COUNT(DISTINCT investor_type) AS investor_count, "
+                        "SUM(net_buy_amount) AS total_net_buy "
+                        "FROM mock_smart_flows "
+                        "WHERE collected_at >= " + q7 + " "
+                        "GROUP BY ticker, name "
+                        "ORDER BY days_count DESC, total_net_buy DESC "
+                        "FETCH FIRST 10 ROWS ONLY"
+                    )
+                    rows = cur.fetchall()
+                return rows, None
+    except Exception:
+        logger.exception("get_smart_recommendations 오류")
+        return None, "DB 조회 실패"
+
 
 # -------------------------
 # 실시간 검색 유틸 함수
@@ -1057,6 +1190,36 @@ def search():
         mode_used = "searxng"
 
     return jsonify({"query": query, "answer": answer, "mode_used": mode_used})
+
+@app.route('/smart', methods=['GET'])
+def smart():
+    """최근 7일 기관+외국인 중복 순매수 TOP10 추천"""
+    rows, err = get_smart_recommendations()
+    if err:
+        return jsonify({"error": err}), 500
+    if not rows:
+        return jsonify({"message": "데이터 없음. /collect_smart 먼저 실행하세요.", "top10": []})
+    result = []
+    for i, row in enumerate(rows, 1):
+        ticker, name, days_count, investor_count, total_net_buy = row
+        result.append({
+            "rank": i,
+            "ticker": ticker,
+            "name": name,
+            "days_count": int(days_count),
+            "investor_count": int(investor_count),
+            "total_net_buy_억": int(total_net_buy) // 100_000_000
+        })
+    return jsonify({"top10": result, "description": "최근 7일 기관+외국인 중복 순매수 TOP10"})
+
+
+@app.route('/collect_smart', methods=['GET', 'POST'])
+def collect_smart():
+    """cron(15:10 / 18:40) 호출용 — 기관/외국인 순매수 TOP100 수집"""
+    date_str = request.args.get("date") or None
+    ok, msg = collect_smart_flows(date_str)
+    return jsonify({"ok": ok, "message": msg}), (200 if ok else 500)
+
 
 # -------------------------
 # 메인 실행부
