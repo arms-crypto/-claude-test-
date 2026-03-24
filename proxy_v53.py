@@ -10,14 +10,13 @@
 """
 
 import os
-import sys
 import json
 import re
+import random
 import time
 import threading
 import datetime
 import logging
-import subprocess
 import requests
 from bs4 import BeautifulSoup
 import yfinance as yf
@@ -443,11 +442,7 @@ def _parse_ollama_response(r) -> str:
         return raw_text
 
 
-def call_mistral_only(prompt: str, system: str = """당신은 친근한 한국어 AI 어시스턴트입니다.
-- 인사("안녕", "하이", "안녕하세요" 등)에는 짧게 인사로만 답하세요.
-- 짧은 일상 대화에는 간결하게 답하세요. 불필요한 설명이나 어원 분석을 하지 마세요.
-- 사실 기반 질문(인물, 날짜, 수치 등)은 학습 데이터 기준으로만 답하고, 최신 정보는 모를 수 있다고 밝히세요.
-- 답변은 항상 한국어로 작성하세요.""") -> str:
+def call_mistral_only(prompt: str, system: str = "당신은 한국어로 답변하는 AI 전문가입니다.") -> str:
     """
     mistral-small:24b 단독 호출. 3회 재시도 후 최종 실패 시 안내 메시지 반환.
     다른 모델로의 폴백은 없음.
@@ -568,11 +563,18 @@ def ask_ai(session_id, user_input):
     past_messages = history[-10:] if len(history) > 0 else []
     chat_history_str = "\\n".join(past_messages)
 
-    # 4) 도구(주가/뉴스/순매수) 실행 로직
-    tool_info = []  # 여기에 실제 결과를 모음
+    # 4) 도구(주가/뉴스/순매수) 실행 로직 — 자동 검색 모드 v2
+    tool_info = []
+    q = user_input.lower()
 
-    # a) 주가/가격/얼마 관련 키워드면 도구 호출
-    if any(k in user_input.lower() for k in ["주가", "가격", "얼마", "증권", "시세", "开盘", "종가", "시가"]):
+    # a) 주가/가격 키워드 (국내+해외) — 30개
+    PRICE_KEYWORDS = [
+        "주가", "가격", "얼마", "증권", "시세", "종가", "시가", "开盘",
+        "차트", "등락", "수익률", "투자", "매수", "매도", "포트폴리오",
+        "상장", "코스피", "코스닥", "etf", "지수", "배당", "per", "pbr",
+        "52주", "고가", "저가", "거래량", "시총", "stock", "price"
+    ]
+    if any(k in q for k in PRICE_KEYWORDS):
         overseas = stock_price_overseas(user_input)
         korea = korea_invest_stock(user_input)
         if overseas:
@@ -580,81 +582,99 @@ def ask_ai(session_id, user_input):
         if korea:
             tool_info.append("🇰🇷 국내 주가: " + korea)
 
-    # b) 뉴스/검색/related 정보 요청이면
-    search_triggered = any(k in user_input.lower() for k in ["뉴스", "검색", "관련", "최신", "오늘", "동향", "전망", "분석"])
-    if search_triggered:
-        # 1순위: Perplexica (AI 검색 - 가장 정확)
-        perplexica_result = perplexica_search(user_input)
-        if perplexica_result and perplexica_result != "검색 결과를 찾지 못했습니다.":
-            tool_info.append("🔍 Perplexica AI 검색:\n" + perplexica_result)
-        else:
-            # 2순위: 네이버 뉴스 + SearXNG 폴백
-            news = naver_news(user_input)
-            if news:
-                tool_info.append("📰 네이버 뉴스: " + news)
-            web_result = search_and_summarize(user_input)
-            if web_result and web_result != "검색 결과가 없습니다.":
-                tool_info.append("🌐 SearXNG 웹 검색: " + web_result)
+    # b) 뉴스/검색/동향 키워드 — 20개
+    NEWS_KEYWORDS = [
+        "뉴스", "검색", "관련", "최신", "동향", "트렌드", "이슈",
+        "소식", "업데이트", "분석", "전망", "예측", "보고서", "리포트",
+        "공시", "실적", "발표", "발행", "공매도", "news"
+    ]
+    if any(k in q for k in NEWS_KEYWORDS):
+        news = naver_news(user_input)
+        if news:
+            tool_info.append("📰 뉴스: " + news)
 
-        # 검색 트리거됐는데 결과가 하나도 없으면 명시적 안내
-        if not tool_info:
-            tool_info.append(
-                "⚠️ 실시간 검색 불가\n"
-                "- Perplexica(포트 3001) 또는 SearXNG(포트 8080)가 응답하지 않습니다.\n"
-                "- 확인 방법: docker compose ps\n"
-                "- 재시작 방법: docker compose up -d\n"
-                "최신 정보가 필요한 질문에는 답변드리기 어렵습니다."
-            )
-
-    # c) 외국인/기관/순매수 요청이면
-    if "순매수" in user_input.lower() or "순매매" in user_input.lower():
+    # c) 순매수/수급 키워드 — 10개
+    FLOW_KEYWORDS = [
+        "순매수", "순매매", "수급", "기관매수", "외국인매수",
+        "기관순매수", "외인", "프로그램매수", "매수세", "매도세"
+    ]
+    if any(k in q for k in FLOW_KEYWORDS):
         fnb = get_foreign_net_buy(user_input)
         if fnb:
             tool_info.append("📈 순매수/매매 동향: " + fnb)
 
-    # d) 시황/장시작/장마감/프리뷰 키워드 → SearXNG + pykrx 실시간
+    # d) 시황/프리뷰 키워드 — 15개 → SearXNG + pykrx
     PREVIEW_KEYWORDS = [
         "장시작", "장마감", "프리뷰", "ai 프리뷰", "오늘 전망",
-        "장전", "장후", "시황", "market preview"
+        "장전", "장후", "시황", "market preview", "개장", "폐장",
+        "선물", "옵션", "야간선물", "vix"
     ]
-    if any(k in user_input.lower() for k in PREVIEW_KEYWORDS):
+    if any(k in q for k in PREVIEW_KEYWORDS):
         preview = get_market_preview(user_input)
         if preview:
             tool_info.append("🗞️ 시황/프리뷰: " + preview)
 
-    # e) 글로벌 주식 키워드 → Perplexica 실시간 검색
+    # e) 글로벌 주식/지수/암호화폐/경제지표 키워드 — 40개 → Perplexica
     GLOBAL_KEYWORDS = [
-        "테슬라", "tsla", "나스닥", "nasdaq", "애플", "aapl",
-        "구글", "google", "googl", "알파벳", "엔비디아", "nvda",
-        "아마존", "amzn", "마이크로소프트", "msft", "메타", "meta",
-        "s&p", "다우", "dow", "해외주식", "미국주식", "글로벌"
+        # 미국 개별주
+        "테슬라", "tsla", "애플", "aapl", "구글", "google", "googl", "알파벳",
+        "엔비디아", "nvda", "아마존", "amzn", "마이크로소프트", "msft",
+        "메타", "meta", "넷플릭스", "nflx", "팔란티어", "pltr",
+        # 지수
+        "나스닥", "nasdaq", "s&p", "s&p500", "다우", "dow", "러셀", "russell",
+        "해외주식", "미국주식", "글로벌", "월스트리트", "뉴욕증시",
+        # 암호화폐
+        "비트코인", "bitcoin", "btc", "이더리움", "ethereum", "eth",
+        "리플", "xrp", "코인", "crypto", "가상화폐",
+        # 경제지표
+        "금리", "환율", "달러", "엔화", "유로", "인플레이션", "cpi", "gdp",
+        "연준", "fed", "fomc", "금값", "유가", "wti"
     ]
-    if any(k in user_input.lower() for k in GLOBAL_KEYWORDS):
+    if any(k in q for k in GLOBAL_KEYWORDS):
         perp = perplexica_search(user_input, focus_mode='webSearch')
         if not perp:
             perp = search_and_summarize(user_input)
         if perp:
-            tool_info.append("🌍 글로벌 주식 검색: " + perp)
+            tool_info.append("🌍 글로벌 주식/지수: " + perp)
 
-    # 5) LLM 호출 (이 부분이 핵심)
+    # f) 키워드 미매칭 → LLM 검색 필요 여부 판단
+    if not tool_info:
+        intent_prompt = (
+            "다음 질문이 주식/금융/경제/뉴스/시황/투자에 관한 것이면 YES, "
+            "일상 대화/잡담이면 NO 한 단어만 답하라.\n질문: " + user_input[:120]
+        )
+        try:
+            intent = call_mistral_only(intent_prompt).strip().upper()[:10]
+            if "YES" in intent:
+                perp = perplexica_search(user_input, focus_mode='webSearch')
+                if not perp:
+                    perp = search_and_summarize(user_input)
+                if perp:
+                    tool_info.append("🔍 AI 자동검색: " + perp)
+        except Exception:
+            logger.exception("intent detection 실패")
+
+    # g) 50% 확률 Perplexica 폴백 (모든 질문 대상)
+    if not tool_info and random.random() < 0.5:
+        try:
+            perp = perplexica_search(user_input, focus_mode='webSearch')
+            if not perp:
+                perp = search_and_summarize(user_input)
+            if perp:
+                tool_info.append("🎲 검색 보강: " + perp)
+        except Exception:
+            logger.exception("50% 폴백 Perplexica 실패")
+
+    # 5) LLM 호출
     try:
         if tool_info:
-            # 검색 모드: 도구가 가져온 정보 + LLM 정리
-            tool_str = "\n".join(tool_info)
-            prompt = f"""현재 시각: {current_time_str}
-
-사용자 핵심 정보:
-{my_facts}
-
-이전 대화:
-{chat_history_str}
-
-[수집된 도구 정보]
-{tool_str}
-
-사용자 질문: {user_input}
-
-위 도구 정보를 활용하여 한국어로 답변. 단, 도구 정보에 관련 내용이 없으면 "실시간 검색 결과에 해당 정보가 없습니다. 검색 엔진을 확인해주세요." 라고 안내:"""
+            tool_str = "\n\n".join(tool_info)
+            prompt = (
+                f"현재 시각: {current_time_str}\n\n"
+                f"[실시간 데이터]\n{tool_str}\n\n"
+                f"사용자 질문: {user_input}\n\n"
+                "위 실시간 데이터를 바탕으로 핵심만 한국어로 답변:"
+            )
             answer = call_qwen(prompt)
         else:
             # 일반 대화 모드
@@ -669,11 +689,7 @@ def ask_ai(session_id, user_input):
 
 질문: {user_input}
 
-응답 규칙:
-- 인사말("안녕", "하이", "잘자" 등)에는 짧은 인사로만 답할 것
-- 일상 대화는 간결하게, 불필요한 설명·어원·역사 분석 금지
-- 사실 기반 질문은 학습 데이터 기준으로 답하되 최신 정보는 모를 수 있다고 밝힐 것
-- 자연스러운 한국어로 답변할 것
+응답: 위 질문에 대해 자연스럽게 한국어로 답변하라.
             """
             answer = call_qwen(prompt)
 
@@ -733,74 +749,6 @@ def auto_report_scheduler():
         time.sleep(30)
 
 
-def handle_mobile_command(cmd):
-    """모바일 제어 명령어 처리 (/restart /update /status /logs /smart)"""
-    cmd = cmd.strip()
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    log_path = os.path.join(script_dir, "proxy_v53.log")
-
-    if cmd == "/status":
-        try:
-            r = requests.get("http://localhost:11435/health", timeout=3, proxies={"http": None, "https": None})
-            health = "✅ OK" if r.status_code == 200 else f"❌ {r.status_code}"
-        except Exception:
-            health = "❌ 응답없음"
-        db = "✅ 연결됨" if get_db_pool() else "❌ 연결안됨"
-        kst = pytz.timezone('Asia/Seoul')
-        now = datetime.datetime.now(kst).strftime("%Y-%m-%d %H:%M:%S")
-        thread_count = len(threading.enumerate())
-        return f"📊 [서버 상태] {now}\n\n🌐 Flask: {health}\n🗄️ DB: {db}\n🧵 스레드: {thread_count}개"
-
-    elif cmd == "/logs":
-        try:
-            result = subprocess.run(["tail", "-20", log_path], capture_output=True, text=True, timeout=5)
-            logs = result.stdout.strip()
-            return f"📋 [최근 로그]\n\n{logs[-3500:]}" if logs else "📋 로그 없음"
-        except Exception as e:
-            return f"❌ 로그 읽기 실패: {e}"
-
-    elif cmd == "/smart":
-        try:
-            result = get_foreign_net_buy("순매수 TOP10")
-            if "[IMAGE_PATH:" in result:
-                result = result.split("[IMAGE_PATH:")[0].strip()
-            lines = result.split("\n")
-            top10, count = [], 0
-            for line in lines:
-                top10.append(line)
-                if "위." in line:
-                    count += 1
-                    if count >= 10:
-                        break
-            return "\n".join(top10)
-        except Exception as e:
-            return f"❌ 순매수 조회 실패: {e}"
-
-    elif cmd == "/update":
-        try:
-            result = subprocess.run(
-                ["git", "-C", script_dir, "pull", "origin", "claude/search-proxy-v53"],
-                capture_output=True, text=True, timeout=30
-            )
-            output = (result.stdout + result.stderr).strip()
-            return f"🔄 [git pull 결과]\n\n{output[:1000]}"
-        except Exception as e:
-            return f"❌ git pull 실패: {e}"
-
-    elif cmd == "/restart":
-        def do_restart():
-            time.sleep(1)
-            subprocess.run(
-                ["git", "-C", script_dir, "pull", "origin", "claude/search-proxy-v53"],
-                capture_output=True, timeout=30
-            )
-            os.execv(sys.executable, [sys.executable] + sys.argv)
-        threading.Thread(target=do_restart, daemon=False).start()
-        return "🔄 git pull 후 재시작합니다..."
-
-    return None
-
-
 def handle_tg():
     last_id = 0
     base_url = f"https://api.telegram.org/bot{TOKEN_RAW}"
@@ -814,13 +762,6 @@ def handle_tg():
                     msg = up.get("message", {})
                     if str(msg.get("chat", {}).get("id", "")) == CHAT_ID and "text" in msg:
                         msg_text = msg["text"]
-                        # 모바일 제어 명령어
-                        mobile_cmds = ("/restart", "/update", "/status", "/logs", "/smart")
-                        if msg_text.strip().startswith(mobile_cmds):
-                            reply_text = handle_mobile_command(msg_text.strip())
-                            if reply_text:
-                                requests.post(f"{base_url}/sendMessage", json={"chat_id": CHAT_ID, "text": reply_text})
-                                continue
                         # /mock 명령어는 모의투자 핸들러로 라우팅
                         if msg_text.strip().startswith("/mock"):
                             reply_text = parse_mock_command(msg_text, oracle_pool=get_db_pool())
