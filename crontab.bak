@@ -1,0 +1,16 @@
+# ============================================================
+# crontab 백업 (ubuntu@152.69.192.155)
+# 최종 정리: 2026-03-24
+# ============================================================
+
+# [뉴스 크롤링] 매일 3회 (장 전/중/후)
+30 9  * * *   /home/ubuntu/oracle_task/venv/bin/python /home/ubuntu/oracle_task/crawl_news_finance.py
+0  15 * * *   /home/ubuntu/oracle_task/venv/bin/python /home/ubuntu/oracle_task/crawl_news_finance.py
+0  21 * * *   /home/ubuntu/oracle_task/venv/bin/python /home/ubuntu/oracle_task/crawl_news_finance.py
+
+# [proxy 자동 재시작] 서버 재부팅 시
+@reboot cd ~/-claude-test- && nohup python3 proxy_v53.py > /home/ubuntu/proxy.log 2>&1 &
+
+# [스마트머니 수집] 평일 장 마감(15:10) + 시간외(18:40)
+10 15 * * 1-5 curl -s http://localhost:11435/collect_smart >> /home/ubuntu/-claude-test-/smart_flows.log 2>&1
+40 18 * * 1-5 curl -s http://localhost:11435/collect_smart >> /home/ubuntu/-claude-test-/smart_flows.log 2>&1
