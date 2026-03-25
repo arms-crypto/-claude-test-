@@ -668,20 +668,46 @@ def ask_ai(session_id, user_input):
             tool_info.append("🇰🇷 국내 주가: " + korea)
 
     # b) 뉴스/검색/related 정보 요청이면
-    search_triggered = any(k in user_input.lower() for k in ["뉴스", "검색", "관련", "최신", "오늘", "동향", "전망", "분석"])
+    _search_keywords = [
+        # 뉴스/시황 관련
+        "뉴스", "검색", "관련", "최신", "오늘", "동향", "전망", "분석",
+        # 정보 요청 동사
+        "요약", "알려줘", "알려 줘", "알려줘요", "설명해", "소개해",
+        "찾아줘", "찾아봐", "검색해", "조회",
+        # 콘텐츠/엔터테인먼트
+        "영화", "드라마", "공연", "음악", "노래", "책", "소설", "웹툰",
+        # 내용 관련
+        "줄거리", "내용이", "정보", "특징", "장점", "단점",
+        # 질문 표현 (구체적인 것만)
+        "뭔지", "뭐야", "뭔가요", "뭔데", "뭐예요",
+        "어떤 영화", "어떤 드라마", "어떤 책",
+    ]
+    search_triggered = any(k in user_input for k in _search_keywords)
+    # 뉴스/시황 키워드면 Perplexica 우선, 그 외는 SearXNG 우선 (속도 차이: Perplexica 2분 vs SearXNG 30초)
+    _news_keywords = ["뉴스", "시황", "동향", "전망", "분석", "오늘 증시", "오늘 주식"]
+    _use_perplexica_first = any(k in user_input for k in _news_keywords)
     if search_triggered:
-        # 1순위: Perplexica (AI 검색 - 가장 정확)
-        perplexica_result = perplexica_search(user_input)
-        if perplexica_result and perplexica_result != "검색 결과를 찾지 못했습니다.":
-            tool_info.append("🔍 Perplexica AI 검색:\n" + perplexica_result)
+        if _use_perplexica_first:
+            # 뉴스/시황: Perplexica 우선
+            perplexica_result = perplexica_search(user_input)
+            if perplexica_result and perplexica_result != "검색 결과를 찾지 못했습니다.":
+                tool_info.append("🔍 Perplexica AI 검색:\n" + perplexica_result)
+            else:
+                news = naver_news(user_input)
+                if news:
+                    tool_info.append("📰 네이버 뉴스: " + news)
+                web_result = search_and_summarize(user_input)
+                if web_result and web_result != "검색 결과가 없습니다.":
+                    tool_info.append("🌐 SearXNG 웹 검색: " + web_result)
         else:
-            # 2순위: 네이버 뉴스 + SearXNG 폴백
-            news = naver_news(user_input)
-            if news:
-                tool_info.append("📰 네이버 뉴스: " + news)
+            # 일반 검색: SearXNG 우선 (빠름), Perplexica는 결과 없을 때 폴백
             web_result = search_and_summarize(user_input)
             if web_result and web_result != "검색 결과가 없습니다.":
-                tool_info.append("🌐 SearXNG 웹 검색: " + web_result)
+                tool_info.append("🌐 웹 검색:\n" + web_result)
+            else:
+                perplexica_result = perplexica_search(user_input)
+                if perplexica_result and perplexica_result != "검색 결과를 찾지 못했습니다.":
+                    tool_info.append("🔍 Perplexica AI 검색:\n" + perplexica_result)
 
         # 검색 트리거됐는데 결과가 하나도 없으면 명시적 안내
         if not tool_info:
