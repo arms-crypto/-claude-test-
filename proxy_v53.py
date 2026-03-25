@@ -443,10 +443,13 @@ def _parse_ollama_response(r) -> str:
         return raw_text
 
 
-def call_mistral_only(prompt: str, system: str = """당신은 친근한 한국어 AI 어시스턴트입니다.
-- 인사("안녕", "하이", "안녕하세요" 등)에는 짧게 인사로만 답하세요.
-- 짧은 일상 대화에는 간결하게 답하세요. 불필요한 설명이나 어원 분석을 하지 마세요.
-- 사실 기반 질문(인물, 날짜, 수치 등)은 학습 데이터 기준으로만 답하고, 최신 정보는 모를 수 있다고 밝히세요.
+def call_mistral_only(prompt: str, system: str = """당신은 한국 주식시장 전문 AI 어시스턴트입니다.
+- "장"은 항상 한국 주식시장(코스피/코스닥)을 의미합니다. 절대 쇼핑몰/배송/주문과 혼동하지 마세요.
+- "장 시작 전 AI 프리뷰"는 주식시장 개장 전 경제 뉴스 요약입니다.
+- "장 마감 AI 요약 보고서"는 주식시장 마감 후 외국인 순매수/증시 뉴스 요약입니다.
+- 실시간 데이터(주가, 순매수, 뉴스)가 없으면 절대 데이터를 지어내지 말고 "실시간 데이터가 없습니다"라고만 답하세요.
+- 인사("안녕", "하이" 등)에는 짧게 인사로만 답하세요.
+- 일상 대화는 간결하게, 불필요한 설명·어원·역사 분석 금지.
 - 답변은 항상 한국어로 작성하세요.""") -> str:
     """
     mistral-small:24b 단독 호출. 3회 재시도 후 최종 실패 시 안내 메시지 반환.
@@ -567,6 +570,33 @@ def ask_ai(session_id, user_input):
     fact_str = f"[사용자 핵심 정보]\\n{my_facts}\\n\\n" if my_facts else ""
     past_messages = history[-10:] if len(history) > 0 else []
     chat_history_str = "\\n".join(past_messages)
+
+    # 3-0) 보고서 재요청 처리
+    _req = user_input.strip()
+    if any(k in _req for k in ["장 마감", "마감 보고서", "마감 AI"]) and any(k in _req for k in ["다시", "올려", "줘", "보여"]):
+        net_buy = get_foreign_net_buy("순매수")
+        img = None
+        if "[IMAGE_PATH:" in (net_buy or ""):
+            s = net_buy.find("[IMAGE_PATH:") + 12
+            e = net_buy.find("]", s)
+            img = net_buy[s:e]
+            net_buy = net_buy[:s].strip()
+        nv = naver_news("증시 마감 시황")
+        parts = []
+        if net_buy and "서버 점검" not in net_buy:
+            parts.append(net_buy)
+        if nv:
+            parts.append(f"📰 증시 뉴스:\n{nv[:500]}")
+        reply = "📊 [장 마감 AI 요약 보고서]\n\n" + ("\n\n".join(parts) if parts else "현재 데이터를 가져올 수 없습니다.")
+        return reply, img
+
+    if any(k in _req for k in ["장 시작", "시작 전", "AI 프리뷰", "프리뷰"]) and any(k in _req for k in ["다시", "올려", "줘", "보여"]):
+        px = perplexica_search("오늘 주요 경제 뉴스 증시 전망")
+        nv = naver_news("경제 증시 뉴스")
+        news = px if (px and "찾지 못" not in px) else (nv or "현재 뉴스를 가져올 수 없습니다.")
+        news_text = news[:800]
+        summary = call_mistral_only(f"다음 뉴스를 3줄로 요약:\n\n{news_text}", system="증시 뉴스 요약 전문가. 핵심만 3줄 한국어로.")
+        return f"🌅 [장 시작 전 AI 프리뷰]\n\n{summary}", None
 
     # 3-1) 단순 인사 즉시 처리 (LLM 호출 없이)
     _greet_keywords = ["안녕", "하이", "hi", "hello", "헬로", "잘자", "굿나잇", "굿모닝", "좋은아침", "안뇽", "ㅎㅇ", "ㅂㅂ"]
