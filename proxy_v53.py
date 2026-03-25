@@ -704,16 +704,52 @@ def auto_report_scheduler():
             now = datetime.datetime.now(kst)
             if now.weekday() < 5:
                 if now.hour == 8 and now.minute == 40 and last_run_time != "morning":
-                    prompt = "오늘 장 시작 전 확인할만한 최신 경제 뉴스를 검색해서 요약해줘."
                     _np = {"http": None, "https": None}
-                    reply_text, _ = ask_ai("auto_scheduler", prompt)
-                    requests.post(f"{base_url}/sendMessage", json={"chat_id": CHAT_ID, "text": f"🌅 [장 시작 전 AI 프리뷰]\\n\\n{reply_text}"}, proxies=_np)
+                    # 뉴스 직접 수집 후 LLM 요약
+                    news_data = []
+                    px = perplexica_search("오늘 주요 경제 뉴스 증시 전망")
+                    if px and "찾지 못" not in px:
+                        news_data.append(px)
+                    nv = naver_news("경제 증시 뉴스")
+                    if nv:
+                        news_data.append(nv)
+                    if news_data:
+                        summary = call_mistral_only(
+                            f"다음 뉴스를 3줄로 요약해줘:\n\n{'\\n'.join(news_data[:2])}",
+                            system="뉴스 요약 전문가. 핵심만 3줄 한국어로."
+                        )
+                    else:
+                        summary = "현재 검색 서버(Perplexica/SearXNG)가 응답하지 않습니다.\n`docker compose up -d` 로 재시작해보세요."
+                    requests.post(f"{base_url}/sendMessage", json={"chat_id": CHAT_ID, "text": f"🌅 [장 시작 전 AI 프리뷰]\n\n{summary}"}, proxies=_np)
                     last_run_time = "morning"
                 elif now.hour == 16 and now.minute == 0 and last_run_time != "afternoon":
                     _np = {"http": None, "https": None}
-                    prompt = "오늘 외국인 순매수 1위 종목을 차트와 함께 확인하고, 최신 증시 뉴스를 요약해줘."
-                    reply_text, image_path = ask_ai("auto_scheduler", prompt)
-                    requests.post(f"{base_url}/sendMessage", json={"chat_id": CHAT_ID, "text": f"📊 [장 마감 AI 요약 보고서]\\n\\n{reply_text}"}, proxies=_np)
+                    # 순매수 직접 수집
+                    net_buy = get_foreign_net_buy("순매수")
+                    image_path = None
+                    if "[IMAGE_PATH:" in (net_buy or ""):
+                        start = net_buy.find("[IMAGE_PATH:") + 12
+                        end = net_buy.find("]", start)
+                        image_path = net_buy[start:end]
+                        net_buy = net_buy[:start].strip()
+                    # 뉴스 수집
+                    px = perplexica_search("오늘 증시 마감 시황 뉴스")
+                    nv = naver_news("증시 마감 시황")
+                    news_part = px if (px and "찾지 못" not in px) else (nv or "")
+                    # 최종 보고서 조합
+                    parts = []
+                    if net_buy and "서버 점검" not in net_buy:
+                        parts.append(net_buy)
+                    elif net_buy:
+                        parts.append("⚠️ KRX 데이터 조회 실패 (장 마감 전이거나 서버 점검 중)")
+                    if news_part:
+                        summary = call_mistral_only(
+                            f"다음 증시 뉴스를 2줄로 요약:\n\n{news_part}",
+                            system="증시 뉴스 요약 전문가. 핵심만 2줄 한국어로."
+                        )
+                        parts.append(f"📰 오늘 증시 뉴스:\n{summary}")
+                    reply_text = "\n\n".join(parts) if parts else "데이터 수집 실패. 검색 서버 상태를 확인해주세요."
+                    requests.post(f"{base_url}/sendMessage", json={"chat_id": CHAT_ID, "text": f"📊 [장 마감 AI 요약 보고서]\n\n{reply_text}"}, proxies=_np)
                     if image_path and os.path.exists(image_path):
                         with open(image_path, "rb") as photo:
                             requests.post(f"{base_url}/sendPhoto", data={"chat_id": CHAT_ID}, files={"photo": photo}, proxies=_np)
