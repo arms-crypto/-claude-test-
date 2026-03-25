@@ -10,12 +10,14 @@
 """
 
 import os
+import sys
 import json
 import re
 import time
 import threading
 import datetime
 import logging
+import subprocess
 import requests
 from bs4 import BeautifulSoup
 import yfinance as yf
@@ -707,6 +709,74 @@ def auto_report_scheduler():
         time.sleep(30)
 
 
+def handle_mobile_command(cmd):
+    """모바일 제어 명령어 처리 (/restart /update /status /logs /smart)"""
+    cmd = cmd.strip()
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    log_path = os.path.join(script_dir, "proxy_v53.log")
+
+    if cmd == "/status":
+        try:
+            r = requests.get("http://localhost:11435/health", timeout=3, proxies={"http": None, "https": None})
+            health = "✅ OK" if r.status_code == 200 else f"❌ {r.status_code}"
+        except Exception:
+            health = "❌ 응답없음"
+        db = "✅ 연결됨" if get_db_pool() else "❌ 연결안됨"
+        kst = pytz.timezone('Asia/Seoul')
+        now = datetime.datetime.now(kst).strftime("%Y-%m-%d %H:%M:%S")
+        thread_count = len(threading.enumerate())
+        return f"📊 [서버 상태] {now}\n\n🌐 Flask: {health}\n🗄️ DB: {db}\n🧵 스레드: {thread_count}개"
+
+    elif cmd == "/logs":
+        try:
+            result = subprocess.run(["tail", "-20", log_path], capture_output=True, text=True, timeout=5)
+            logs = result.stdout.strip()
+            return f"📋 [최근 로그]\n\n{logs[-3500:]}" if logs else "📋 로그 없음"
+        except Exception as e:
+            return f"❌ 로그 읽기 실패: {e}"
+
+    elif cmd == "/smart":
+        try:
+            result = get_foreign_net_buy("순매수 TOP10")
+            if "[IMAGE_PATH:" in result:
+                result = result.split("[IMAGE_PATH:")[0].strip()
+            lines = result.split("\n")
+            top10, count = [], 0
+            for line in lines:
+                top10.append(line)
+                if "위." in line:
+                    count += 1
+                    if count >= 10:
+                        break
+            return "\n".join(top10)
+        except Exception as e:
+            return f"❌ 순매수 조회 실패: {e}"
+
+    elif cmd == "/update":
+        try:
+            result = subprocess.run(
+                ["git", "-C", script_dir, "pull", "origin", "claude/search-proxy-v53"],
+                capture_output=True, text=True, timeout=30
+            )
+            output = (result.stdout + result.stderr).strip()
+            return f"🔄 [git pull 결과]\n\n{output[:1000]}"
+        except Exception as e:
+            return f"❌ git pull 실패: {e}"
+
+    elif cmd == "/restart":
+        def do_restart():
+            time.sleep(1)
+            subprocess.run(
+                ["git", "-C", script_dir, "pull", "origin", "claude/search-proxy-v53"],
+                capture_output=True, timeout=30
+            )
+            os.execv(sys.executable, [sys.executable] + sys.argv)
+        threading.Thread(target=do_restart, daemon=False).start()
+        return "🔄 git pull 후 재시작합니다..."
+
+    return None
+
+
 def handle_tg():
     last_id = 0
     base_url = f"https://api.telegram.org/bot{TOKEN_RAW}"
@@ -720,6 +790,13 @@ def handle_tg():
                     msg = up.get("message", {})
                     if str(msg.get("chat", {}).get("id", "")) == CHAT_ID and "text" in msg:
                         msg_text = msg["text"]
+                        # 모바일 제어 명령어
+                        mobile_cmds = ("/restart", "/update", "/status", "/logs", "/smart")
+                        if msg_text.strip().startswith(mobile_cmds):
+                            reply_text = handle_mobile_command(msg_text.strip())
+                            if reply_text:
+                                requests.post(f"{base_url}/sendMessage", json={"chat_id": CHAT_ID, "text": reply_text})
+                                continue
                         # /mock 명령어는 모의투자 핸들러로 라우팅
                         if msg_text.strip().startswith("/mock"):
                             reply_text = parse_mock_command(msg_text, oracle_pool=get_db_pool())
