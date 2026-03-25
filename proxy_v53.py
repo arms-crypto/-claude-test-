@@ -477,37 +477,103 @@ def _parse_ollama_response(r) -> str:
         return raw_text
 
 
-def call_mistral_only(prompt: str, system: str = """당신은 친근한 한국어 AI 어시스턴트입니다.
-- 인사("안녕", "하이", "ㅎㅇ" 등)나 짧은 잡담에는 짧게 인사나 잡담으로만 답하세요. 절대 분석하거나 설명하지 마세요.
-- 질문이면 정확하고 간결하게 답하세요.
-- "장"은 한국 주식시장(코스피/코스닥)을 의미합니다.
-- 실시간 데이터(주가, 순매수, 뉴스)가 없으면 절대 지어내지 말고 "실시간 데이터가 없습니다"라고만 답하세요.
-- 불필요한 설명·어원·역사 분석 금지.
-- 답변은 항상 한국어로 작성하세요.""") -> str:
+_WEB_SEARCH_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "web_search",
+        "description": "실시간 웹 검색. 최신 뉴스, 현재 정보, 모르는 사실, 훈련 데이터 이후 사건에 사용.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "검색어 (한국어 또는 영어)"}
+            },
+            "required": ["query"]
+        }
+    }
+}
+
+_TOOL_SYSTEM = """당신은 친근한 한국어 AI 어시스턴트입니다.
+- 인사("안녕", "하이", "ㅎㅇ" 등)나 짧은 잡담에는 짧게 인사나 잡담으로만 답하세요.
+- 최신 정보(뉴스, 현재 날씨, 현재 인물, 최신 사건 등)가 필요하면 반드시 web_search 도구를 호출하세요.
+- 훈련 데이터 이후 사건(2024년 이후 포함)은 web_search로 확인하세요.
+- 답변은 항상 한국어로 작성하세요."""
+
+
+def _execute_tool_call(tool_name: str, arguments: dict) -> str:
+    """Ollama가 호출한 도구를 실행하고 결과를 반환."""
+    if tool_name == "web_search":
+        query = arguments.get("query", "")
+        logger.info("Ollama tool call: web_search('%s')", query)
+        results = searxng_search(query, max_results=5)
+        if results:
+            lines = []
+            for r in results[:5]:
+                title = r.get("title", "")
+                content = r.get("content", "")[:200]
+                url = r.get("url", "")
+                lines.append(f"- {title}: {content} ({url})")
+            return "\n".join(lines)
+        return "검색 결과 없음"
+    return f"알 수 없는 도구: {tool_name}"
+
+
+def call_mistral_only(prompt: str, system: str = _TOOL_SYSTEM, use_tools: bool = True) -> str:
     """
-    mistral-small:24b 단독 호출. 3회 재시도 후 최종 실패 시 안내 메시지 반환.
-    다른 모델로의 폴백은 없음.
+    mistral-small:24b 단독 호출. tool calling 지원.
+    - use_tools=True: Ollama가 web_search 도구를 스스로 호출 가능
+    - 3회 재시도 후 최종 실패 시 안내 메시지 반환.
     """
+    messages = [
+        {"role": "system", "content": system},
+        {"role": "user",   "content": prompt},
+    ]
     payload = {
         "model": QWEN_MODEL,
-        "messages": [
-            {"role": "system", "content": system},
-            {"role": "user",   "content": prompt},
-        ],
+        "messages": messages,
         "options": {"temperature": 0.7, "num_predict": 2048},
         "stream": False,
     }
+    if use_tools:
+        payload["tools"] = [_WEB_SEARCH_TOOL]
+
     last_exc = None
     for attempt in range(1, MISTRAL_MAX_RETRY + 1):
         try:
             r = requests.post(QWEN_URL, json=payload, timeout=60)
             r.raise_for_status()
-            result = _parse_ollama_response(r)
+            data = r.json()
+            msg = data.get("message", {})
+
+            # tool_calls 처리: 도구 호출이 있으면 실행 후 재호출
+            tool_calls = msg.get("tool_calls")
+            if tool_calls:
+                messages.append({"role": "assistant", "content": "", "tool_calls": tool_calls})
+                for tc in tool_calls:
+                    fn = tc.get("function", {})
+                    tool_result = _execute_tool_call(fn.get("name", ""), fn.get("arguments", {}))
+                    messages.append({
+                        "role": "tool",
+                        "content": tool_result,
+                    })
+                # 검색 결과를 받아 최종 답변 생성
+                payload2 = {
+                    "model": QWEN_MODEL,
+                    "messages": messages,
+                    "options": {"temperature": 0.7, "num_predict": 2048},
+                    "stream": False,
+                }
+                r2 = requests.post(QWEN_URL, json=payload2, timeout=60)
+                r2.raise_for_status()
+                result = _parse_ollama_response(r2)
+                if result:
+                    return result
+
+            result = msg.get("content", "") or _parse_ollama_response(r)
             if result:
                 return result
         except Exception as e:
             last_exc = e
-            wait = 2 ** (attempt - 1)   # 1s → 2s → 4s
+            wait = 2 ** (attempt - 1)
             logger.warning("mistral-small:24b 시도 %d/%d 실패 (%s) — %ds 후 재시도",
                            attempt, MISTRAL_MAX_RETRY, str(e)[:80], wait)
             if attempt < MISTRAL_MAX_RETRY:
@@ -746,9 +812,8 @@ def ask_ai(session_id, user_input):
 위 도구 정보를 활용하여 한국어로 답변. 단, 도구 정보에 관련 내용이 없으면 "실시간 검색 결과에 해당 정보가 없습니다. 검색 엔진을 확인해주세요." 라고 안내:"""
             answer = call_qwen(prompt)
         else:
-            # 일반 대화 모드
-            prompt = f"""
-현재 시각: {current_time_str}
+            # 일반 대화 모드 (tool calling 활성화 — Ollama가 필요시 web_search 호출)
+            prompt = f"""현재 시각: {current_time_str}
 
 사용자 핵심 정보:
 {my_facts}
@@ -756,14 +821,7 @@ def ask_ai(session_id, user_input):
 이전 대화:
 {chat_history_str}
 
-질문: {user_input}
-
-응답 규칙:
-- 인사말("안녕", "하이", "잘자" 등)에는 짧은 인사로만 답할 것
-- 일상 대화는 간결하게, 불필요한 설명·어원·역사 분석 금지
-- 사실 기반 질문은 학습 데이터 기준으로 답하되 최신 정보는 모를 수 있다고 밝힐 것
-- 자연스러운 한국어로 답변할 것
-            """
+질문: {user_input}"""
             answer = call_qwen(prompt)
 
         # 6) 이미지 처리 등은 그대로 유지
