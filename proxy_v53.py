@@ -10,13 +10,14 @@
 """
 
 import os
+import sys
 import json
 import re
-import random
 import time
 import threading
 import datetime
 import logging
+import subprocess
 import requests
 from bs4 import BeautifulSoup
 import yfinance as yf
@@ -290,42 +291,76 @@ def stock_price_overseas(query: str) -> str:
         return "❌ 해외 주가 오류"
 
 # -------------------------
+# 네이버 Finance에서 외국인/기관 순매수 상위 종목 스크래핑
+def _naver_net_buy_list(investor_gubun='9000', sosok='01', buy_type='buy'):
+    """네이버 Finance 순매수 상위 종목 반환. investor_gubun: 9000=외국인, 1000=금융투자"""
+    try:
+        import pandas as pd
+        from io import StringIO
+        url = (f"https://finance.naver.com/sise/sise_deal_rank_iframe.naver"
+               f"?sosok={sosok}&investor_gubun={investor_gubun}&type={buy_type}")
+        headers = {
+            'User-Agent': 'Mozilla/5.0',
+            'Referer': 'https://finance.naver.com/sise/sise_deal_rank.naver'
+        }
+        r = requests.get(url, headers=headers, timeout=10)
+        dfs = pd.read_html(StringIO(r.text))
+        for df in dfs:
+            if '종목명' in df.columns:
+                df = df.dropna(subset=['종목명']).reset_index(drop=True)
+                return df
+    except Exception:
+        logger.exception("_naver_net_buy_list 예외")
+    return None
+
+
 # 외국인 순매수 상위 20 및 차트 생성
 def get_foreign_net_buy(query: str) -> str:
     try:
-        from pykrx import stock
         import mplfinance as mpf
+        import FinanceDataReader as fdr
+        import pandas as pd
+
         kst = pytz.timezone('Asia/Seoul')
         today = datetime.datetime.now(kst)
-        if today.weekday() == 5: today -= datetime.timedelta(days=1)
-        elif today.weekday() == 6: today -= datetime.timedelta(days=2)
         date_str = today.strftime("%Y%m%d")
-        df_net_buy = stock.get_market_net_purchases_of_equities_by_ticker(date_str, date_str, "KOSPI", "외국인")
-        days_back = 1
-        while df_net_buy.empty and days_back <= 10:
-            check_date = today - datetime.timedelta(days=days_back)
-            date_str = check_date.strftime("%Y%m%d")
-            df_net_buy = stock.get_market_net_purchases_of_equities_by_ticker(date_str, date_str, "KOSPI", "외국인")
-            days_back += 1
-        if df_net_buy.empty:
-            return "현재 한국거래소(KRX) 서버 점검으로 인해 순매수 데이터를 불러올 수 없습니다."
-        top20 = df_net_buy.sort_values(by="순매수거래대금", ascending=False).head(20)
-        result_text = f"🔥 [{date_str}] 외국인 순매수 상위 20선 🔥\\n\\n"
-        for i, ticker in enumerate(top20.index):
-            name = top20.loc[ticker, "종목명"]
-            money_억원 = top20.loc[ticker, "순매수거래대금"] // 100000000
-            result_text += f"{i+1}위. {name} ({money_억원:,}억)\\n"
-        top1_ticker = top20.index[0]
-        top1_name = top20.loc[top1_ticker, "종목명"]
-        start_date = (datetime.datetime.now(kst) - datetime.timedelta(days=90)).strftime("%Y%m%d")
-        ohlcv = stock.get_market_ohlcv(start_date, date_str, top1_ticker)
-        if not ohlcv.empty:
-            ohlcv.index.name = 'Date'
-            ohlcv.rename(columns={'시가':'Open', '고가':'High', '저가':'Low', '종가':'Close', '거래량':'Volume'}, inplace=True)
-            chart_filename = f"chart_{top1_ticker}.png"
-            mpf.plot(ohlcv, type='candle', mav=(5, 20), volume=True, savefig=chart_filename, style='yahoo', title=f"{top1_name} (No.1 Foreign Net Buy)")
-            return f"{result_text}\\n💡 외국인 순매수 1위 종목 '{top1_name}'의 최근 3개월 차트를 첨부합니다.\\n[IMAGE_PATH:{chart_filename}]"
-        return f"{result_text}\\n(1위 종목 차트 데이터는 부족하여 텍스트만 전송합니다.)"
+
+        df = _naver_net_buy_list('9000', '01', 'buy')
+        if df is None or df.empty:
+            return "현재 외국인 순매수 데이터를 불러올 수 없습니다. (네이버 Finance 조회 실패)"
+
+        result_text = f"🔥 [{date_str}] 외국인 순매수 상위 {len(df)}선 🔥\n\n"
+        for i, row in df.iterrows():
+            name = row['종목명']
+            amount = row.get('금액', 0)
+            if pd.notna(amount):
+                result_text += f"{i+1}위. {name} ({int(amount):,}백만원)\n"
+            else:
+                result_text += f"{i+1}위. {name}\n"
+
+        # 1위 종목 차트 (FDR로 주가 조회)
+        top1_name = df.iloc[0]['종목명']
+        try:
+            # 네이버에서 종목 코드 조회
+            listing = fdr.StockListing('KOSPI')
+            match = listing[listing['Name'] == top1_name]
+            if match.empty:
+                listing2 = fdr.StockListing('KOSDAQ')
+                match = listing2[listing2['Name'] == top1_name]
+            if not match.empty:
+                top1_ticker = match.iloc[0]['Code']
+                start_date = (today - datetime.timedelta(days=90)).strftime("%Y-%m-%d")
+                ohlcv = fdr.DataReader(top1_ticker, start_date)
+                if not ohlcv.empty and len(ohlcv) > 5:
+                    chart_filename = f"chart_{top1_ticker}.png"
+                    mpf.plot(ohlcv, type='candle', mav=(5, 20), volume=True,
+                             savefig=chart_filename, style='yahoo',
+                             title=f"{top1_name} (No.1 Foreign Net Buy)")
+                    return (f"{result_text}\n💡 외국인 순매수 1위 종목 '{top1_name}'의 "
+                            f"최근 3개월 차트를 첨부합니다.\n[IMAGE_PATH:{chart_filename}]")
+        except Exception:
+            logger.exception("get_foreign_net_buy 차트 생성 실패")
+        return f"{result_text}\n(1위 종목 차트 데이터를 가져올 수 없습니다.)"
     except Exception:
         logger.exception("get_foreign_net_buy 예외")
         return "데이터 조회 실패"
@@ -442,7 +477,13 @@ def _parse_ollama_response(r) -> str:
         return raw_text
 
 
-def call_mistral_only(prompt: str, system: str = "당신은 한국어로 답변하는 AI 전문가입니다.") -> str:
+def call_mistral_only(prompt: str, system: str = """당신은 친근한 한국어 AI 어시스턴트입니다.
+- 인사("안녕", "하이", "ㅎㅇ" 등)나 짧은 잡담에는 짧게 인사나 잡담으로만 답하세요. 절대 분석하거나 설명하지 마세요.
+- 질문이면 정확하고 간결하게 답하세요.
+- "장"은 한국 주식시장(코스피/코스닥)을 의미합니다.
+- 실시간 데이터(주가, 순매수, 뉴스)가 없으면 절대 지어내지 말고 "실시간 데이터가 없습니다"라고만 답하세요.
+- 불필요한 설명·어원·역사 분석 금지.
+- 답변은 항상 한국어로 작성하세요.""") -> str:
     """
     mistral-small:24b 단독 호출. 3회 재시도 후 최종 실패 시 안내 메시지 반환.
     다른 모델로의 폴백은 없음.
@@ -563,18 +604,62 @@ def ask_ai(session_id, user_input):
     past_messages = history[-10:] if len(history) > 0 else []
     chat_history_str = "\\n".join(past_messages)
 
-    # 4) 도구(주가/뉴스/순매수) 실행 로직 — 자동 검색 모드 v2
-    tool_info = []
-    q = user_input.lower()
+    # 3-0) 보고서 재요청 처리
+    _req = user_input.strip()
+    if any(k in _req for k in ["장 마감", "마감 보고서", "마감 AI"]) and any(k in _req for k in ["다시", "올려", "줘", "보여"]):
+        net_buy = get_foreign_net_buy("순매수")
+        img = None
+        if "[IMAGE_PATH:" in (net_buy or ""):
+            s = net_buy.find("[IMAGE_PATH:") + 12
+            e = net_buy.find("]", s)
+            img = net_buy[s:e]
+            net_buy = net_buy[:s].strip()
+        px = perplexica_search("오늘 증시 마감 시황 뉴스")
+        nv = naver_news("증시 마감 시황")
+        news_part = px if (px and "찾지 못" not in px) else (nv or "")
+        parts = []
+        if net_buy and "서버 점검" not in net_buy:
+            parts.append(net_buy)
+        if news_part:
+            summary = call_mistral_only(
+                f"다음 증시 뉴스를 2줄로 요약:\n\n{news_part}",
+                system="증시 뉴스 요약 전문가. 핵심만 2줄 한국어로."
+            )
+            parts.append(f"📰 오늘 증시 뉴스:\n{summary}")
+        reply = "📊 [장 마감 AI 요약 보고서]\n\n" + ("\n\n".join(parts) if parts else "현재 데이터를 가져올 수 없습니다.")
+        return reply, img
 
-    # a) 주가/가격 키워드 (국내+해외) — 30개
-    PRICE_KEYWORDS = [
-        "주가", "가격", "얼마", "증권", "시세", "종가", "시가", "开盘",
-        "차트", "등락", "수익률", "투자", "매수", "매도", "포트폴리오",
-        "상장", "코스피", "코스닥", "etf", "지수", "배당", "per", "pbr",
-        "52주", "고가", "저가", "거래량", "시총", "stock", "price"
-    ]
-    if any(k in q for k in PRICE_KEYWORDS):
+    if any(k in _req for k in ["장 시작", "시작 전", "AI 프리뷰", "프리뷰"]) and any(k in _req for k in ["다시", "올려", "줘", "보여"]):
+        px = perplexica_search("오늘 주요 경제 뉴스 증시 전망")
+        nv = naver_news("경제 증시 뉴스")
+        news = px if (px and "찾지 못" not in px) else (nv or "현재 뉴스를 가져올 수 없습니다.")
+        news_text = news[:800]
+        summary = call_mistral_only(f"다음 뉴스를 3줄로 요약:\n\n{news_text}", system="증시 뉴스 요약 전문가. 핵심만 3줄 한국어로.")
+        return f"🌅 [장 시작 전 AI 프리뷰]\n\n{summary}", None
+
+    # 3-1) 단순 인사 즉시 처리 — 나머지는 LLM이 판단
+    _raw = user_input.strip().lower().rstrip("?!. ~ㅋㅎ")
+    _greet_map = {
+        "안녕": "안녕하세요! 😊", "안녕하세요": "안녕하세요! 😊",
+        "안녕하십니까": "안녕하세요! 😊", "안뇽": "안녕하세요! 😊",
+        "ㅎㅇ": "안녕하세요! 😊",
+        "하이": "안녕하세요! 😄", "hi": "안녕하세요! 😄",
+        "hello": "안녕하세요! 😄", "헬로": "안녕하세요! 😄",
+        "잘자": "잘 자요! 🌙", "잘자요": "잘 자요! 🌙",
+        "굿나잇": "잘 자요! 🌙", "ㅂㅂ": "잘 자요! 🌙",
+        "굿모닝": "좋은 아침이에요! ☀️", "좋은아침": "좋은 아침이에요! ☀️",
+    }
+    if _raw in _greet_map:
+        reply = _greet_map[_raw]
+        history.add_user_message(user_input)
+        history.add_ai_message(reply)
+        return reply, None
+
+    # 4) 도구(주가/뉴스/순매수) 실행 로직
+    tool_info = []  # 여기에 실제 결과를 모음
+
+    # a) 주가/가격/얼마 관련 키워드면 도구 호출
+    if any(k in user_input.lower() for k in ["주가", "가격", "얼마", "증권", "시세", "开盘", "종가", "시가"]):
         overseas = stock_price_overseas(user_input)
         korea = korea_invest_stock(user_input)
         if overseas:
@@ -582,99 +667,57 @@ def ask_ai(session_id, user_input):
         if korea:
             tool_info.append("🇰🇷 국내 주가: " + korea)
 
-    # b) 뉴스/검색/동향 키워드 — 20개
-    NEWS_KEYWORDS = [
-        "뉴스", "검색", "관련", "최신", "동향", "트렌드", "이슈",
-        "소식", "업데이트", "분석", "전망", "예측", "보고서", "리포트",
-        "공시", "실적", "발표", "발행", "공매도", "news"
-    ]
-    if any(k in q for k in NEWS_KEYWORDS):
-        news = naver_news(user_input)
-        if news:
-            tool_info.append("📰 뉴스: " + news)
+    # b) 뉴스/검색/related 정보 요청이면
+    search_triggered = any(k in user_input.lower() for k in ["뉴스", "검색", "관련", "최신", "오늘", "동향", "전망", "분석"])
+    if search_triggered:
+        # 1순위: Perplexica (AI 검색 - 가장 정확)
+        perplexica_result = perplexica_search(user_input)
+        if perplexica_result and perplexica_result != "검색 결과를 찾지 못했습니다.":
+            tool_info.append("🔍 Perplexica AI 검색:\n" + perplexica_result)
+        else:
+            # 2순위: 네이버 뉴스 + SearXNG 폴백
+            news = naver_news(user_input)
+            if news:
+                tool_info.append("📰 네이버 뉴스: " + news)
+            web_result = search_and_summarize(user_input)
+            if web_result and web_result != "검색 결과가 없습니다.":
+                tool_info.append("🌐 SearXNG 웹 검색: " + web_result)
 
-    # c) 순매수/수급 키워드 — 10개
-    FLOW_KEYWORDS = [
-        "순매수", "순매매", "수급", "기관매수", "외국인매수",
-        "기관순매수", "외인", "프로그램매수", "매수세", "매도세"
-    ]
-    if any(k in q for k in FLOW_KEYWORDS):
+        # 검색 트리거됐는데 결과가 하나도 없으면 명시적 안내
+        if not tool_info:
+            tool_info.append(
+                "⚠️ 실시간 검색 불가\n"
+                "- Perplexica(포트 3001) 또는 SearXNG(포트 8080)가 응답하지 않습니다.\n"
+                "- 확인 방법: docker compose ps\n"
+                "- 재시작 방법: docker compose up -d\n"
+                "최신 정보가 필요한 질문에는 답변드리기 어렵습니다."
+            )
+
+    # c) 외국인/기관/순매수 요청이면
+    if "순매수" in user_input.lower() or "순매매" in user_input.lower():
         fnb = get_foreign_net_buy(user_input)
         if fnb:
             tool_info.append("📈 순매수/매매 동향: " + fnb)
 
-    # d) 시황/프리뷰 키워드 — 15개 → SearXNG + pykrx
-    PREVIEW_KEYWORDS = [
-        "장시작", "장마감", "프리뷰", "ai 프리뷰", "오늘 전망",
-        "장전", "장후", "시황", "market preview", "개장", "폐장",
-        "선물", "옵션", "야간선물", "vix"
-    ]
-    if any(k in q for k in PREVIEW_KEYWORDS):
-        preview = get_market_preview(user_input)
-        if preview:
-            tool_info.append("🗞️ 시황/프리뷰: " + preview)
-
-    # e) 글로벌 주식/지수/암호화폐/경제지표 키워드 — 40개 → Perplexica
-    GLOBAL_KEYWORDS = [
-        # 미국 개별주
-        "테슬라", "tsla", "애플", "aapl", "구글", "google", "googl", "알파벳",
-        "엔비디아", "nvda", "아마존", "amzn", "마이크로소프트", "msft",
-        "메타", "meta", "넷플릭스", "nflx", "팔란티어", "pltr",
-        # 지수
-        "나스닥", "nasdaq", "s&p", "s&p500", "다우", "dow", "러셀", "russell",
-        "해외주식", "미국주식", "글로벌", "월스트리트", "뉴욕증시",
-        # 암호화폐
-        "비트코인", "bitcoin", "btc", "이더리움", "ethereum", "eth",
-        "리플", "xrp", "코인", "crypto", "가상화폐",
-        # 경제지표
-        "금리", "환율", "달러", "엔화", "유로", "인플레이션", "cpi", "gdp",
-        "연준", "fed", "fomc", "금값", "유가", "wti"
-    ]
-    if any(k in q for k in GLOBAL_KEYWORDS):
-        perp = perplexica_search(user_input, focus_mode='webSearch')
-        if not perp:
-            perp = search_and_summarize(user_input)
-        if perp:
-            tool_info.append("🌍 글로벌 주식/지수: " + perp)
-
-    # f) 키워드 미매칭 → LLM 검색 필요 여부 판단
-    if not tool_info:
-        intent_prompt = (
-            "다음 질문이 주식/금융/경제/뉴스/시황/투자에 관한 것이면 YES, "
-            "일상 대화/잡담이면 NO 한 단어만 답하라.\n질문: " + user_input[:120]
-        )
-        try:
-            intent = call_mistral_only(intent_prompt).strip().upper()[:10]
-            if "YES" in intent:
-                perp = perplexica_search(user_input, focus_mode='webSearch')
-                if not perp:
-                    perp = search_and_summarize(user_input)
-                if perp:
-                    tool_info.append("🔍 AI 자동검색: " + perp)
-        except Exception:
-            logger.exception("intent detection 실패")
-
-    # g) 50% 확률 Perplexica 폴백 (모든 질문 대상)
-    if not tool_info and random.random() < 0.5:
-        try:
-            perp = perplexica_search(user_input, focus_mode='webSearch')
-            if not perp:
-                perp = search_and_summarize(user_input)
-            if perp:
-                tool_info.append("🎲 검색 보강: " + perp)
-        except Exception:
-            logger.exception("50% 폴백 Perplexica 실패")
-
-    # 5) LLM 호출
+    # 5) LLM 호출 (이 부분이 핵심)
     try:
         if tool_info:
-            tool_str = "\n\n".join(tool_info)
-            prompt = (
-                f"현재 시각: {current_time_str}\n\n"
-                f"[실시간 데이터]\n{tool_str}\n\n"
-                f"사용자 질문: {user_input}\n\n"
-                "위 실시간 데이터를 바탕으로 핵심만 한국어로 답변:"
-            )
+            # 검색 모드: 도구가 가져온 정보 + LLM 정리
+            tool_str = "\n".join(tool_info)
+            prompt = f"""현재 시각: {current_time_str}
+
+사용자 핵심 정보:
+{my_facts}
+
+이전 대화:
+{chat_history_str}
+
+[수집된 도구 정보]
+{tool_str}
+
+사용자 질문: {user_input}
+
+위 도구 정보를 활용하여 한국어로 답변. 단, 도구 정보에 관련 내용이 없으면 "실시간 검색 결과에 해당 정보가 없습니다. 검색 엔진을 확인해주세요." 라고 안내:"""
             answer = call_qwen(prompt)
         else:
             # 일반 대화 모드
@@ -689,7 +732,11 @@ def ask_ai(session_id, user_input):
 
 질문: {user_input}
 
-응답: 위 질문에 대해 자연스럽게 한국어로 답변하라.
+응답 규칙:
+- 인사말("안녕", "하이", "잘자" 등)에는 짧은 인사로만 답할 것
+- 일상 대화는 간결하게, 불필요한 설명·어원·역사 분석 금지
+- 사실 기반 질문은 학습 데이터 기준으로 답하되 최신 정보는 모를 수 있다고 밝힐 것
+- 자연스러운 한국어로 답변할 것
             """
             answer = call_qwen(prompt)
 
@@ -729,17 +776,56 @@ def auto_report_scheduler():
             now = datetime.datetime.now(kst)
             if now.weekday() < 5:
                 if now.hour == 8 and now.minute == 40 and last_run_time != "morning":
-                    prompt = "오늘 장 시작 전 확인할만한 최신 경제 뉴스를 검색해서 요약해줘."
-                    reply_text, _ = ask_ai("auto_scheduler", prompt)
-                    requests.post(f"{base_url}/sendMessage", json={"chat_id": CHAT_ID, "text": f"🌅 [장 시작 전 AI 프리뷰]\\n\\n{reply_text}"})
+                    _np = {"http": None, "https": None}
+                    # 뉴스 직접 수집 후 LLM 요약
+                    news_data = []
+                    px = perplexica_search("오늘 주요 경제 뉴스 증시 전망")
+                    if px and "찾지 못" not in px:
+                        news_data.append(px)
+                    nv = naver_news("경제 증시 뉴스")
+                    if nv:
+                        news_data.append(nv)
+                    if news_data:
+                        news_text = "\n".join(news_data[:2])
+                        summary = call_mistral_only(
+                            f"다음 뉴스를 3줄로 요약해줘:\n\n{news_text}",
+                            system="뉴스 요약 전문가. 핵심만 3줄 한국어로."
+                        )
+                    else:
+                        summary = "현재 검색 서버(Perplexica/SearXNG)가 응답하지 않습니다.\n`docker compose up -d` 로 재시작해보세요."
+                    requests.post(f"{base_url}/sendMessage", json={"chat_id": CHAT_ID, "text": f"🌅 [장 시작 전 AI 프리뷰]\n\n{summary}"}, proxies=_np)
                     last_run_time = "morning"
                 elif now.hour == 16 and now.minute == 0 and last_run_time != "afternoon":
-                    prompt = "오늘 외국인 순매수 1위 종목을 차트와 함께 확인하고, 최신 증시 뉴스를 요약해줘."
-                    reply_text, image_path = ask_ai("auto_scheduler", prompt)
-                    requests.post(f"{base_url}/sendMessage", json={"chat_id": CHAT_ID, "text": f"📊 [장 마감 AI 요약 보고서]\\n\\n{reply_text}"})
+                    _np = {"http": None, "https": None}
+                    # 순매수 직접 수집
+                    net_buy = get_foreign_net_buy("순매수")
+                    image_path = None
+                    if "[IMAGE_PATH:" in (net_buy or ""):
+                        start = net_buy.find("[IMAGE_PATH:") + 12
+                        end = net_buy.find("]", start)
+                        image_path = net_buy[start:end]
+                        net_buy = net_buy[:start].strip()
+                    # 뉴스 수집
+                    px = perplexica_search("오늘 증시 마감 시황 뉴스")
+                    nv = naver_news("증시 마감 시황")
+                    news_part = px if (px and "찾지 못" not in px) else (nv or "")
+                    # 최종 보고서 조합
+                    parts = []
+                    if net_buy and "서버 점검" not in net_buy:
+                        parts.append(net_buy)
+                    elif net_buy:
+                        parts.append("⚠️ KRX 데이터 조회 실패 (장 마감 전이거나 서버 점검 중)")
+                    if news_part:
+                        summary = call_mistral_only(
+                            f"다음 증시 뉴스를 2줄로 요약:\n\n{news_part}",
+                            system="증시 뉴스 요약 전문가. 핵심만 2줄 한국어로."
+                        )
+                        parts.append(f"📰 오늘 증시 뉴스:\n{summary}")
+                    reply_text = "\n\n".join(parts) if parts else "데이터 수집 실패. 검색 서버 상태를 확인해주세요."
+                    requests.post(f"{base_url}/sendMessage", json={"chat_id": CHAT_ID, "text": f"📊 [장 마감 AI 요약 보고서]\n\n{reply_text}"}, proxies=_np)
                     if image_path and os.path.exists(image_path):
                         with open(image_path, "rb") as photo:
-                            requests.post(f"{base_url}/sendPhoto", data={"chat_id": CHAT_ID}, files={"photo": photo})
+                            requests.post(f"{base_url}/sendPhoto", data={"chat_id": CHAT_ID}, files={"photo": photo}, proxies=_np)
                         os.remove(image_path)
                     last_run_time = "afternoon"
             if now.hour == 0 and now.minute == 0:
@@ -749,29 +835,105 @@ def auto_report_scheduler():
         time.sleep(30)
 
 
+def handle_mobile_command(cmd):
+    """모바일 제어 명령어 처리 (/restart /update /status /logs /smart)"""
+    cmd = cmd.strip()
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    log_path = os.path.join(script_dir, "proxy_v53.log")
+
+    if cmd == "/status":
+        try:
+            r = requests.get("http://localhost:11435/health", timeout=3, proxies={"http": None, "https": None})
+            health = "✅ OK" if r.status_code == 200 else f"❌ {r.status_code}"
+        except Exception:
+            health = "❌ 응답없음"
+        db = "✅ 연결됨" if get_db_pool() else "❌ 연결안됨"
+        kst = pytz.timezone('Asia/Seoul')
+        now = datetime.datetime.now(kst).strftime("%Y-%m-%d %H:%M:%S")
+        thread_count = len(threading.enumerate())
+        return f"📊 [서버 상태] {now}\n\n🌐 Flask: {health}\n🗄️ DB: {db}\n🧵 스레드: {thread_count}개"
+
+    elif cmd == "/logs":
+        try:
+            result = subprocess.run(["tail", "-20", log_path], capture_output=True, text=True, timeout=5)
+            logs = result.stdout.strip()
+            return f"📋 [최근 로그]\n\n{logs[-3500:]}" if logs else "📋 로그 없음"
+        except Exception as e:
+            return f"❌ 로그 읽기 실패: {e}"
+
+    elif cmd == "/smart":
+        try:
+            result = get_foreign_net_buy("순매수 TOP10")
+            if "[IMAGE_PATH:" in result:
+                result = result.split("[IMAGE_PATH:")[0].strip()
+            lines = result.split("\n")
+            top10, count = [], 0
+            for line in lines:
+                top10.append(line)
+                if "위." in line:
+                    count += 1
+                    if count >= 10:
+                        break
+            return "\n".join(top10)
+        except Exception as e:
+            return f"❌ 순매수 조회 실패: {e}"
+
+    elif cmd == "/update":
+        try:
+            result = subprocess.run(
+                ["git", "-C", script_dir, "pull", "origin", "claude/search-proxy-v53"],
+                capture_output=True, text=True, timeout=30
+            )
+            output = (result.stdout + result.stderr).strip()
+            return f"🔄 [git pull 결과]\n\n{output[:1000]}"
+        except Exception as e:
+            return f"❌ git pull 실패: {e}"
+
+    elif cmd == "/restart":
+        def do_restart():
+            time.sleep(1)
+            subprocess.run(
+                ["git", "-C", script_dir, "pull", "origin", "claude/search-proxy-v53"],
+                capture_output=True, timeout=30
+            )
+            os.execv(sys.executable, [sys.executable] + sys.argv)
+        threading.Thread(target=do_restart, daemon=False).start()
+        return "🔄 git pull 후 재시작합니다..."
+
+    return None
+
+
 def handle_tg():
     last_id = 0
     base_url = f"https://api.telegram.org/bot{TOKEN_RAW}"
     logger.info("텔레그램 감시 엔진 시작")
     while True:
         try:
-            res = requests.get(f"{base_url}/getUpdates", params={"offset": last_id+1, "timeout": 10}, timeout=15).json()
+            _no_proxy = {"http": None, "https": None}
+            res = requests.get(f"{base_url}/getUpdates", params={"offset": last_id+1, "timeout": 10}, timeout=15, proxies=_no_proxy).json()
             if res.get("ok") and res.get("result"):
                 for up in res["result"]:
                     last_id = up["update_id"]
                     msg = up.get("message", {})
                     if str(msg.get("chat", {}).get("id", "")) == CHAT_ID and "text" in msg:
                         msg_text = msg["text"]
+                        # 모바일 제어 명령어
+                        mobile_cmds = ("/restart", "/update", "/status", "/logs", "/smart")
+                        if msg_text.strip().startswith(mobile_cmds):
+                            reply_text = handle_mobile_command(msg_text.strip())
+                            if reply_text:
+                                requests.post(f"{base_url}/sendMessage", json={"chat_id": CHAT_ID, "text": reply_text}, proxies=_no_proxy)
+                                continue
                         # /mock 명령어는 모의투자 핸들러로 라우팅
                         if msg_text.strip().startswith("/mock"):
                             reply_text = parse_mock_command(msg_text, oracle_pool=get_db_pool())
-                            requests.post(f"{base_url}/sendMessage", json={"chat_id": CHAT_ID, "text": reply_text})
+                            requests.post(f"{base_url}/sendMessage", json={"chat_id": CHAT_ID, "text": reply_text}, proxies=_no_proxy)
                             continue
                         reply_text, image_path = ask_ai(CHAT_ID, msg_text)
-                        requests.post(f"{base_url}/sendMessage", json={"chat_id": CHAT_ID, "text": reply_text})
+                        requests.post(f"{base_url}/sendMessage", json={"chat_id": CHAT_ID, "text": reply_text}, proxies=_no_proxy)
                         if image_path and os.path.exists(image_path):
                             with open(image_path, "rb") as photo:
-                                requests.post(f"{base_url}/sendPhoto", data={"chat_id": CHAT_ID}, files={"photo": photo})
+                                requests.post(f"{base_url}/sendPhoto", data={"chat_id": CHAT_ID}, files={"photo": photo}, proxies=_no_proxy)
                             os.remove(image_path)
         except Exception:
             logger.exception("handle_tg 루프 예외")
@@ -868,116 +1030,6 @@ def init_stock_codes_db():
                 logger.exception("mock_smart_flows 테이블 생성 실패 (무시)")
 
 # -------------------------
-# 스마트머니 순매수 TOP100 수집 (기관/외국인)
-def collect_smart_flows(date_str=None):
-    """KRX API로 기관합계/외국인합계 순매수 TOP100 수집 후 DB 저장"""
-    from pykrx import stock as krx_stock
-    kst = pytz.timezone('Asia/Seoul')
-    if not date_str:
-        d = datetime.datetime.now(kst)
-        if d.weekday() == 5:
-            d -= datetime.timedelta(days=1)
-        elif d.weekday() == 6:
-            d -= datetime.timedelta(days=2)
-        date_str = d.strftime('%Y%m%d')
-
-    results = []
-    for investor_type in ["기관합계", "외국인합계"]:
-        try:
-            df = krx_stock.get_market_net_purchases_of_equities_by_ticker(
-                date_str, date_str, "KOSPI", investor_type
-            )
-            days_back = 1
-            while df.empty and days_back <= 10:
-                d2 = datetime.datetime.strptime(date_str, '%Y%m%d') - datetime.timedelta(days=days_back)
-                df = krx_stock.get_market_net_purchases_of_equities_by_ticker(
-                    d2.strftime('%Y%m%d'), d2.strftime('%Y%m%d'), 'KOSPI', investor_type
-                )
-                days_back += 1
-            if df.empty:
-                logger.warning("collect_smart_flows: %s 데이터 없음", investor_type)
-                continue
-            top100 = df.sort_values(by="순매수거래대금", ascending=False).head(100)
-            for rank, ticker in enumerate(top100.index, 1):
-                results.append({
-                    "date_str": date_str,
-                    "investor_type": investor_type,
-                    "rank_no": rank,
-                    "ticker": ticker,
-                    "name": str(top100.loc[ticker, "종목명"]),
-                    "net_buy_amount": int(top100.loc[ticker, "순매수거래대금"])
-                })
-        except Exception:
-            logger.exception("collect_smart_flows: %s 수집 실패", investor_type)
-
-    if not results:
-        return False, "수집된 데이터 없음"
-    p = get_db_pool()
-    if not p:
-        return False, "DB 연결 실패"
-    try:
-        with p.acquire() as conn:
-            with conn.cursor() as cur:
-                cur.execute("DELETE FROM mock_smart_flows WHERE date_str = :1", [date_str])
-                cur.execute("DELETE FROM mock_smart_flows WHERE collected_at < ADD_MONTHS(SYSTIMESTAMP, -6)")
-                for row in results:
-                    cur.execute(
-                        "INSERT INTO mock_smart_flows "
-                        "(date_str, investor_type, rank_no, ticker, name, net_buy_amount) "
-                        "VALUES (:1, :2, :3, :4, :5, :6)",
-                        [row["date_str"], row["investor_type"], row["rank_no"],
-                         row["ticker"], row["name"], row["net_buy_amount"]]
-                    )
-                conn.commit()
-        logger.info("collect_smart_flows: %d건 저장 (date=%s)", len(results), date_str)
-        return True, f"{date_str} 기준 {len(results)}건 저장 완료"
-    except Exception:
-        logger.exception("collect_smart_flows DB 저장 실패")
-        return False, "DB 저장 실패"
-
-
-def get_smart_recommendations():
-    """최근 7일 기관+외국인 중복 TOP100 종목 중 TOP10 추천"""
-    p = get_db_pool()
-    if not p:
-        return None, "DB 연결 실패"
-    try:
-        with p.acquire() as conn:
-            with conn.cursor() as cur:
-                q7 = "SYSTIMESTAMP - INTERVAL '7' DAY"
-                cur.execute(
-                    "SELECT ticker, name, "
-                    "COUNT(DISTINCT date_str) AS days_count, "
-                    "COUNT(DISTINCT investor_type) AS investor_count, "
-                    "SUM(net_buy_amount) AS total_net_buy "
-                    "FROM mock_smart_flows "
-                    "WHERE collected_at >= " + q7 + " "
-                    "GROUP BY ticker, name "
-                    "HAVING COUNT(DISTINCT investor_type) >= 2 "
-                    "ORDER BY days_count DESC, total_net_buy DESC "
-                    "FETCH FIRST 10 ROWS ONLY"
-                )
-                rows = cur.fetchall()
-                if not rows:
-                    cur.execute(
-                        "SELECT ticker, name, "
-                        "COUNT(DISTINCT date_str) AS days_count, "
-                        "COUNT(DISTINCT investor_type) AS investor_count, "
-                        "SUM(net_buy_amount) AS total_net_buy "
-                        "FROM mock_smart_flows "
-                        "WHERE collected_at >= " + q7 + " "
-                        "GROUP BY ticker, name "
-                        "ORDER BY days_count DESC, total_net_buy DESC "
-                        "FETCH FIRST 10 ROWS ONLY"
-                    )
-                    rows = cur.fetchall()
-                return rows, None
-    except Exception:
-        logger.exception("get_smart_recommendations 오류")
-        return None, "DB 조회 실패"
-
-
-# -------------------------
 # 실시간 검색 유틸 함수
 
 def searxng_search(query: str, categories: str = "general", max_results: int = 5) -> list:
@@ -1004,102 +1056,90 @@ def searxng_search(query: str, categories: str = "general", max_results: int = 5
         return []
 
 
-def get_market_preview(query: str) -> str:
-    """장시작/장마감/시황 키워드 → SearXNG 실시간 뉴스 + pykrx 순매수 TOP5 반환"""
+# Perplexica 프로바이더 UUID 캐시 (컨테이너 재시작 시 갱신)
+_perplexica_provider_cache = {"ollama_id": None, "trans_id": None}
+
+
+def _get_perplexica_providers() -> tuple:
+    """Perplexica /api/config에서 Ollama/Transformers 프로바이더 UUID를 가져온다."""
+    global _perplexica_provider_cache
+    if _perplexica_provider_cache["ollama_id"]:
+        return _perplexica_provider_cache["ollama_id"], _perplexica_provider_cache["trans_id"]
     try:
-        from pykrx import stock as krx_stock
-        kst = pytz.timezone('Asia/Seoul')
-        d = datetime.datetime.now(kst)
-        if d.weekday() == 5:
-            d -= datetime.timedelta(days=1)
-        elif d.weekday() == 6:
-            d -= datetime.timedelta(days=2)
-        date_str = d.strftime('%Y%m%d')
-
-        # SearXNG 실시간 뉴스 검색
-        search_q = query if query else '오늘 주식시장 시황 전망'
-        news_results = searxng_search(search_q, categories='news', max_results=5)
-        if not news_results:
-            news_results = searxng_search('한국 증시 시황', categories='general', max_results=5)
-        news_text = ''
-        if news_results:
-            news_text = '\n'.join(
-                f"[{i+1}] {r['title']} — {r['content'][:80]}"
-                for i, r in enumerate(news_results)
-            )
-
-        # pykrx 기관+외국인 순매수 TOP5
-        krx_text = ''
-        try:
-            lines = []
-            for investor_type in ['기관합계', '외국인합계']:
-                df = krx_stock.get_market_net_purchases_of_equities_by_ticker(
-                    date_str, date_str, 'KOSPI', investor_type
-                )
-                if not df.empty:
-                    top5 = df.sort_values(by='순매수거래대금', ascending=False).head(5)
-                    label = '기관' if '기관' in investor_type else '외국인'
-                    items = ', '.join(
-                        f"{top5.loc[t, '종목명']}({top5.loc[t, '순매수거래대금']//100000000:,}억)"
-                        for t in top5.index
-                    )
-                    lines.append(f'{label} TOP5: {items}')
-            krx_text = '\n'.join(lines)
-        except Exception:
-            logger.exception('get_market_preview pykrx 실패')
-
-        parts = []
-        if news_text:
-            parts.append(f'📰 실시간 시황 뉴스:\n{news_text}')
-        if krx_text:
-            parts.append(f'📊 [{date_str}] 순매수 동향:\n{krx_text}')
-        return '\n\n'.join(parts) if parts else '시황 데이터를 가져올 수 없습니다.'
+        r = requests.get(f"{PERPLEXICA_URL}/api/config", timeout=10)
+        providers = r.json().get("values", {}).get("modelProviders", [])
+        ollama_id = trans_id = None
+        for p in providers:
+            if p.get("type") == "ollama":
+                ollama_id = p["id"]
+            elif p.get("type") == "transformers":
+                trans_id = p["id"]
+        _perplexica_provider_cache["ollama_id"] = ollama_id
+        _perplexica_provider_cache["trans_id"] = trans_id
+        return ollama_id, trans_id
     except Exception:
-        logger.exception('get_market_preview 예외')
-        return '시황 조회 실패'
+        return None, None
 
 
 def perplexica_search(query: str, focus_mode: str = "webSearch") -> str:
-    """Perplexica Backend API를 통해 AI 검색 응답을 받는다.
+    """Perplexica API를 통해 AI 검색 응답을 받는다.
     focus_mode: webSearch | academicSearch | writingAssistant | wolframAlphaSearch | youtubeSearch | redditSearch
     """
+    import uuid as _uuid
     try:
+        ollama_id, trans_id = _get_perplexica_providers()
+        if not ollama_id:
+            logger.warning("Perplexica 프로바이더 UUID 조회 실패")
+            return None
+        embed_id = trans_id or ollama_id
+        embed_key = "Xenova/all-MiniLM-L6-v2" if trans_id else QWEN_MODEL
         payload = {
             "chatModel": {
-                "provider": "ollama",
+                "providerId": ollama_id,
                 "model": QWEN_MODEL,
-                "customOpenAIBaseURL": f"http://{REMOTE_OLLAMA_IP}:11434",
-                "customOpenAIKey": "",
+                "key": QWEN_MODEL,
             },
             "embeddingModel": {
-                "provider": "ollama",
-                "model": "nomic-embed-text:latest",
+                "providerId": embed_id,
+                "model": "all-MiniLM-L6-v2" if trans_id else QWEN_MODEL,
+                "key": embed_key,
             },
             "optimizationMode": "speed",
             "focusMode": focus_mode,
-            "query": query,
+            "message": {
+                "content": query,
+                "messageId": str(_uuid.uuid4()),
+                "chatId": str(_uuid.uuid4()),
+            },
             "history": [],
         }
         r = requests.post(
             f"{PERPLEXICA_URL}/api/chat",
             json=payload,
-            timeout=60,
+            timeout=90,
         )
         r.raise_for_status()
-        # Perplexica는 NDJSON 스트림으로 응답
-        lines = r.text.strip().splitlines()
-        answer_parts = []
+        # 새 NDJSON 포맷 파싱: block/updateBlock/messageEnd
+        text_blocks = {}
         sources = []
-        for line in lines:
+        for line in r.text.strip().splitlines():
             try:
                 obj = json.loads(line)
-                if obj.get("type") == "response":
-                    answer_parts.append(obj.get("data", ""))
-                elif obj.get("type") == "sources":
-                    sources = obj.get("data", [])
+                t = obj.get("type")
+                if t == "block":
+                    b = obj["block"]
+                    if b["type"] == "text":
+                        text_blocks[b["id"]] = b.get("data", "")
+                    elif b["type"] == "source":
+                        sources = b.get("data", [])
+                elif t == "updateBlock":
+                    bid = obj["blockId"]
+                    for p in obj.get("patch", []):
+                        if p.get("op") == "replace" and p.get("path") == "/data":
+                            text_blocks[bid] = p["value"]
             except Exception:
                 continue
-        answer = "".join(answer_parts)
+        answer = list(text_blocks.values())[-1] if text_blocks else ""
         if sources:
             src_lines = "\n".join(
                 f"- [{s.get('metadata', {}).get('title', s.get('pageContent','')[:40])}]({s.get('metadata', {}).get('url', '')})"
@@ -1109,6 +1149,8 @@ def perplexica_search(query: str, focus_mode: str = "webSearch") -> str:
         return answer if answer else "검색 결과를 찾지 못했습니다."
     except Exception:
         logger.exception("Perplexica 검색 실패: %s", query)
+        # UUID 캐시 초기화 (다음 시도 시 재조회)
+        _perplexica_provider_cache["ollama_id"] = None
         return None
 
 
@@ -1211,6 +1253,122 @@ def search():
 
     return jsonify({"query": query, "answer": answer, "mode_used": mode_used})
 
+
+# -------------------------
+# 스마트머니 순매수 TOP100 수집 (기관/외국인)
+
+def collect_smart_flows(date_str=None):
+    """네이버 Finance에서 외국인/금융투자(기관proxy) 순매수 상위 수집 후 DB 저장"""
+    import datetime as _dt
+    kst = pytz.timezone('Asia/Seoul')
+    if not date_str:
+        d = _dt.datetime.now(kst)
+        if d.weekday() == 5:
+            d -= _dt.timedelta(days=1)
+        elif d.weekday() == 6:
+            d -= _dt.timedelta(days=2)
+        date_str = d.strftime('%Y%m%d')
+
+    # 네이버: 9000=외국인, 1000=금융투자(기관proxy)
+    investor_map = {"외국인합계": "9000", "기관합계": "1000"}
+    results = []
+    for investor_type, gubun in investor_map.items():
+        try:
+            df = _naver_net_buy_list(gubun, '01', 'buy')
+            if df is None or df.empty:
+                logger.warning("collect_smart_flows: %s 데이터 없음", investor_type)
+                continue
+            for rank, row in enumerate(df.itertuples(), 1):
+                name = str(row.종목명)
+                amount_mil = int(row.금액) if hasattr(row, '금액') and str(row.금액) not in ('nan','') else 0
+                results.append({
+                    "date_str": date_str,
+                    "investor_type": investor_type,
+                    "rank_no": rank,
+                    "ticker": name,   # 네이버는 코드 대신 이름 사용
+                    "name": name,
+                    "net_buy_amount": amount_mil * 1_000_000  # 백만원 → 원
+                })
+        except Exception:
+            logger.exception("collect_smart_flows: %s 수집 실패", investor_type)
+
+    if not results:
+        return False, "수집된 데이터 없음"
+    p = get_db_pool()
+    if not p:
+        return False, "DB 연결 실패"
+    try:
+        with p.acquire() as conn:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM mock_smart_flows WHERE date_str = :1", [date_str])
+                conn.commit()
+                cur.execute("DELETE FROM mock_smart_flows WHERE collected_at < ADD_MONTHS(SYSTIMESTAMP, -6)")
+                conn.commit()
+                for row in results:
+                    cur.execute(
+                        "INSERT INTO mock_smart_flows "
+                        "(date_str, investor_type, rank_no, ticker, name, net_buy_amount) "
+                        "VALUES (:1, :2, :3, :4, :5, :6)",
+                        [row["date_str"], row["investor_type"], row["rank_no"],
+                         row["ticker"], row["name"], row["net_buy_amount"]]
+                    )
+                conn.commit()
+        logger.info("collect_smart_flows: %d건 저장 (date=%s)", len(results), date_str)
+        return True, f"{date_str} 기준 {len(results)}건 저장 완료"
+    except Exception:
+        logger.exception("collect_smart_flows DB 저장 실패")
+        return False, "DB 저장 실패"
+
+
+def get_smart_recommendations():
+    """최근 7일 기관+외국인 중복 순매수 TOP10 추천"""
+    p = get_db_pool()
+    if not p:
+        return None, "DB 연결 실패"
+    try:
+        with p.acquire() as conn:
+            with conn.cursor() as cur:
+                # 기관+외국인 모두 등장한 종목 우선, 없으면 전체
+                cur.execute(
+                    "SELECT ticker, name, "
+                    "COUNT(DISTINCT date_str) AS days_count, "
+                    "COUNT(DISTINCT investor_type) AS investor_count, "
+                    "SUM(net_buy_amount) AS total_net_buy "
+                    "FROM mock_smart_flows "
+                    "WHERE collected_at >= SYSTIMESTAMP - INTERVAL '7' DAY "
+                    "GROUP BY ticker, name "
+                    "HAVING COUNT(DISTINCT investor_type) >= 2 "
+                    "ORDER BY days_count DESC, total_net_buy DESC "
+                    "FETCH FIRST 10 ROWS ONLY"
+                )
+                rows = cur.fetchall()
+                if not rows:
+                    cur.execute(
+                        "SELECT ticker, name, "
+                        "COUNT(DISTINCT date_str) AS days_count, "
+                        "COUNT(DISTINCT investor_type) AS investor_count, "
+                        "SUM(net_buy_amount) AS total_net_buy "
+                        "FROM mock_smart_flows "
+                        "WHERE collected_at >= SYSTIMESTAMP - INTERVAL '7' DAY "
+                        "GROUP BY ticker, name "
+                        "ORDER BY days_count DESC, total_net_buy DESC "
+                        "FETCH FIRST 10 ROWS ONLY"
+                    )
+                    rows = cur.fetchall()
+                return rows, None
+    except Exception:
+        logger.exception("get_smart_recommendations 오류")
+        return None, "DB 조회 실패"
+
+
+@app.route('/collect_smart', methods=['GET', 'POST'])
+def collect_smart():
+    """cron(15:10 / 18:40) 호출용 — 기관/외국인 순매수 TOP100 수집"""
+    date_str = request.args.get("date") or None
+    ok, msg = collect_smart_flows(date_str)
+    return jsonify({"ok": ok, "message": msg}), (200 if ok else 500)
+
+
 @app.route('/smart', methods=['GET'])
 def smart():
     """최근 7일 기관+외국인 중복 순매수 TOP10 추천"""
@@ -1231,14 +1389,6 @@ def smart():
             "total_net_buy_억": int(total_net_buy) // 100_000_000
         })
     return jsonify({"top10": result, "description": "최근 7일 기관+외국인 중복 순매수 TOP10"})
-
-
-@app.route('/collect_smart', methods=['GET', 'POST'])
-def collect_smart():
-    """cron(15:10 / 18:40) 호출용 — 기관/외국인 순매수 TOP100 수집"""
-    date_str = request.args.get("date") or None
-    ok, msg = collect_smart_flows(date_str)
-    return jsonify({"ok": ok, "message": msg}), (200 if ok else 500)
 
 
 # -------------------------
