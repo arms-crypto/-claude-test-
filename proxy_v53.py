@@ -568,6 +568,21 @@ def ask_ai(session_id, user_input):
     past_messages = history[-10:] if len(history) > 0 else []
     chat_history_str = "\\n".join(past_messages)
 
+    # 3-1) 단순 인사 즉시 처리 (LLM 호출 없이)
+    _greet_keywords = ["안녕", "하이", "hi", "hello", "헬로", "잘자", "굿나잇", "굿모닝", "좋은아침", "안뇽", "ㅎㅇ", "ㅂㅂ"]
+    _stripped = user_input.strip().lower().rstrip("?!. ")
+    if _stripped in _greet_keywords or _stripped in ["안녕하세요", "안녕하십니까"]:
+        greet_map = {
+            **{k: "안녕하세요! 😊" for k in ["안녕", "안녕하세요", "안녕하십니까", "안뇽", "ㅎㅇ"]},
+            **{k: "안녕하세요! 😄" for k in ["하이", "hi", "hello", "헬로"]},
+            **{k: "잘 자요! 🌙" for k in ["잘자", "굿나잇", "ㅂㅂ"]},
+            **{k: "좋은 아침이에요! ☀️" for k in ["굿모닝", "좋은아침"]},
+        }
+        reply = greet_map.get(_stripped, "안녕하세요! 😊")
+        history.add_user_message(user_input)
+        history.add_ai_message(reply)
+        return reply, None
+
     # 4) 도구(주가/뉴스/순매수) 실행 로직
     tool_info = []  # 여기에 실제 결과를 모음
 
