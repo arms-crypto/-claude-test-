@@ -690,16 +690,18 @@ def auto_report_scheduler():
             if now.weekday() < 5:
                 if now.hour == 8 and now.minute == 40 and last_run_time != "morning":
                     prompt = "오늘 장 시작 전 확인할만한 최신 경제 뉴스를 검색해서 요약해줘."
+                    _np = {"http": None, "https": None}
                     reply_text, _ = ask_ai("auto_scheduler", prompt)
-                    requests.post(f"{base_url}/sendMessage", json={"chat_id": CHAT_ID, "text": f"🌅 [장 시작 전 AI 프리뷰]\\n\\n{reply_text}"})
+                    requests.post(f"{base_url}/sendMessage", json={"chat_id": CHAT_ID, "text": f"🌅 [장 시작 전 AI 프리뷰]\\n\\n{reply_text}"}, proxies=_np)
                     last_run_time = "morning"
                 elif now.hour == 16 and now.minute == 0 and last_run_time != "afternoon":
+                    _np = {"http": None, "https": None}
                     prompt = "오늘 외국인 순매수 1위 종목을 차트와 함께 확인하고, 최신 증시 뉴스를 요약해줘."
                     reply_text, image_path = ask_ai("auto_scheduler", prompt)
-                    requests.post(f"{base_url}/sendMessage", json={"chat_id": CHAT_ID, "text": f"📊 [장 마감 AI 요약 보고서]\\n\\n{reply_text}"})
+                    requests.post(f"{base_url}/sendMessage", json={"chat_id": CHAT_ID, "text": f"📊 [장 마감 AI 요약 보고서]\\n\\n{reply_text}"}, proxies=_np)
                     if image_path and os.path.exists(image_path):
                         with open(image_path, "rb") as photo:
-                            requests.post(f"{base_url}/sendPhoto", data={"chat_id": CHAT_ID}, files={"photo": photo})
+                            requests.post(f"{base_url}/sendPhoto", data={"chat_id": CHAT_ID}, files={"photo": photo}, proxies=_np)
                         os.remove(image_path)
                     last_run_time = "afternoon"
             if now.hour == 0 and now.minute == 0:
@@ -783,7 +785,8 @@ def handle_tg():
     logger.info("텔레그램 감시 엔진 시작")
     while True:
         try:
-            res = requests.get(f"{base_url}/getUpdates", params={"offset": last_id+1, "timeout": 10}, timeout=15).json()
+            _no_proxy = {"http": None, "https": None}
+            res = requests.get(f"{base_url}/getUpdates", params={"offset": last_id+1, "timeout": 10}, timeout=15, proxies=_no_proxy).json()
             if res.get("ok") and res.get("result"):
                 for up in res["result"]:
                     last_id = up["update_id"]
@@ -795,18 +798,18 @@ def handle_tg():
                         if msg_text.strip().startswith(mobile_cmds):
                             reply_text = handle_mobile_command(msg_text.strip())
                             if reply_text:
-                                requests.post(f"{base_url}/sendMessage", json={"chat_id": CHAT_ID, "text": reply_text})
+                                requests.post(f"{base_url}/sendMessage", json={"chat_id": CHAT_ID, "text": reply_text}, proxies=_no_proxy)
                                 continue
                         # /mock 명령어는 모의투자 핸들러로 라우팅
                         if msg_text.strip().startswith("/mock"):
                             reply_text = parse_mock_command(msg_text, oracle_pool=get_db_pool())
-                            requests.post(f"{base_url}/sendMessage", json={"chat_id": CHAT_ID, "text": reply_text})
+                            requests.post(f"{base_url}/sendMessage", json={"chat_id": CHAT_ID, "text": reply_text}, proxies=_no_proxy)
                             continue
                         reply_text, image_path = ask_ai(CHAT_ID, msg_text)
-                        requests.post(f"{base_url}/sendMessage", json={"chat_id": CHAT_ID, "text": reply_text})
+                        requests.post(f"{base_url}/sendMessage", json={"chat_id": CHAT_ID, "text": reply_text}, proxies=_no_proxy)
                         if image_path and os.path.exists(image_path):
                             with open(image_path, "rb") as photo:
-                                requests.post(f"{base_url}/sendPhoto", data={"chat_id": CHAT_ID}, files={"photo": photo})
+                                requests.post(f"{base_url}/sendPhoto", data={"chat_id": CHAT_ID}, files={"photo": photo}, proxies=_no_proxy)
                             os.remove(image_path)
         except Exception:
             logger.exception("handle_tg 루프 예외")
