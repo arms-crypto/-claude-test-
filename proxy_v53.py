@@ -714,8 +714,9 @@ def auto_report_scheduler():
                     if nv:
                         news_data.append(nv)
                     if news_data:
+                        news_text = "\n".join(news_data[:2])
                         summary = call_mistral_only(
-                            f"다음 뉴스를 3줄로 요약해줘:\n\n{'\\n'.join(news_data[:2])}",
+                            f"다음 뉴스를 3줄로 요약해줘:\n\n{news_text}",
                             system="뉴스 요약 전문가. 핵심만 3줄 한국어로."
                         )
                     else:
