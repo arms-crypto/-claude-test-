@@ -15,7 +15,7 @@ APP_KEY    = "PSY9gMy15uipajb9qM25Cj1Uhf74FVu1cDyF"
 APP_SECRET = ("A/vwnErWUmOrZFUoJQ5bBS78WdY1lS6T6GaD5Hx1dNE+J3TTxTi1QwBvdFZuoKHWJ2nKEz+"
               "SaAmZmNikWH04Ge4Mm7up+/5JeAphHOXYld5nIbtehEmHMFcHVeB3EbNQem1pi2+0cVdyj6w7"
               "UzGJA+HqVRNFlPapifykRfPmf4Qf0IaIJdU=")
-KIS_URL    = "https://openapivts.koreainvestment.com:443"
+KIS_URL    = "https://openapi.koreainvestment.com:9443"
 
 _token_cache = {"token": None, "expires_at": 0}
 
@@ -29,6 +29,7 @@ def get_token() -> str:
             f"{KIS_URL}/oauth2/tokenP",
             json={"grant_type": "client_credentials", "appkey": APP_KEY, "appsecret": APP_SECRET},
             timeout=6,
+            proxies={"http": None, "https": None},
         )
         r.raise_for_status()
         data = r.json()
@@ -50,7 +51,7 @@ def _price_kis(code: str) -> int:
         "authorization": f"Bearer {token}",
         "appkey": APP_KEY,
         "appsecret": APP_SECRET,
-        "tr_id": "FHKST01010400",
+        "tr_id": "FHKST01010100",
     }
     try:
         r = requests.get(
@@ -58,6 +59,7 @@ def _price_kis(code: str) -> int:
             params={"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": code},
             headers=headers,
             timeout=8,
+            proxies={"http": None, "https": None},
         )
         r.raise_for_status()
         data = r.json()
@@ -74,8 +76,12 @@ def _price_yahoo(code: str) -> int:
         stock = yf.Ticker(f"{code}.KS")
         hist = stock.history(period="1d")
         if not hist.empty:
-            return int(hist["Close"].iloc[-1])
-        price = stock.info.get("regularMarketPrice") or stock.info.get("previousClose")
+            val = hist["Close"].iloc[-1]
+            # yfinance 버전에 따라 Series 반환 가능
+            if hasattr(val, "iloc"):
+                val = val.iloc[0]
+            return int(float(val))
+        price = stock.fast_info.get("lastPrice") or stock.info.get("regularMarketPrice") or stock.info.get("previousClose")
         if price:
             return int(price)
     except Exception:
@@ -89,9 +95,10 @@ def _price_naver(code: str) -> int:
             f"https://finance.naver.com/item/main.naver?code={code}",
             headers={"User-Agent": "Mozilla/5.0"},
             timeout=8,
+            proxies={"http": None, "https": None},
         )
         soup = BeautifulSoup(r.text, "html.parser")
-        tag = soup.select_one("#middle .no_today .blind")
+        tag = soup.select_one("#middle .no_today .blind") or soup.select_one(".no_today em.blind")
         if tag:
             return int(tag.text.strip().replace(",", ""))
     except Exception:
@@ -111,13 +118,28 @@ def resolve_code(name_or_code: str) -> tuple:
     """
     s = name_or_code.strip()
     if len(s) == 6 and s.isdigit():
-        return s, s
+        # 코드로 네이버 검색해서 종목명 확보
+        try:
+            r = requests.get(
+                f"https://finance.naver.com/item/main.naver?code={s}",
+                headers={"User-Agent": "Mozilla/5.0"},
+                timeout=8,
+                proxies={"http": None, "https": None},
+            )
+            from bs4 import BeautifulSoup as _BS
+            soup = _BS(r.text, "html.parser")
+            title = soup.select_one(".wrap_company h2 a")
+            name = title.text.strip() if title else s
+            return s, name
+        except Exception:
+            return s, s
     # 네이버 금융 검색
     try:
         r = requests.get(
             f"https://finance.naver.com/sise/sise_search.naver?query={s}",
             headers={"User-Agent": "Mozilla/5.0"},
             timeout=8,
+            proxies={"http": None, "https": None},
         )
         soup = BeautifulSoup(r.text, "html.parser")
         link = soup.select_one('a[href*="code="]')
