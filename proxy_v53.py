@@ -433,10 +433,48 @@ def korea_invest_stock(query: str) -> str:
 # -------------------------
 # mistral-small:24b 단독 사용 설정 (다른 모델 사용 불가)
 
-REMOTE_OLLAMA_IP = "221.144.111.116"
-QWEN_URL         = f"http://{REMOTE_OLLAMA_IP}:11434/api/chat"
-QWEN_MODEL       = "mistral-small:24b"   # 유일하게 허용된 모델
+REMOTE_OLLAMA_IP  = "221.144.111.116"
+QWEN_URL          = f"http://{REMOTE_OLLAMA_IP}:11434/api/chat"
+QWEN_MODEL        = "mistral-small:24b"   # 유일하게 허용된 모델
 MISTRAL_MAX_RETRY = 3
+
+# Wake on LAN 설정 (공유기 포트포워딩 UDP 9 → PC 필요)
+WOL_MAC     = "3C:7C:3F:F2:B0:41"
+WOL_IP      = REMOTE_OLLAMA_IP   # 공인 IP로 전송 (라우터가 PC로 전달)
+WOL_PORT    = 9
+WOL_SENT    = False   # 중복 전송 방지 플래그
+
+
+def send_wol():
+    """Wake on LAN 매직 패킷 전송."""
+    global WOL_SENT
+    try:
+        mac = WOL_MAC.replace(":", "").replace("-", "")
+        magic = bytes.fromhex("F" * 12 + mac * 16)
+        with __import__("socket").socket(__import__("socket").AF_INET, __import__("socket").SOCK_DGRAM) as s:
+            s.setsockopt(__import__("socket").SOL_SOCKET, __import__("socket").SO_BROADCAST, 1)
+            s.sendto(magic, (WOL_IP, WOL_PORT))
+        logger.info("WoL 매직패킷 전송 완료 → %s (MAC: %s)", WOL_IP, WOL_MAC)
+        WOL_SENT = True
+        return True
+    except Exception as e:
+        logger.error("WoL 전송 실패: %s", e)
+        return False
+
+
+def wait_for_ollama(timeout: int = 120, interval: int = 10) -> bool:
+    """Ollama가 응답할 때까지 대기. timeout초 내에 응답하면 True."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            r = requests.get(f"http://{REMOTE_OLLAMA_IP}:11434/api/tags", timeout=5)
+            if r.status_code == 200:
+                logger.info("Ollama 응답 확인 — PC 켜짐")
+                return True
+        except Exception:
+            pass
+        time.sleep(interval)
+    return False
 
 
 def _parse_ollama_response(r) -> str:
@@ -541,6 +579,8 @@ def call_mistral_only(prompt: str, system: str = _TOOL_SYSTEM, use_tools: bool =
         try:
             r = requests.post(QWEN_URL, json=payload, timeout=60)
             r.raise_for_status()
+            global WOL_SENT
+            WOL_SENT = False   # 연결 성공 → 플래그 초기화
             data = r.json()
             msg = data.get("message", {})
 
@@ -573,6 +613,25 @@ def call_mistral_only(prompt: str, system: str = _TOOL_SYSTEM, use_tools: bool =
                 return result
         except Exception as e:
             last_exc = e
+            err_str = str(e).lower()
+            # 연결 오류 = PC 절전 가능성 → WoL 시도 (1회만)
+            if not WOL_SENT and any(k in err_str for k in ["connect", "refused", "timeout", "unreachable"]):
+                logger.warning("Ollama 연결 실패 — PC 절전 의심, WoL 전송 시도")
+                send_wol()
+                # 텔레그램으로 알림 (백그라운드)
+                def _notify():
+                    try:
+                        import telebot as _tb
+                        _bot = _tb.TeleBot(TOKEN_RAW)
+                        _bot.send_message(CHAT_ID, "💤 PC가 절전 상태입니다. Wake on LAN으로 깨우는 중...\n⏳ 1~2분 후 자동 재시도됩니다.")
+                    except Exception:
+                        pass
+                threading.Thread(target=_notify, daemon=True).start()
+                logger.info("Ollama 응답 대기 중 (최대 120초)...")
+                if wait_for_ollama(timeout=120, interval=10):
+                    continue   # 바로 재시도
+                else:
+                    return "💤 PC가 절전 상태입니다. Wake on LAN으로 깨우는 중...\n⏳ 잠시 후 다시 말씀해 주세요. (보통 1~2분)"
             wait = 2 ** (attempt - 1)
             logger.warning("mistral-small:24b 시도 %d/%d 실패 (%s) — %ds 후 재시도",
                            attempt, MISTRAL_MAX_RETRY, str(e)[:80], wait)
