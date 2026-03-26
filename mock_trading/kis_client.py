@@ -133,19 +133,31 @@ def resolve_code(name_or_code: str) -> tuple:
             return s, name
         except Exception:
             return s, s
-    # 네이버 금융 검색
+    # 네이버 검색으로 종목 코드 조회
     try:
         r = requests.get(
-            f"https://finance.naver.com/sise/sise_search.naver?query={s}",
+            f"https://search.naver.com/search.naver?query={s}+주가",
             headers={"User-Agent": "Mozilla/5.0"},
             timeout=8,
             proxies={"http": None, "https": None},
         )
         soup = BeautifulSoup(r.text, "html.parser")
-        link = soup.select_one('a[href*="code="]')
+        link = soup.select_one('a[href*="finance.naver.com/item/main"]')
         if link and "code=" in link["href"]:
             code = link["href"].split("code=")[1].split("&")[0]
-            display = link.text.strip() or s
+            # 종목명은 네이버 금융 메인 페이지에서 가져오기
+            try:
+                rn = requests.get(
+                    f"https://finance.naver.com/item/main.naver?code={code}",
+                    headers={"User-Agent": "Mozilla/5.0"},
+                    timeout=8,
+                    proxies={"http": None, "https": None},
+                )
+                sn = BeautifulSoup(rn.text, "html.parser")
+                title = sn.select_one(".wrap_company h2 a")
+                display = title.text.strip() if title else s
+            except Exception:
+                display = s
             return code, display
     except Exception:
         pass
