@@ -1787,18 +1787,53 @@ def chart_buy_signal(code: str) -> bool:
     return sig is not None and sig["buy_count"] >= 2
 
 
+# ── 장중 시간 체크 (KST) ────────────────────────────────────────────────────
+
+def is_trading_hours() -> bool:
+    """평일 09:00~15:20 KST 여부 반환"""
+    now = datetime.datetime.now(pytz.timezone("Asia/Seoul"))
+    minutes = now.hour * 60 + now.minute
+    return now.weekday() < 5 and (9 * 60) <= minutes <= (15 * 60 + 20)
+
+
+# ── 신규 매수 후보 선정 ──────────────────────────────────────────────────────
+
+def select_new_targets(exclude: list | None = None) -> list:
+    """
+    거래량TOP20 ∩ 외국인순매수TOP10 교집합에서
+    차트신호 2/3 이상 종목 반환 (최대 7개)
+    """
+    exclude_set = set(exclude or [])
+    vol_top   = get_volume_surge_top20()
+    smart_top = set(_get_smart_money_codes())
+    candidates = [c for c in vol_top if c in smart_top and c not in exclude_set]
+    logger.info("신규 후보: %d종목 (거래량%d ∩ 스마트%d)",
+                len(candidates), len(vol_top), len(smart_top))
+    targets = []
+    for code in candidates:
+        if chart_buy_signal(code):
+            targets.append(code)
+        if len(targets) >= 7:
+            break
+    return targets
+
+
 # ── 핵심 포트폴리오 매매 함수 ────────────────────────────────────────────────
 
 def auto_portfolio_trade():
     """
-    30초마다 실행:
-    1. 보유종목: 익절(+5% → 30%매도) / 손절(-3% → 전량매도)
-    2. 신규탐색: 거래량급등 TOP20 ∩ 외국인순매수 TOP10 → 차트신호 2/3
-    3. 최대 7종목 유지, 1회 200,000원 매수
+    30초마다 실행 (schedule):
+    1. 장외시간 즉시 리턴
+    2. 보유종목: 익절(+5% → 30%매도) / 손절(-3% → 전량매도)
+    3. 신규탐색: 거래량급등 TOP20 ∩ 외국인순매수 TOP10 → 차트신호 2/3
+    4. 최대 7종목 유지, 1회 200,000원 매수
     """
+    if not _auto_enabled or not is_trading_hours():
+        return   # 자동매매 OFF 또는 장외시간 스킵
+
     from mock_trading.kis_client import get_price
-    mt   = _get_auto_mt()
-    pool = get_db_pool()
+    mt       = _get_auto_mt()
+    pool     = get_db_pool()
     kst_now  = datetime.datetime.now(pytz.timezone("Asia/Seoul"))
     time_str = kst_now.strftime("%H:%M:%S")
     today    = kst_now.date().isoformat()
@@ -1833,16 +1868,10 @@ def auto_portfolio_trade():
         else:
             kept_codes.append(ticker)
 
-    # ── 2. 신규 종목 탐색 (보유 3종목 미만일 때) ────────────────────
+    # ── 2. 신규 후보 탐색 (보유 3종목 미만일 때) ────────────────────
     if len(kept_codes) < 3:
-        vol_top   = get_volume_surge_top20()
-        smart_top = set(_get_smart_money_codes())
-        # 거래량 + 스마트머니 교집합
-        candidates = [c for c in vol_top if c in smart_top and c not in kept_codes]
-        logger.info("신규 후보: %d종목 (거래량%d ∩ 스마트%d)", len(candidates), len(vol_top), len(smart_top))
-        for code in candidates[:5]:
-            if chart_buy_signal(code):
-                kept_codes.append(code)
+        new_targets = select_new_targets(exclude=kept_codes)
+        kept_codes.extend(new_targets)
 
     # ── 3. 매수 실행 (최대 7종목, 하루 1회/종목) ────────────────────
     bought = []
@@ -1872,25 +1901,18 @@ def auto_portfolio_trade():
                 time_str, len(kept_codes), bought or "없음")
 
 
-# ── 30초 루프 ────────────────────────────────────────────────────────────────
+# ── 30초 schedule 루프 ───────────────────────────────────────────────────────
 
 def auto_trade_loop():
-    """평일 09:00~15:20 사이에만 30초 간격으로 auto_portfolio_trade 실행"""
-    kst = pytz.timezone("Asia/Seoul")
-    logger.info("자동매매 루프 시작 (30초 간격, 장중만 실행)")
+    """schedule.every(30).seconds — 장중에만 실행, daemon 스레드"""
+    logger.info("자동매매 루프 시작 (30초 schedule, 장중 KST만 실행)")
+    schedule.every(30).seconds.do(auto_portfolio_trade)
     while True:
         try:
-            now = datetime.datetime.now(kst)
-            market_open = (
-                now.weekday() < 5
-                and (now.hour, now.minute) >= (9, 0)
-                and (now.hour, now.minute) < (15, 21)
-            )
-            if _auto_enabled and market_open:
-                auto_portfolio_trade()
+            schedule.run_pending()
         except Exception:
-            logger.exception("auto_trade_loop 예외")
-        time.sleep(30)
+            logger.exception("auto_trade_loop schedule 예외")
+        time.sleep(1)
 
 
 # ── /mock 자동매매 명령어 처리 ───────────────────────────────────────────────
