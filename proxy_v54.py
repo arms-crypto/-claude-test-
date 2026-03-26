@@ -1796,18 +1796,37 @@ def is_trading_hours() -> bool:
     return now.weekday() < 5 and (9 * 60) <= minutes <= (15 * 60 + 20)
 
 
+# ── 모의 매도/매수 래퍼 ─────────────────────────────────────────────────────
+
+def sell_mock(code: str, qty: int, reason: str = "") -> str:
+    """MockTrading.sell 래퍼. qty=None 이면 전량"""
+    mt     = _get_auto_mt()
+    pool   = get_db_pool()
+    result = mt.sell(code, qty, oracle_pool=pool)
+    logger.info("[자동매매] SELL %s qty=%s %s → %s", code, qty, reason, result[:60])
+    return result
+
+
+def buy_mock(code: str, amount: int) -> str:
+    """MockTrading.buy 래퍼. amount = 매수금액(원)"""
+    mt     = _get_auto_mt()
+    pool   = get_db_pool()
+    result = mt.buy(code, amount, oracle_pool=pool)
+    logger.info("[자동매매] BUY  %s %d원 → %s", code, amount, result[:60])
+    return result
+
+
 # ── 신규 매수 후보 선정 ──────────────────────────────────────────────────────
 
-def select_new_targets(exclude: list | None = None) -> list:
+def select_volume_smart_chart() -> list:
     """
-    거래량TOP20 ∩ 외국인순매수TOP10 교집합에서
-    차트신호 2/3 이상 종목 반환 (최대 7개)
+    거래량TOP20 ∩ 외국인순매수TOP10 → 차트신호 2/3 이상.
+    통과 종목 최대 7개 반환.
     """
-    exclude_set = set(exclude or [])
     vol_top   = get_volume_surge_top20()
     smart_top = set(_get_smart_money_codes())
-    candidates = [c for c in vol_top if c in smart_top and c not in exclude_set]
-    logger.info("신규 후보: %d종목 (거래량%d ∩ 스마트%d)",
+    candidates = [c for c in vol_top if c in smart_top]
+    logger.info("후보 %d종목 (거래량%d ∩ 스마트%d)",
                 len(candidates), len(vol_top), len(smart_top))
     targets = []
     for code in candidates:
@@ -1818,87 +1837,67 @@ def select_new_targets(exclude: list | None = None) -> list:
     return targets
 
 
-# ── 핵심 포트폴리오 매매 함수 ────────────────────────────────────────────────
+# ── 핵심 매매 사이클 ─────────────────────────────────────────────────────────
 
-def auto_portfolio_trade():
+def auto_trade_cycle():
     """
     30초마다 실행 (schedule):
     1. 장외시간 즉시 리턴
-    2. 보유종목: 익절(+5% → 30%매도) / 손절(-3% → 전량매도)
-    3. 신규탐색: 거래량급등 TOP20 ∩ 외국인순매수 TOP10 → 차트신호 2/3
-    4. 최대 7종목 유지, 1회 200,000원 매수
+    2. 보유종목 조회 → 익절(+5% 30%매도) / 손절(-3% 전량매도)
+    3. 신규매수: 거래량∩순매수→차트2/3 상위 7종목 × 200,000원
     """
     if not _auto_enabled or not is_trading_hours():
-        return   # 자동매매 OFF 또는 장외시간 스킵
+        return
 
     from mock_trading.kis_client import get_price
-    mt       = _get_auto_mt()
-    pool     = get_db_pool()
     kst_now  = datetime.datetime.now(pytz.timezone("Asia/Seoul"))
     time_str = kst_now.strftime("%H:%M:%S")
     today    = kst_now.date().isoformat()
 
-    # ── 1. 보유종목 관리 ────────────────────────────────────────────
-    holdings   = mt._get_holdings()   # [(ticker, name, qty, avg_price)]
-    kept_codes = []
-
-    for ticker, name, qty, avg_price in holdings:
-        cur_price = get_price(ticker)
-        if not cur_price:
-            kept_codes.append(ticker)
+    # ── 1. 보유종목 관리 ─────────────────────────────────────────────
+    holdings = _get_auto_mt()._get_holdings()  # [(ticker, name, qty, avg_price)]
+    for code, name, qty, avg_price in holdings:
+        current = get_price(code)
+        if not current:
             continue
-        pnl_pct = (cur_price - avg_price) / avg_price * 100
+        pnl = (current - avg_price) / avg_price * 100
 
-        if pnl_pct >= 5.0:
+        if pnl >= 5:
             sell_qty = max(1, int(qty * 0.3))
-            result   = mt.sell(ticker, sell_qty, oracle_pool=pool)
-            msg = f"익절 {name}({ticker}) +{pnl_pct:.1f}% → {sell_qty}주 매도\n{result}"
-            logger.info("[자동매매] %s", msg)
-            _tg_notify(f"🤑 [자동매매 익절]\n{msg}")
-            _auto_last_trades[ticker] = {"time": time_str, "action": "SELL_PARTIAL", "pnl": pnl_pct}
-            kept_codes.append(ticker)
+            result   = sell_mock(code, sell_qty, reason="익절")
+            logger.info("✅ 익절 %s(%s): +%.1f%% %d주", name, code, pnl, sell_qty)
+            _tg_notify(f"🤑 익절 {name}({code}) +{pnl:.1f}%\n{result}")
+            _auto_last_trades[code] = {"time": time_str, "action": "SELL_PARTIAL", "pnl": pnl}
 
-        elif pnl_pct <= -3.0:
-            result = mt.sell(ticker, oracle_pool=pool)
-            msg = f"손절 {name}({ticker}) {pnl_pct:.1f}% → 전량매도\n{result}"
-            logger.info("[자동매매] %s", msg)
-            _tg_notify(f"🔴 [자동매매 손절]\n{msg}")
-            _auto_last_trades[ticker] = {"time": time_str, "action": "SELL_ALL", "pnl": pnl_pct}
+        elif pnl <= -3:
+            result = sell_mock(code, None, reason="손절")
+            logger.info("❌ 손절 %s(%s): %.1f%% 전량", name, code, pnl)
+            _tg_notify(f"🔴 손절 {name}({code}) {pnl:.1f}%\n{result}")
+            _auto_last_trades[code] = {"time": time_str, "action": "SELL_ALL", "pnl": pnl}
 
-        else:
-            kept_codes.append(ticker)
-
-    # ── 2. 신규 후보 탐색 (보유 3종목 미만일 때) ────────────────────
-    if len(kept_codes) < 3:
-        new_targets = select_new_targets(exclude=kept_codes)
-        kept_codes.extend(new_targets)
-
-    # ── 3. 매수 실행 (최대 7종목, 하루 1회/종목) ────────────────────
-    bought = []
-    for code in kept_codes[:7]:
+    # ── 2. 신규 매수 (최대 7종목) ────────────────────────────────────
+    new_targets = select_volume_smart_chart()[:7]
+    for code in new_targets:
         last = _auto_last_trades.get(code, {})
         if last.get("action") == "BUY" and last.get("date") == today:
-            continue   # 오늘 이미 매수
-        sig = calculate_chart_signals(code)
-        if sig and sig["buy_count"] >= 2:
-            result = mt.buy(code, 200_000, oracle_pool=pool)
+            continue  # 오늘 이미 매수한 종목 스킵
+        if chart_buy_signal(code):
+            result = buy_mock(code, 200_000)
+            logger.info("🚀 신규매수 %s: 20만원", code)
+            sig = calculate_chart_signals(code) or {}
             _auto_last_trades[code] = {
-                "time": time_str, "action": "BUY",
-                "date": today, "signals": sig["buy_count"],
-                "rsi": sig["rsi"],
+                "time": time_str, "action": "BUY", "date": today,
+                "signals": sig.get("buy_count", "?"), "rsi": sig.get("rsi", 0),
             }
-            bought.append(f"{code}({sig['buy_count']}/3)")
-            logger.info("[자동매매] 매수: %s → %s", code, result[:60])
             if "❌" not in result:
                 _tg_notify(
-                    f"🟢 [자동매매 매수]\n"
-                    f"종목: {code} | 신호 {sig['buy_count']}/3\n"
-                    f"RSI={sig['rsi']} MACD_hist={sig['macd_hist']}\n"
+                    f"🟢 신규매수 {code} 20만원\n"
+                    f"RSI={sig.get('rsi',0)} MACD_hist={sig.get('macd_hist',0)}\n"
                     f"{result}"
                 )
 
-    logger.info("[자동매매 %s] 보유:%d  신규매수:%s",
-                time_str, len(kept_codes), bought or "없음")
+    logger.info("[자동매매 %s] 보유:%d  신규대상:%s",
+                time_str, len(holdings), [c for c in new_targets] or "없음")
 
 
 # ── 30초 schedule 루프 ───────────────────────────────────────────────────────
@@ -1906,7 +1905,7 @@ def auto_portfolio_trade():
 def auto_trade_loop():
     """schedule.every(30).seconds — 장중에만 실행, daemon 스레드"""
     logger.info("자동매매 루프 시작 (30초 schedule, 장중 KST만 실행)")
-    schedule.every(30).seconds.do(auto_portfolio_trade)
+    schedule.every(30).seconds.do(auto_trade_cycle)
     while True:
         try:
             schedule.run_pending()
