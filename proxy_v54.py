@@ -1758,11 +1758,11 @@ def calculate_chart_signals(code: str) -> dict | None:
             and float(tenkan.iloc[-1]) >= float(kijun.iloc[-1])
         )
 
-        # MACD (5/13/6)
+        # MACD (5/13/6): 히스토그램 양수 = 매수 모멘텀
         macd_hist_s = ta.trend.macd_diff(close, window_fast=5, window_slow=13, window_sign=6)
         cur_hist    = float(macd_hist_s.iloc[-1])
         prev_hist   = float(macd_hist_s.iloc[-2]) if len(macd_hist_s) >= 2 else 0.0
-        sig_macd    = cur_hist > 0 or (prev_hist < 0 < cur_hist)
+        sig_macd    = cur_hist > 0  # 양전환 포함 (prev<0→cur>0도 cur>0에 포함)
 
         # RSI (6)
         rsi_val = float(ta.momentum.rsi(close, window=6).iloc[-1])
@@ -1833,7 +1833,7 @@ def smart_buy_amount(code: str) -> int:
 def select_volume_smart_chart() -> list:
     """
     거래량TOP20 ∩ 외국인순매수TOP10 → 차트신호 2/3 이상.
-    통과 종목 최대 7개 반환.
+    [(code, sig_dict), ...] 최대 7개 반환. (pykrx 재호출 방지용 sig 포함)
     """
     vol_top   = get_volume_surge_top20()
     smart_top = set(_get_smart_money_codes())
@@ -1842,8 +1842,9 @@ def select_volume_smart_chart() -> list:
                 len(candidates), len(vol_top), len(smart_top))
     targets = []
     for code in candidates:
-        if chart_buy_signal(code):
-            targets.append(code)
+        sig = calculate_chart_signals(code)
+        if sig and sig["buy_count"] >= 2:
+            targets.append((code, sig))
         if len(targets) >= 7:
             break
     return targets
@@ -1856,7 +1857,7 @@ def auto_trade_cycle():
     30초마다 실행 (schedule):
     1. 장외시간 즉시 리턴
     2. 보유종목 조회 → 익절(+5% 30%매도) / 손절(-3% 전량매도)
-    3. 신규매수: 거래량∩순매수→차트2/3 상위 7종목 × 200,000원
+    3. 신규매수: 거래량∩순매수→차트2/3 상위 7종목 × smart_buy_amount
     """
     if not _auto_enabled or not is_trading_hours():
         return
@@ -1867,50 +1868,64 @@ def auto_trade_cycle():
     today    = kst_now.date().isoformat()
 
     # ── 1. 보유종목 관리 ─────────────────────────────────────────────
-    holdings = _get_auto_mt()._get_holdings()  # [(ticker, name, qty, avg_price)]
-    for code, name, qty, avg_price in holdings:
-        current = get_price(code)
-        if not current:
-            continue
-        pnl = (current - avg_price) / avg_price * 100
+    try:
+        holdings = _get_auto_mt()._get_holdings()  # [(ticker, name, qty, avg_price)]
+        for code, name, qty, avg_price in holdings:
+            try:
+                current = get_price(code)
+                if not current:
+                    continue
+                pnl = (current - avg_price) / avg_price * 100
 
-        if pnl >= 5:
-            sell_qty = max(1, int(qty * 0.3))
-            result   = sell_mock(code, sell_qty, reason="익절")
-            logger.info("✅ 익절 %s(%s): +%.1f%% %d주", name, code, pnl, sell_qty)
-            _tg_notify(f"🤑 익절 {name}({code}) +{pnl:.1f}%\n{result}")
-            _auto_last_trades[code] = {"time": time_str, "action": "SELL_PARTIAL", "pnl": pnl}
+                if pnl >= 5:
+                    sell_qty = max(1, int(qty * 0.3))
+                    result   = sell_mock(code, sell_qty, reason="익절")
+                    logger.info("✅ 익절 %s(%s): +%.1f%% %d주", name, code, pnl, sell_qty)
+                    _tg_notify(f"🤑 익절 {name}({code}) +{pnl:.1f}%\n{result}")
+                    _auto_last_trades[code] = {"time": time_str, "action": "SELL_PARTIAL", "pnl": pnl}
 
-        elif pnl <= -3:
-            result = sell_mock(code, None, reason="손절")
-            logger.info("❌ 손절 %s(%s): %.1f%% 전량", name, code, pnl)
-            _tg_notify(f"🔴 손절 {name}({code}) {pnl:.1f}%\n{result}")
-            _auto_last_trades[code] = {"time": time_str, "action": "SELL_ALL", "pnl": pnl}
+                elif pnl <= -3:
+                    result = sell_mock(code, None, reason="손절")
+                    logger.info("❌ 손절 %s(%s): %.1f%% 전량", name, code, pnl)
+                    _tg_notify(f"🔴 손절 {name}({code}) {pnl:.1f}%\n{result}")
+                    _auto_last_trades[code] = {"time": time_str, "action": "SELL_ALL", "pnl": pnl}
+            except Exception:
+                logger.exception("보유종목 처리 오류: %s", code)
+    except Exception:
+        logger.exception("holdings 조회 실패")
+        holdings = []
 
     # ── 2. 신규 매수 (최대 7종목) ────────────────────────────────────
-    new_targets = select_volume_smart_chart()[:7]
-    for code in new_targets:
-        last = _auto_last_trades.get(code, {})
-        if last.get("action") == "BUY" and last.get("date") == today:
-            continue  # 오늘 이미 매수한 종목 스킵
-        if chart_buy_signal(code):
-            amount = smart_buy_amount(code)
-            result = buy_mock(code, amount)
-            logger.info("🚀 신규매수 %s: %d원", code, amount)
-            sig = calculate_chart_signals(code) or {}
-            _auto_last_trades[code] = {
-                "time": time_str, "action": "BUY", "date": today,
-                "signals": sig.get("buy_count", "?"), "rsi": sig.get("rsi", 0),
-            }
-            if "❌" not in result:
-                _tg_notify(
-                    f"🟢 신규매수 {code} 20만원\n"
-                    f"RSI={sig.get('rsi',0)} MACD_hist={sig.get('macd_hist',0)}\n"
-                    f"{result}"
-                )
+    try:
+        new_targets = select_volume_smart_chart()  # [(code, sig), ...]
+        bought = []
+        for code, sig in new_targets:
+            last = _auto_last_trades.get(code, {})
+            if last.get("action") == "BUY" and last.get("date") == today:
+                continue  # 오늘 이미 매수한 종목 스킵
+            try:
+                amount = smart_buy_amount(code)
+                result = buy_mock(code, amount)
+                _auto_last_trades[code] = {
+                    "time": time_str, "action": "BUY", "date": today,
+                    "signals": sig["buy_count"], "rsi": sig["rsi"],
+                }
+                bought.append(code)
+                logger.info("🚀 신규매수 %s: %d원", code, amount)
+                if "❌" not in result:
+                    _tg_notify(
+                        f"🟢 신규매수 {code} {amount:,}원\n"
+                        f"RSI={sig['rsi']} MACD_hist={sig['macd_hist']}\n"
+                        f"{result}"
+                    )
+            except Exception:
+                logger.exception("신규매수 오류: %s", code)
+    except Exception:
+        logger.exception("신규 후보 탐색 실패")
+        bought = []
 
-    logger.info("[자동매매 %s] 보유:%d  신규대상:%s",
-                time_str, len(holdings), [c for c in new_targets] or "없음")
+    logger.info("[자동매매 %s] 보유:%d  신규매수:%s",
+                time_str, len(holdings), bought or "없음")
 
 
 # ── 30초 schedule 루프 ───────────────────────────────────────────────────────
@@ -1943,7 +1958,8 @@ def _handle_auto_trade_cmd(text: str) -> str:
             "⏱ 30초 간격, 평일 09:00~15:20\n"
             "익절 +5%(30%매도) / 손절 -3%(전량)\n"
             "신규: 거래량급등 ∩ 외국인순매수 → 차트 2/3\n"
-            "매수단위: 200,000원 / 최대 7종목"
+            "매수단위: 고가주 200만 / 중가주 100만 / 저가주 50만\n"
+            "최대 보유 7종목"
         )
 
     if sub == "종료":
