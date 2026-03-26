@@ -277,23 +277,77 @@ def naver_search_code(query: str) -> str:
     return None
 
 # -------------------------
-# 외국/해외 주가 조회 도구
+# 해외 주가: 한국어 이름 → 티커 매핑 + yfinance Search 폴백
+_OVERSEAS_MAP = {
+    # 미국 빅테크
+    "엔비디아": "NVDA", "테슬라": "TSLA", "애플": "AAPL", "아마존": "AMZN",
+    "마이크로소프트": "MSFT", "구글": "GOOGL", "알파벳": "GOOGL", "메타": "META",
+    "넷플릭스": "NFLX", "인텔": "INTC", "AMD": "AMD", "퀄컴": "QCOM",
+    # 인기 종목
+    "팔란티어": "PLTR", "스페이스엑스": "SPCE", "버진갤럭틱": "SPCE",
+    "코인베이스": "COIN", "로빈후드": "HOOD", "리비안": "RIVN", "루시드": "LCID",
+    "니오": "NIO", "바이두": "BIDU", "알리바바": "BABA", "텐센트": "TCEHY",
+    "줌": "ZM", "스포티파이": "SPOT", "우버": "UBER", "에어비앤비": "ABNB",
+    "쇼피파이": "SHOP", "스퀘어": "SQ", "페이팔": "PYPL", "비자": "V",
+    "버크셔": "BRK-B", "존슨앤존슨": "JNJ", "화이자": "PFE", "모더나": "MRNA",
+    # 지수/ETF
+    "다우": "^DJI", "나스닥": "^IXIC", "S&P": "^GSPC", "sp500": "^GSPC",
+    "QQQ": "QQQ", "SPY": "SPY",
+    # 가상화폐
+    "비트코인": "BTC-USD", "이더리움": "ETH-USD", "리플": "XRP-USD",
+    "솔라나": "SOL-USD", "도지코인": "DOGE-USD",
+}
+
 def stock_price_overseas(query: str) -> str:
+    """한국어 종목명 → 티커 매핑 → yfinance Search 폴백으로 해외 주가 조회"""
     try:
-        stocks = {"엔비디아": "NVDA", "테슬라": "TSLA", "애플": "AAPL", "비트코인": "BTC-USD"}
-        symbol = "NVDA"
-        for k, v in stocks.items():
-            if k in query:
-                symbol = v
+        q_lower = query.lower()
+        symbol = None
+
+        # 1) 한국어 매핑 우선
+        for kor, ticker in _OVERSEAS_MAP.items():
+            if kor.lower() in q_lower:
+                symbol = ticker
                 break
-        hist = yf.download(tickers=symbol, period="1d", progress=False)
-        if not hist.empty:
-            price = hist['Close'].iloc[-1].item()
-            return f"🌍 **{symbol}** 현재가: **${price:.2f}**"
-        return f"❌ {symbol}: 데이터를 찾을 수 없습니다."
+
+        # 2) 알파벳 티커 직접 포함 (PLTR, TSLA 등)
+        if not symbol:
+            m = re.search(r'\b([A-Z]{2,5})\b', query)
+            if m:
+                symbol = m.group(1)
+
+        # 3) yfinance Search 폴백 (한국어 키워드 → 영문 검색)
+        if not symbol:
+            clean = re.sub(
+                r'(주가|현재가|가격|시세|얼마야|얼마에요|알려줘|조회|\?|!)', '', query
+            ).strip().rstrip('요은는이가')
+            if clean:
+                results = yf.Search(clean, max_results=3).quotes
+                # NASDAQ/NYSE 우선
+                for r in results:
+                    if r.get("exchange") in ("NMS", "NYQ", "NGM"):
+                        symbol = r["symbol"]
+                        break
+                if not symbol and results:
+                    symbol = results[0]["symbol"]
+
+        if not symbol:
+            return None  # 국내 종목일 수 있음
+
+        t = yf.Ticker(symbol)
+        price = t.fast_info.last_price
+        if not price:
+            hist = yf.download(symbol, period="1d", progress=False, auto_adjust=True)
+            if not hist.empty:
+                price = float(hist["Close"].iloc[-1])
+
+        if price:
+            currency = "₩" if symbol.endswith(".KS") else "$"
+            return f"🌍 {symbol} 현재가: {currency}{price:,.2f}"
+        return None
     except Exception:
-        logger.exception("stock_price_overseas 예외")
-        return "❌ 해외 주가 오류"
+        logger.exception("stock_price_overseas 예외: %s", query)
+        return None
 
 # -------------------------
 # 네이버 Finance에서 외국인/기관 순매수 상위 종목 스크래핑
