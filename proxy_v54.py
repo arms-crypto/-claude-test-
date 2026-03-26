@@ -260,16 +260,18 @@ def get_naver_price(code: str) -> str:
     return None
 
 def naver_search_code(query: str) -> str:
-    """네이버 검색으로 종목코드 추출"""
+    """종목명으로 코드 조회 — kis_client.resolve_code 사용 (sise_search.naver 404 대체)"""
     try:
-        search_url = f"https://finance.naver.com/sise/sise_search.naver?query={query}"
-        r = requests.get(search_url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=8)
-        r.raise_for_status()
-        soup = BeautifulSoup(r.text, 'html.parser')
-        link = soup.select_one('a[href*="code="]')
-        if link and 'code=' in link['href']:
-            code = link['href'].split('code=')[1].split('&')[0]
-            return code
+        from mock_trading.kis_client import resolve_code
+        # 질문 문장에서 종목명 추출: "주가", "얼마", "시세" 등 불필요한 단어 제거
+        clean = re.sub(
+            r'(주가|현재가|가격|시세|얼마야|얼마에요|얼마임|알려줘요|알려줘|조회해줘|조회|지금|어때요|어때|\?|！|!)',
+            '', query
+        ).strip().rstrip('요은는이가도좀')
+        code, name = resolve_code(clean)
+        if code:
+            logger.info("naver_search_code: '%s' → %s(%s)", clean, name, code)
+        return code
     except Exception:
         logger.exception("naver_search_code 예외")
     return None
