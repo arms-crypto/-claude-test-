@@ -1816,6 +1816,18 @@ def buy_mock(code: str, amount: int) -> str:
     return result
 
 
+def smart_buy_amount(code: str) -> int:
+    """주가 구간별 매수금액 반환 (고가주 200만 / 중가주 100만 / 저가주 50만)"""
+    from mock_trading.kis_client import get_price
+    price = get_price(code) or 0
+    if price >= 1_000_000:
+        return 2_000_000
+    elif price >= 300_000:
+        return 1_000_000
+    else:
+        return 500_000
+
+
 # ── 신규 매수 후보 선정 ──────────────────────────────────────────────────────
 
 def select_volume_smart_chart() -> list:
@@ -1882,8 +1894,9 @@ def auto_trade_cycle():
         if last.get("action") == "BUY" and last.get("date") == today:
             continue  # 오늘 이미 매수한 종목 스킵
         if chart_buy_signal(code):
-            result = buy_mock(code, 200_000)
-            logger.info("🚀 신규매수 %s: 20만원", code)
+            amount = smart_buy_amount(code)
+            result = buy_mock(code, amount)
+            logger.info("🚀 신규매수 %s: %d원", code, amount)
             sig = calculate_chart_signals(code) or {}
             _auto_last_trades[code] = {
                 "time": time_str, "action": "BUY", "date": today,
