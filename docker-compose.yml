@@ -22,26 +22,31 @@ services:
     environment:
       - SEARXNG_BASE_URL=http://localhost:8080/
       - SEARXNG_SECRET_KEY=perplexica-searxng-secret-key-change-me
+      - SEARXNG_BIND_ADDRESS=0.0.0.0:8080
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        sed -i 's|exec /usr/local/searxng/.venv/bin/granian searx.webapp:app|exec /usr/local/searxng/.venv/bin/granian --host 0.0.0.0 --port 8080 --workers 1 searx.webapp:app|' /usr/local/searxng/entrypoint.sh
+        exec /usr/local/searxng/entrypoint.sh
     networks:
       - perplexica-net
 
   # ----------------------------------------------------------
-  # 2. Perplexica Backend - AI 검색 API
+  # 2. Perplexica - AI 검색 (Full Stack: Next.js on port 3000)
   # ----------------------------------------------------------
   perplexica-backend:
-    image: itzcrazykns1337/perplexica-backend:main
-    container_name: perplexica-backend
+    image: itzcrazykns1337/perplexica:latest
+    container_name: perplexica-proxy
     restart: unless-stopped
     ports:
-      - "3001:3001"
+      - "3001:3000"   # Next.js는 내부 3000 포트 사용
     depends_on:
       - searxng
     volumes:
-      - ./perplexica-config:/home/perplexica/config
-      - perplexica-uploads:/home/perplexica/uploads
-      - perplexica-db:/home/perplexica/data
+      - ./perplexica-config:/app/config
     environment:
-      - PORT=3001
+      - OLLAMA_BASE_URL=http://221.144.111.116:11434
+      - SEARXNG_API_URL=http://searxng:8080
     networks:
       - perplexica-net
     extra_hosts:

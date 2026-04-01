@@ -1,0 +1,10 @@
+requests
+beautifulsoup4
+yfinance
+pandas
+flask
+flask-cors
+oracledb
+pytz
+pykrx
+mplfinance
