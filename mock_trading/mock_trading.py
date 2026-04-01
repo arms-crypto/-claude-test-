@@ -15,7 +15,7 @@ from datetime import datetime
 import pytz
 import yfinance as yf
 
-from .kis_client import get_price, resolve_code
+from .kis_client import get_price, resolve_code, buy_stock, sell_stock, get_balance
 
 logger = logging.getLogger(__name__)
 KST = pytz.timezone("Asia/Seoul")
@@ -52,8 +52,23 @@ class MockTrading:
                 qty        INTEGER,
                 amount     REAL,
                 cash_after REAL,
-                created_at TEXT
+                created_at TEXT,
+                buy_signals INTEGER,  -- RAG: 매수 시 양성 신호 수 /8
+                rsi         REAL,     -- RAG: 매수 시 RSI
+                macd_hist   REAL,     -- RAG: 매수 시 MACD 히스트
+                pnl         REAL      -- RAG: 매도 시 실현 손익률(%)
             )""")
+            # 기존 DB에 컬럼이 없으면 추가 (마이그레이션)
+            for col, typedef in [
+                ("buy_signals", "INTEGER"),
+                ("rsi",         "REAL"),
+                ("macd_hist",   "REAL"),
+                ("pnl",         "REAL"),
+            ]:
+                try:
+                    db.execute(f"ALTER TABLE trades ADD COLUMN {col} {typedef}")
+                except Exception:
+                    pass  # 이미 존재하면 무시
             db.execute("""CREATE TABLE IF NOT EXISTS account (
                 key   TEXT PRIMARY KEY,
                 value TEXT
@@ -93,14 +108,18 @@ class MockTrading:
                 "SELECT ticker, name, qty, avg_price FROM portfolio WHERE qty > 0"
             ).fetchall()
 
-    def _record_trade(self, ticker, name, action, price, qty, cash_after, oracle_pool=None):
+    def _record_trade(self, ticker, name, action, price, qty, cash_after, oracle_pool=None,
+                      buy_signals=None, rsi=None, macd_hist=None, pnl=None):
         now_str = datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S")
         amount = price * qty
         with self._conn() as db:
             db.execute(
-                """INSERT INTO trades (ticker, name, action, price, qty, amount, cash_after, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-                [ticker, name, action, price, qty, amount, cash_after, now_str],
+                """INSERT INTO trades
+                   (ticker, name, action, price, qty, amount, cash_after, created_at,
+                    buy_signals, rsi, macd_hist, pnl)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                [ticker, name, action, price, qty, amount, cash_after, now_str,
+                 buy_signals, rsi, macd_hist, pnl],
             )
             db.commit()
         # Oracle 백업 (풀이 주입된 경우)
@@ -123,7 +142,8 @@ class MockTrading:
 
     # ── 매수 ─────────────────────────────────────────────────────────────────
 
-    def buy(self, name_or_code: str, amount_krw: int, oracle_pool=None) -> str:
+    def buy(self, name_or_code: str, amount_krw: int, oracle_pool=None,
+            buy_signals=None, rsi=None, macd_hist=None) -> str:
         code, name = resolve_code(name_or_code)
         if not code:
             return f"❌ '{name_or_code}' 종목을 찾을 수 없습니다."
@@ -135,10 +155,14 @@ class MockTrading:
         qty = int(amount_krw / price)
         if qty < 1:
             return f"❌ 수량 부족 (1주 {price:,}원, 요청 {amount_krw:,}원)"
-        cost = qty * price
-        if self.cash < cost:
-            return f"❌ 잔고 부족 (필요 {cost:,}원, 잔고 {self.cash:,}원)"
 
+        # KIS 모의투자 매수 주문
+        result = buy_stock(code, qty)
+        if not result["success"]:
+            return f"❌ KIS 모의 매수 실패: {result['msg']}"
+
+        cost = qty * price
+        # 로컬 DB에도 기록 (히스토리용)
         with self._conn() as db:
             row = db.execute(
                 "SELECT qty, avg_price FROM portfolio WHERE ticker=?", [code]
@@ -158,11 +182,13 @@ class MockTrading:
             db.commit()
 
         self.cash = self.cash - cost
-        self._record_trade(code, name, "BUY", price, qty, self.cash, oracle_pool)
+        self._record_trade(code, name, "BUY", price, qty, self.cash, oracle_pool,
+                           buy_signals=buy_signals, rsi=rsi, macd_hist=macd_hist)
 
         return (
-            f"✅ 매수 완료!\n"
+            f"✅ KIS 모의 매수 완료!\n"
             f"📈 {name}({code}): {qty:,}주 × {price:,}원 = {cost:,}원\n"
+            f"🔖 주문번호: {result['order_no']}\n"
             f"💰 잔고: {self.cash:,}원"
         )
 
@@ -190,6 +216,11 @@ class MockTrading:
         if not price:
             return f"❌ {name}({code}) 가격 조회 실패"
 
+        # KIS 모의투자 매도 주문
+        result = sell_stock(code, sell_qty)
+        if not result["success"]:
+            return f"❌ KIS 모의 매도 실패: {result['msg']}"
+
         proceeds = sell_qty * price
         profit = (price - avg_price) * sell_qty
         pct = (price - avg_price) / avg_price * 100
@@ -203,23 +234,29 @@ class MockTrading:
             db.commit()
 
         self.cash = self.cash + proceeds
-        self._record_trade(code, name, "SELL", price, sell_qty, self.cash, oracle_pool)
+        self._record_trade(code, name, "SELL", price, sell_qty, self.cash, oracle_pool,
+                           pnl=round(pct, 2))
 
         sign = "+" if profit >= 0 else ""
         return (
-            f"✅ 매도 완료!\n"
+            f"✅ KIS 모의 매도 완료!\n"
             f"📉 {name}({code}): {sell_qty:,}주 × {price:,}원 = {proceeds:,}원\n"
             f"{'📈' if profit >= 0 else '📉'} 손익: {sign}{int(profit):,}원 ({sign}{pct:.1f}%)\n"
+            f"🔖 주문번호: {result['order_no']}\n"
             f"💰 잔고: {self.cash:,}원"
         )
 
     # ── 현황 ─────────────────────────────────────────────────────────────────
 
     def get_status(self) -> str:
-        holdings = self._get_holdings()
-        lines = ["📊 *모의투자 현황*\n", f"💵 현금: {self.cash:,}원\n"]
+        # KIS 모의투자 잔고 실시간 조회
+        bal = get_balance()
+        cash = bal["cash"] or self.cash
+        kis_holdings = bal["holdings"]
 
-        if not holdings:
+        lines = ["📊 *KIS 모의투자 현황*\n", f"💵 현금: {cash:,}원\n"]
+
+        if not kis_holdings:
             lines.append("📭 보유 종목 없음")
             return "\n".join(lines)
 
@@ -227,14 +264,18 @@ class MockTrading:
         total_eval = 0
         lines.append("─────────────────")
 
-        for code, name, qty, avg_price in holdings:
-            price = get_price(code) or avg_price
-            invest = avg_price * qty
-            eval_val = price * qty
-            profit = eval_val - invest
-            pct = (price - avg_price) / avg_price * 100
+        for h in kis_holdings:
+            code      = h["code"]
+            name      = h["name"]
+            qty       = h["qty"]
+            avg_price = h["avg_price"]
+            price     = h["current_price"] or get_price(code) or avg_price
+            invest    = avg_price * qty
+            eval_val  = price * qty
+            profit    = eval_val - invest
+            pct       = h["pnl"]
             total_invest += invest
-            total_eval += eval_val
+            total_eval   += eval_val
             sign = "▲" if profit >= 0 else "▼"
             lines.append(f"{sign} {name}({code})")
             lines.append(f"   {qty:,}주 | 평단 {int(avg_price):,}원 → 현재 {price:,}원")
@@ -244,7 +285,7 @@ class MockTrading:
         lines.append("─────────────────")
         total_profit = total_eval - total_invest
         total_pct = total_profit / total_invest * 100 if total_invest else 0
-        total_assets = self.cash + total_eval
+        total_assets = cash + total_eval
         p_str = f"+{int(total_profit):,}" if total_profit >= 0 else f"{int(total_profit):,}"
         lines.append(f"📈 총 평가금액: {int(total_eval):,}원")
         lines.append(

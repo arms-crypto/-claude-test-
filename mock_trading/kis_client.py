@@ -10,12 +10,14 @@ import yfinance as yf
 
 logger = logging.getLogger(__name__)
 
-# proxy_v53.py와 동일한 KIS 설정
+# KIS 모의투자 설정
 APP_KEY    = "PSY9gMy15uipajb9qM25Cj1Uhf74FVu1cDyF"
 APP_SECRET = ("A/vwnErWUmOrZFUoJQ5bBS78WdY1lS6T6GaD5Hx1dNE+J3TTxTi1QwBvdFZuoKHWJ2nKEz+"
               "SaAmZmNikWH04Ge4Mm7up+/5JeAphHOXYld5nIbtehEmHMFcHVeB3EbNQem1pi2+0cVdyj6w7"
               "UzGJA+HqVRNFlPapifykRfPmf4Qf0IaIJdU=")
-KIS_URL    = "https://openapi.koreainvestment.com:9443"
+KIS_URL    = "https://openapivts.koreainvestment.com:29443"  # 모의투자
+ACCOUNT_NO = "50173188"   # 계좌번호
+ACCOUNT_CD = "01"         # 계좌상품코드 (주식)
 
 _token_cache = {"token": None, "expires_at": 0}
 
@@ -111,14 +113,304 @@ def get_price(code: str) -> int:
     return _price_kis(code) or _price_yahoo(code) or _price_naver(code)
 
 
+def _order_headers(tr_id: str) -> dict:
+    token = get_token()
+    return {
+        "authorization": f"Bearer {token}",
+        "appkey": APP_KEY,
+        "appsecret": APP_SECRET,
+        "tr_id": tr_id,
+        "content-type": "application/json; charset=utf-8",
+    }
+
+
+def buy_stock(code: str, qty: int, price: int = 0) -> dict:
+    """
+    KIS 모의투자 매수 주문.
+    price=0 → 시장가, price>0 → 지정가
+    반환: {"success": bool, "order_no": str, "msg": str}
+    """
+    try:
+        body = {
+            "CANO":        ACCOUNT_NO,
+            "ACNT_PRDT_CD": ACCOUNT_CD,
+            "PDNO":        code,
+            "ORD_DVSN":    "01" if price == 0 else "00",  # 01=시장가, 00=지정가
+            "ORD_QTY":     str(qty),
+            "ORD_UNPR":    "0" if price == 0 else str(price),
+        }
+        r = requests.post(
+            f"{KIS_URL}/uapi/domestic-stock/v1/trading/order-cash",
+            json=body,
+            headers=_order_headers("VTTC0802U"),
+            timeout=10,
+            proxies={"http": None, "https": None},
+        )
+        r.raise_for_status()
+        data = r.json()
+        if data.get("rt_cd") == "0":
+            order_no = data.get("output", {}).get("ODNO", "")
+            logger.info("KIS 모의 매수 완료 %s %d주 주문번호:%s", code, qty, order_no)
+            return {"success": True, "order_no": order_no, "msg": data.get("msg1", "")}
+        else:
+            logger.error("KIS 모의 매수 실패 %s: %s", code, data.get("msg1", ""))
+            return {"success": False, "order_no": "", "msg": data.get("msg1", "")}
+    except Exception:
+        logger.exception("KIS 모의 매수 예외: %s", code)
+        return {"success": False, "order_no": "", "msg": "API 오류"}
+
+
+def sell_stock(code: str, qty: int, price: int = 0) -> dict:
+    """
+    KIS 모의투자 매도 주문.
+    price=0 → 시장가, price>0 → 지정가
+    반환: {"success": bool, "order_no": str, "msg": str}
+    """
+    try:
+        body = {
+            "CANO":        ACCOUNT_NO,
+            "ACNT_PRDT_CD": ACCOUNT_CD,
+            "PDNO":        code,
+            "ORD_DVSN":    "01" if price == 0 else "00",
+            "ORD_QTY":     str(qty),
+            "ORD_UNPR":    "0" if price == 0 else str(price),
+        }
+        r = requests.post(
+            f"{KIS_URL}/uapi/domestic-stock/v1/trading/order-cash",
+            json=body,
+            headers=_order_headers("VTTC0801U"),
+            timeout=10,
+            proxies={"http": None, "https": None},
+        )
+        r.raise_for_status()
+        data = r.json()
+        if data.get("rt_cd") == "0":
+            order_no = data.get("output", {}).get("ODNO", "")
+            logger.info("KIS 모의 매도 완료 %s %d주 주문번호:%s", code, qty, order_no)
+            return {"success": True, "order_no": order_no, "msg": data.get("msg1", "")}
+        else:
+            logger.error("KIS 모의 매도 실패 %s: %s", code, data.get("msg1", ""))
+            return {"success": False, "order_no": "", "msg": data.get("msg1", "")}
+    except Exception:
+        logger.exception("KIS 모의 매도 예외: %s", code)
+        return {"success": False, "order_no": "", "msg": "API 오류"}
+
+
+def get_balance() -> dict:
+    """
+    KIS 모의투자 잔고 조회.
+    반환: {"cash": int, "holdings": [{"code", "name", "qty", "avg_price", "current_price", "pnl"}]}
+    """
+    token = get_token()
+    if not token:
+        return {"cash": 0, "holdings": []}
+    try:
+        r = requests.get(
+            f"{KIS_URL}/uapi/domestic-stock/v1/trading/inquire-balance",
+            params={
+                "CANO": ACCOUNT_NO,
+                "ACNT_PRDT_CD": ACCOUNT_CD,
+                "AFHR_FLPR_YN": "N",
+                "OFL_YN": "N",
+                "INQR_DVSN": "02",
+                "UNPR_DVSN": "01",
+                "FUND_STTL_ICLD_YN": "N",
+                "FNCG_AMT_AUTO_RDPT_YN": "N",
+                "PRCS_DVSN": "00",
+                "CTX_AREA_FK100": "",
+                "CTX_AREA_NK100": "",
+            },
+            headers=_order_headers("VTTC8434R"),
+            timeout=10,
+            proxies={"http": None, "https": None},
+        )
+        r.raise_for_status()
+        data = r.json()
+        output2 = data.get("output2", [{}])
+        cash = int(output2[0].get("dnca_tot_amt", 0)) if output2 else 0
+        holdings = []
+        for item in data.get("output1", []):
+            qty = int(item.get("hldg_qty", 0))
+            if qty <= 0:
+                continue
+            holdings.append({
+                "code":          item.get("pdno", ""),
+                "name":          item.get("prdt_name", ""),
+                "qty":           qty,
+                "avg_price":     float(item.get("pchs_avg_pric", 0)),
+                "current_price": int(item.get("prpr", 0)),
+                "pnl":           float(item.get("evlu_pfls_rt", 0)),
+            })
+        return {"cash": cash, "holdings": holdings}
+    except Exception:
+        logger.exception("KIS 잔고 조회 실패")
+        return {"cash": 0, "holdings": []}
+
+
+def get_ohlcv(code: str, period: str = "D", count: int = 60) -> list:
+    """
+    KIS API 차트 데이터 조회.
+    period: D=일봉, W=주봉, M=월봉
+    반환: [{"date","open","high","low","close","volume"}, ...] 오래된 것부터
+    """
+    import datetime
+    token = get_token()
+    if not token:
+        return []
+    today = datetime.date.today().strftime("%Y%m%d")
+    # 충분히 과거부터 조회 (count봉 확보)
+    days_back = {"D": count * 2, "W": count * 10, "M": count * 35}.get(period, count * 2)
+    from_date = (datetime.date.today() - datetime.timedelta(days=days_back)).strftime("%Y%m%d")
+    headers = {
+        "authorization": f"Bearer {token}",
+        "appkey": APP_KEY,
+        "appsecret": APP_SECRET,
+        "tr_id": "FHKST03010100",
+    }
+    params = {
+        "FID_COND_MRKT_DIV_CODE": "J",
+        "FID_INPUT_ISCD": code,
+        "FID_INPUT_DATE_1": from_date,
+        "FID_INPUT_DATE_2": today,
+        "FID_PERIOD_DIV_CODE": period,
+        "FID_ORG_ADJ_PRC": "0",
+    }
+    try:
+        r = requests.get(
+            f"{KIS_URL}/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice",
+            params=params, headers=headers, timeout=10,
+            proxies={"http": None, "https": None},
+        )
+        r.raise_for_status()
+        output = r.json().get("output2", [])
+        result = []
+        for row in output:
+            try:
+                result.append({
+                    "date":   row.get("stck_bsop_date", ""),
+                    "open":   int(row.get("stck_oprc", 0)),
+                    "high":   int(row.get("stck_hgpr", 0)),
+                    "low":    int(row.get("stck_lwpr", 0)),
+                    "close":  int(row.get("stck_clpr", 0)),
+                    "volume": int(row.get("acml_vol", 0)),
+                })
+            except Exception:
+                pass
+        result.reverse()  # 오래된 것부터
+        return result[-count:]
+    except Exception:
+        logger.exception("KIS OHLCV 조회 실패: %s %s", code, period)
+        return []
+
+
+def get_minute_ohlcv(code: str, interval: int = 1, count: int = 60) -> list:
+    """
+    KIS API 분봉 데이터 조회.
+    interval: 1=1분봉 원시데이터 (15/30/60분은 호출 후 직접 리샘플)
+    반환: [{"time","open","high","low","close","volume"}, ...] 오래된 것부터
+    """
+    token = get_token()
+    if not token:
+        return []
+    headers = {
+        "authorization": f"Bearer {token}",
+        "appkey": APP_KEY,
+        "appsecret": APP_SECRET,
+        "tr_id": "FHKST03010200",
+    }
+    params = {
+        "FID_ETC_CLS_CODE": "",
+        "FID_COND_MRKT_DIV_CODE": "J",
+        "FID_INPUT_ISCD": code,
+        "FID_INPUT_HOUR_1": "000000",
+        "FID_PW_DATA_INCU_YN": "Y",
+    }
+    try:
+        r = requests.get(
+            f"{KIS_URL}/uapi/domestic-stock/v1/quotations/inquire-time-itemchartprice",
+            params=params, headers=headers, timeout=10,
+            proxies={"http": None, "https": None},
+        )
+        r.raise_for_status()
+        output = r.json().get("output2", [])
+        rows = []
+        for row in output:
+            try:
+                rows.append({
+                    "time":   row.get("stck_cntg_hour", ""),
+                    "open":   int(row.get("stck_oprc", 0)),
+                    "high":   int(row.get("stck_hgpr", 0)),
+                    "low":    int(row.get("stck_lwpr", 0)),
+                    "close":  int(row.get("stck_prpr", 0)),
+                    "volume": int(row.get("cntg_vol", 0)),
+                })
+            except Exception:
+                pass
+        rows.reverse()  # 오래된 것부터
+
+        # interval 리샘플 (15/30/60분)
+        if interval > 1 and rows:
+            import pandas as pd
+            df = pd.DataFrame(rows)
+            df.index = range(len(df))
+            resampled = []
+            for i in range(0, len(df), interval):
+                chunk = df.iloc[i:i + interval]
+                if chunk.empty:
+                    continue
+                resampled.append({
+                    "time":   chunk.iloc[0]["time"],
+                    "open":   int(chunk.iloc[0]["open"]),
+                    "high":   int(chunk["high"].max()),
+                    "low":    int(chunk["low"].min()),
+                    "close":  int(chunk.iloc[-1]["close"]),
+                    "volume": int(chunk["volume"].sum()),
+                })
+            return resampled[-count:]
+
+        return rows[-count:]
+    except Exception:
+        logger.exception("KIS 분봉 조회 실패: %s", code)
+        return []
+
+
+def _name_by_pykrx(code: str) -> str:
+    """pykrx로 종목코드 → 종목명 (폴백용)."""
+    try:
+        from pykrx import stock as _px
+        name = _px.get_market_ticker_name(code)
+        if name:
+            return name
+    except Exception:
+        pass
+    return None
+
+
+def _code_by_pykrx(name: str) -> tuple:
+    """pykrx로 종목명 → (code, name) (폴백용). 전체 스캔이라 느림."""
+    try:
+        from pykrx import stock as _px
+        import datetime as _dt
+        today = _dt.date.today().strftime("%Y%m%d")
+        for market in ("KOSPI", "KOSDAQ"):
+            for code in _px.get_market_ticker_list(today, market=market):
+                n = _px.get_market_ticker_name(code)
+                if n and name in n:
+                    return code, n
+    except Exception:
+        pass
+    return None, None
+
+
 def resolve_code(name_or_code: str) -> tuple:
     """
     종목명 또는 6자리 코드 → (code, display_name).
+    Naver 실패 시 pykrx 폴백.
     실패 시 (None, name_or_code) 반환.
     """
     s = name_or_code.strip()
     if len(s) == 6 and s.isdigit():
-        # 코드로 네이버 검색해서 종목명 확보
+        # 1차: 네이버 금융에서 종목명 조회
         try:
             r = requests.get(
                 f"https://finance.naver.com/item/main.naver?code={s}",
@@ -129,11 +421,15 @@ def resolve_code(name_or_code: str) -> tuple:
             from bs4 import BeautifulSoup as _BS
             soup = _BS(r.text, "html.parser")
             title = soup.select_one(".wrap_company h2 a")
-            name = title.text.strip() if title else s
-            return s, name
+            if title and title.text.strip():
+                return s, title.text.strip()
         except Exception:
-            return s, s
-    # 네이버 검색으로 종목 코드 조회
+            pass
+        # 2차 폴백: pykrx
+        name = _name_by_pykrx(s)
+        return s, (name or s)
+
+    # 종목명 → 코드: 1차 네이버 검색
     try:
         r = requests.get(
             f"https://search.naver.com/search.naver?query={s}+주가",
@@ -145,7 +441,6 @@ def resolve_code(name_or_code: str) -> tuple:
         link = soup.select_one('a[href*="finance.naver.com/item/main"]')
         if link and "code=" in link["href"]:
             code = link["href"].split("code=")[1].split("&")[0]
-            # 종목명은 네이버 금융 메인 페이지에서 가져오기
             try:
                 rn = requests.get(
                     f"https://finance.naver.com/item/main.naver?code={code}",
@@ -155,10 +450,14 @@ def resolve_code(name_or_code: str) -> tuple:
                 )
                 sn = BeautifulSoup(rn.text, "html.parser")
                 title = sn.select_one(".wrap_company h2 a")
-                display = title.text.strip() if title else s
+                display = title.text.strip() if (title and title.text.strip()) else s
             except Exception:
                 display = s
             return code, display
     except Exception:
         pass
+    # 2차 폴백: pykrx 전체 스캔
+    code, name = _code_by_pykrx(s)
+    if code:
+        return code, name
     return None, s
