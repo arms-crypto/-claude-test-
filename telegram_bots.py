@@ -343,6 +343,9 @@ def handle_tg_srv():
                 reply = call_gemma3(text, use_tools=True) or GUIDE_MSG
             except Exception:
                 reply = GUIDE_MSG
+            # Telegram 4096자 제한 처리
+            if len(reply) > 4000:
+                reply = reply[:3950] + "\n...(이하 생략)"
             # "생각 중" 메시지를 실제 답변으로 교체
             if thinking_msg_id:
                 requests.post(
