@@ -424,7 +424,7 @@ def auto_report_scheduler():
                         summary = "현재 검색 서버(Perplexica/SearXNG)가 응답하지 않습니다.\n`docker compose up -d` 로 재시작해보세요."
                     requests.post(f"{base_url}/sendMessage", json={"chat_id": config.CHAT_ID, "text": f"🌅 [장 시작 전 AI 프리뷰]\n\n{summary}"}, proxies=_np)
                     last_run_time = "morning"
-                elif now.hour == 16 and now.minute == 0 and last_run_time != "afternoon":
+                elif now.hour == 18 and now.minute == 0 and last_run_time != "afternoon":
                     _np = {"http": None, "https": None}
 
                     def _send(text):
@@ -437,13 +437,52 @@ def auto_report_scheduler():
                           else "⚠️ 외국인 순매수 데이터 조회 실패")
 
                     inst = _get_today_institutional_net_buy()
-                    _send(inst if inst else "⚠️ 기관 순매수 데이터 없음 (DB 미수집)")
+                    if not inst:
+                        # Oracle DB 미수집 시 네이버 실시간으로 폴백
+                        from stock_data import _naver_net_buy_list
+                        import pandas as _pd
+                        df_inst_fb = _naver_net_buy_list('1000', '01', 'buy')
+                        if df_inst_fb is not None and not df_inst_fb.empty:
+                            kst_d = datetime.datetime.now(kst).strftime('%Y%m%d')
+                            lines = [f"🏦 [{kst_d}] 기관 순매수 상위 {len(df_inst_fb)}선 (네이버)\n"]
+                            for i, row in df_inst_fb.iterrows():
+                                amt = row.get('금액', 0)
+                                amt_str = f"({int(amt):,}백만원)" if _pd.notna(amt) else ""
+                                lines.append(f"{i+1}위. {row['종목명']} {amt_str}")
+                            inst = "\n".join(lines)
+                        else:
+                            inst = "⚠️ 기관 순매수 데이터 없음 (DB 미수집)"
+                    _send(inst)
+
+                    # 당일 청산 손익 통계
+                    try:
+                        import sqlite3 as _sq3
+                        today_str = now.strftime('%Y-%m-%d')
+                        con = _sq3.connect(PORTFOLIO_DB_PATH)
+                        sell_rows = con.execute(
+                            "SELECT pnl FROM trades WHERE action='SELL' AND created_at >= ? AND pnl IS NOT NULL",
+                            [today_str]
+                        ).fetchall()
+                        con.close()
+                        if sell_rows:
+                            pnls      = [r[0] for r in sell_rows]
+                            wins      = sum(1 for p in pnls if p > 0)
+                            avg_pnl   = sum(pnls) / len(pnls)
+                            stat_line = (f"📊 오늘 청산 {len(pnls)}건 | "
+                                         f"승률 {wins}/{len(pnls)} ({wins/len(pnls)*100:.0f}%) | "
+                                         f"평균손익 {avg_pnl:+.1f}%")
+                        else:
+                            stat_line = "📊 오늘 청산: 없음"
+                    except Exception:
+                        stat_line = ""
 
                     trade_part = ""
                     if config._daily_trade_log:
-                        trade_part = "📋 오늘 자동매매 내역:\n" + "\n".join(config._daily_trade_log)
+                        trade_part = ("📋 오늘 자동매매 내역:\n"
+                                      + "\n".join(config._daily_trade_log)
+                                      + (f"\n\n{stat_line}" if stat_line else ""))
                     else:
-                        trade_part = "📋 오늘 자동매매: 없음"
+                        trade_part = f"📋 오늘 자동매매: 없음\n{stat_line}" if stat_line else "📋 오늘 자동매매: 없음"
                     config._daily_trade_log.clear()
 
                     px = perplexica_search("오늘 증시 마감 시황 뉴스")
@@ -462,6 +501,17 @@ def auto_report_scheduler():
             if now.hour == 0 and now.minute == 0:
                 last_run_time = None
                 config._daily_trade_log.clear()
+                # 자정: 오늘 cash → prev_day_cash 저장 (다음날 보수적 운영 판단용)
+                try:
+                    import sqlite3 as _sq3
+                    con = _sq3.connect(PORTFOLIO_DB_PATH)
+                    row = con.execute("SELECT value FROM account WHERE key='cash'").fetchone()
+                    if row:
+                        con.execute("INSERT OR REPLACE INTO account(key,value) VALUES('prev_day_cash',?)", [row[0]])
+                        con.commit()
+                    con.close()
+                except Exception:
+                    logger.exception("prev_day_cash 저장 실패")
         except Exception:
             logger.exception("auto_report_scheduler 예외")
         time.sleep(30)

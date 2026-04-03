@@ -4,9 +4,10 @@
 llm_client.py — LLM + WoL
 send_wol(), wait_for_ollama(), _parse_ollama_response(),
 Tool 상수들, _execute_tool_call(), call_mistral_only(),
-call_qwen (= call_mistral_only), call_local_llm(), _ollama_alive()
+call_qwen (= call_mistral_only), _ollama_alive()
 """
 
+import os
 import json
 import time
 import threading
@@ -136,7 +137,38 @@ _NEWS_TOOL = {
     }
 }
 
-_ALL_TOOLS = [_WEB_SEARCH_TOOL, _STOCK_PRICE_TOOL, _NEWS_TOOL]
+_PORTFOLIO_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "query_portfolio",
+        "description": "모의투자 포트폴리오 조회. 보유종목, 잔고, 손익, 매매내역 등 포트폴리오 관련 질문에 반드시 사용.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "조회 유형. 예: '현황', '잔고', '거래내역', '손익'"}
+            },
+            "required": ["query"]
+        }
+    }
+}
+
+_RAG_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "query_trade_history",
+        "description": "과거 매매 이력(RAG) 조회. 특정 종목의 과거 매매 결과, 손익률, 매수/매도 시점 등을 물어볼 때 사용.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "ticker": {"type": "string", "description": "종목코드 또는 종목명. 예: '005930', '삼성전자'"},
+                "limit":  {"type": "integer", "description": "조회할 최근 거래 수 (기본 10)"}
+            },
+            "required": ["ticker"]
+        }
+    }
+}
+
+_ALL_TOOLS = [_WEB_SEARCH_TOOL, _STOCK_PRICE_TOOL, _NEWS_TOOL, _PORTFOLIO_TOOL, _RAG_TOOL]
 
 _TOOL_SYSTEM = """당신은 친근한 한국어 AI 어시스턴트입니다.
 - 인사("안녕", "하이", "ㅎㅇ" 등)나 짧은 잡담에는 짧게 인사나 잡담으로만 답하세요.
@@ -144,10 +176,18 @@ _TOOL_SYSTEM = """당신은 친근한 한국어 AI 어시스턴트입니다.
 - 훈련 데이터 이후 사건(2024년 이후 포함)은 web_search로 확인하세요.
 - 답변은 항상 한국어로 작성하세요.
 
+[도구 사용 규칙]
+- 잔고, 포트폴리오, 보유종목, 수익, 손익, 거래내역, 매매내역 질문 → 반드시 query_portfolio 도구 호출
+  (query_portfolio 도구가 SQLite DB에서 직접 조회함 — "DB 접근 불가"라고 답하지 말 것)
+- 특정 종목 과거 매매 이력 → query_trade_history 도구 호출
+- 주식 현재가/시세 → get_stock_price 도구 호출
+- 종목/기업 뉴스 → get_news 도구 호출
+- 최신 시사/검색 필요 → web_search 도구 호출
+
 [사용 가능한 로컬 데이터]
 - DB 최신 뉴스: Oracle DB daily_news 테이블에 자동 수집된 뉴스 저장됨
 - 시장 보고서: /home/ubuntu/.openclaw/workspace-research/data/market_report.txt (매일 20:00 KST 갱신)
-- 포트폴리오: SQLite /home/ubuntu/-claude-test-/mock_trading/portfolio.db
+- 포트폴리오: SQLite /home/ubuntu/-claude-test-/mock_trading/portfolio.db (query_portfolio 도구로 조회)
 - [참고 데이터] 섹션이 프롬프트에 포함되면 그 수치를 우선 사용하세요."""
 
 
@@ -180,6 +220,75 @@ def _execute_tool_call(tool_name: str, arguments: dict) -> str:
         logger.info("Ollama tool call: get_news('%s')", query)
         result = naver_news(query)
         return result or "뉴스 조회 실패"
+    if tool_name == "query_portfolio":
+        logger.info("Ollama tool call: query_portfolio('%s')", query)
+        import sqlite3 as _sq3
+        db_path = os.path.join(os.path.dirname(__file__), "mock_trading", "portfolio.db")
+        try:
+            lines = []
+            with _sq3.connect(db_path) as con:
+                row = con.execute("SELECT value FROM account WHERE key='cash'").fetchone()
+                cash = int(float(row[0])) if row else 0
+                lines.append(f"💰 현금잔고: {cash:,}원")
+                holdings = con.execute(
+                    "SELECT name, ticker, qty, avg_price FROM portfolio WHERE qty > 0"
+                ).fetchall()
+                if holdings:
+                    lines.append("📈 보유종목:")
+                    for name, ticker, qty, avg in holdings:
+                        lines.append(f"  {name}({ticker}): {qty}주 @ 평단{int(avg):,}원")
+                else:
+                    lines.append("📭 보유종목 없음")
+                # 컬럼 존재 여부에 따라 쿼리 분기
+                cols = [r[1] for r in con.execute("PRAGMA table_info(trades)").fetchall()]
+                pnl_col = ", pnl" if "pnl" in cols else ""
+                recent = con.execute(
+                    f"SELECT action, name, ticker, price, qty{pnl_col}, created_at "
+                    "FROM trades ORDER BY id DESC LIMIT 5"
+                ).fetchall()
+                if recent:
+                    lines.append("📋 최근 거래 (5건):")
+                    for row in recent:
+                        if pnl_col:
+                            action, name, ticker, price, qty, pnl, ts = row
+                        else:
+                            action, name, ticker, price, qty, ts = row
+                            pnl = None
+                        pnl_str = f" | 손익 {pnl:+.1f}%" if pnl is not None else ""
+                        lines.append(f"  [{ts[:10]}] {action} {name}({ticker}) {qty}주 @{int(price):,}원{pnl_str}")
+            return "\n".join(lines)
+        except Exception as e:
+            return f"포트폴리오 조회 오류: {e}"
+    if tool_name == "query_trade_history":
+        ticker = arguments.get("ticker", query)
+        limit  = int(arguments.get("limit", 10))
+        logger.info("Ollama tool call: query_trade_history('%s', limit=%d)", ticker, limit)
+        import sqlite3 as _sq3
+        db_path = os.path.join(os.path.dirname(__file__), "mock_trading", "portfolio.db")
+        try:
+            with _sq3.connect(db_path) as con:
+                cols = [r[1] for r in con.execute("PRAGMA table_info(trades)").fetchall()]
+                extra = ", ".join(c for c in ["buy_signals", "rsi", "pnl"] if c in cols)
+                sel = f"action, price, qty, created_at" + (f", {extra}" if extra else "")
+                rows = con.execute(
+                    f"SELECT {sel} FROM trades WHERE ticker=? OR name LIKE ? "
+                    "ORDER BY id DESC LIMIT ?",
+                    [ticker, f"%{ticker}%", limit]
+                ).fetchall()
+            if not rows:
+                return f"'{ticker}' 관련 거래 내역 없음 (아직 거래 없음)"
+            extra_cols = [c for c in ["buy_signals", "rsi", "pnl"] if c in cols]
+            lines = [f"📚 {ticker} 과거 매매 이력 ({len(rows)}건):"]
+            for row in rows:
+                action, price, qty, ts = row[0], row[1], row[2], row[3]
+                extras = {extra_cols[i]: row[4+i] for i in range(len(extra_cols))}
+                pnl_str = f" | 손익 {extras['pnl']:+.1f}%" if extras.get("pnl") is not None else ""
+                sig_str = f" | 신호 {extras['buy_signals']}/16" if extras.get("buy_signals") is not None else ""
+                rsi_str = f" | RSI {extras['rsi']:.1f}" if extras.get("rsi") is not None else ""
+                lines.append(f"  [{ts[:10]}] {action} {qty}주 @{int(price):,}원{pnl_str}{sig_str}{rsi_str}")
+            return "\n".join(lines)
+        except Exception as e:
+            return f"거래 이력 조회 오류: {e}"
     return f"알 수 없는 도구: {tool_name}"
 
 
@@ -189,7 +298,8 @@ def call_mistral_only(prompt: str, system: str = _TOOL_SYSTEM, use_tools: bool =
     - use_tools=True: Ollama가 web_search 도구를 스스로 호출 가능
     - 3회 재시도 후 최종 실패 시 안내 메시지 반환.
     """
-    config.WOL_SENT = False   # 매 요청마다 초기화 (이전 실패 후 재시도 시 WoL 재전송 허용)
+    config.WOL_SENT = False   # 매 요청마다 초기화
+    send_wol()                # 무조건 WoL 전송 (UDP, PC 켜져있어도 무해)
     messages = [
         {"role": "system", "content": system},
         {"role": "user",   "content": prompt},
@@ -222,6 +332,7 @@ def call_mistral_only(prompt: str, system: str = _TOOL_SYSTEM, use_tools: bool =
                     messages.append({
                         "role": "tool",
                         "content": tool_result,
+                        "tool_call_id": tc.get("id", ""),
                     })
                 # 검색 결과를 받아 최종 답변 생성
                 payload2 = {
@@ -246,7 +357,6 @@ def call_mistral_only(prompt: str, system: str = _TOOL_SYSTEM, use_tools: bool =
             if not config.WOL_SENT and any(k in err_str for k in ["connect", "refused", "timeout", "unreachable"]):
                 logger.warning("Ollama 연결 실패 — PC 절전 의심, WoL 전송 시도")
                 send_wol()
-                # 텔레그램으로 알림 (백그라운드)
                 def _notify():
                     try:
                         import telebot as _tb
@@ -257,7 +367,7 @@ def call_mistral_only(prompt: str, system: str = _TOOL_SYSTEM, use_tools: bool =
                 threading.Thread(target=_notify, daemon=True).start()
                 logger.info("Ollama 응답 대기 중 (최대 120초)...")
                 if wait_for_ollama(timeout=180, interval=10):
-                    continue   # 바로 재시도
+                    continue
                 else:
                     return "💤 PC가 절전 상태입니다. Wake on LAN으로 깨우는 중...\n⏳ 잠시 후 다시 말씀해 주세요. (보통 1~2분)"
             wait = 2 ** (attempt - 1)
@@ -281,41 +391,3 @@ def _ollama_alive() -> bool:
         return r.status_code == 200
     except Exception:
         return False
-
-
-def call_local_llm(prompt: str, use_tools: bool = True) -> str:
-    """로컬 Ollama 호출 — tool calling 지원 (llama3.2:3b)"""
-    _no_proxy = {"http": None, "https": None}
-    messages = [
-        {"role": "system", "content": _TOOL_SYSTEM},
-        {"role": "user", "content": prompt},
-    ]
-    payload = {
-        "model": config.LOCAL_MODEL,
-        "messages": messages,
-        "stream": False,
-    }
-    if use_tools:
-        payload["tools"] = _ALL_TOOLS
-    try:
-        r = requests.post(config.LOCAL_OLLAMA_URL, json=payload, timeout=180, proxies=_no_proxy)
-        r.raise_for_status()
-        msg = r.json().get("message", {})
-
-        tool_calls = msg.get("tool_calls")
-        if tool_calls:
-            messages.append({"role": "assistant", "content": "", "tool_calls": tool_calls})
-            for tc in tool_calls:
-                fn = tc.get("function", {})
-                tool_result = _execute_tool_call(fn.get("name", ""), fn.get("arguments", {}))
-                messages.append({"role": "tool", "content": tool_result})
-            payload2 = {**payload, "messages": messages}
-            del payload2["tools"]  # 재호출시 tools 제거해 최종 답변 유도
-            r2 = requests.post(config.LOCAL_OLLAMA_URL, json=payload2, timeout=180, proxies=_no_proxy)
-            r2.raise_for_status()
-            return r2.json().get("message", {}).get("content", "⚠️ 응답 파싱 실패")
-
-        return msg.get("content", "⚠️ 응답 파싱 실패")
-    except Exception as e:
-        logger.exception("로컬 LLM 호출 실패")
-        return f"⚠️ 오류: {e}"

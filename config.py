@@ -19,7 +19,7 @@ TOKEN_RAW = "8707168013:AAH5yIsoaLoxcA0Lthiw7RaIzD1YcJx8cc8"
 TOKEN_SRV = "8657060115:AAEDA3L5OKmEjqdDxj3sopQlF-4BotKsvbA"  # oracleN_Agent_bot
 CHAT_ID = "8448138406"
 LOCAL_OLLAMA_URL = "http://localhost:11434/api/chat"
-LOCAL_MODEL = "llama3.2:3b"  # tool calling 지원 (gemma2:2b → 미지원으로 변경)
+LOCAL_MODEL = "qwen2.5:7b"   # 폴백용 (tool calling 불안정 → use_tools=False로 운영)
 NAVER_ID = "6MSVizApP3DYXeUhor5J"
 NAVER_SECRET = "WCddJHD62B"
 APP_KEY = "PSY9gMy15uipajb9qM25Cj1Uhf74FVu1cDyF"
@@ -59,8 +59,9 @@ pool = None  # 오라클 DB 풀
 
 # -------------------------
 # 자동매매 전역 상태
-_auto_enabled = False          # /mock 자동매매 시작|종료 로 제어
+_auto_enabled = True           # 서비스 시작 시 자동매매 ON (재시작 시 자동 활성화)
 _daily_trade_log: list = []    # 당일 매매 내역 누적 → 장마감 보고서에 포함
 _auto_lock    = threading.Lock()
 _auto_last_trades: dict = {}   # code → {action, date, signals, rsi}
+_pending_buys:     dict = {}   # code → {name, signals, time} — BUY 결정 후 신호 변화 감시용
 _auto_mt_inst = None           # MockTrading 싱글턴

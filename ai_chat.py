@@ -57,7 +57,7 @@ def check_and_store_fact(session_id, user_input, ai_response):
     AI: {ai_response}
     """
     try:
-        fact_result = call_qwen(check_prompt)
+        fact_result = call_qwen(check_prompt, use_tools=False)
         if "None" not in fact_result and len(fact_result.strip()) > 5:
             if session_id not in config.verified_facts_store:
                 config.verified_facts_store[session_id] = []
@@ -181,7 +181,7 @@ def ask_ai(session_id, user_input):
         return f"🌅 [장 시작 전 AI 프리뷰]\n\n{summary}", None
 
     # 3-1) 단순 인사 즉시 처리 — 나머지는 LLM이 판단
-    _raw = user_input.strip().lower().rstrip("?!. ~ㅋㅎ")
+    _raw = user_input.strip().lower().rstrip("?!. ~ㅋㅎ^*_")
     _greet_map = {
         "안녕": "안녕하세요! 😊", "안녕하세요": "안녕하세요! 😊",
         "안녕하십니까": "안녕하세요! 😊", "안뇽": "안녕하세요! 😊",
@@ -198,18 +198,9 @@ def ask_ai(session_id, user_input):
         history.append(f"AI: {reply}")
         return reply, None
 
-    # 4) 도구(주가/뉴스/순매수) 실행 로직
+    # 4) 도구(뉴스/검색) 실행 로직 — 주가는 Ollama가 get_stock_price 도구로 직접 처리
     tool_info = []
     from stock_data import naver_news
-
-    # a) 주가/가격/얼마 관련 키워드면 도구 호출
-    if any(k in user_input.lower() for k in ["주가", "가격", "얼마", "증권", "시세", "开盘", "종가", "시가"]):
-        overseas = stock_price_overseas(user_input)
-        korea = korea_invest_stock(user_input)
-        if overseas:
-            tool_info.append("✈️ 해외 주가: " + overseas)
-        if korea and not korea.startswith(("❌", "🚨")):
-            tool_info.append("🇰🇷 국내 주가: " + korea)
 
     # b) 뉴스/검색/related 정보 요청이면
     _search_keywords = [

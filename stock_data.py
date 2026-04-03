@@ -248,16 +248,6 @@ def get_foreign_net_buy(query: str) -> str:
             amt_str = f"({int(amount):,}백만원)" if pd.notna(amount) else ""
             result_text += f"{overlap}{i+1}위. {name} {amt_str}\n"
 
-        if df_inst is not None and not df_inst.empty:
-            result_text += f"\n🏦 [{date_str}] 기관 순매수 상위 {len(df_inst)}선 🏦\n\n"
-            foreign_names = set(df_foreign['종목명'].tolist())
-            for i, row in df_inst.iterrows():
-                name = row['종목명']
-                amount = row.get('금액', 0)
-                overlap = "⭐" if name in foreign_names else "  "
-                amt_str = f"({int(amount):,}백만원)" if pd.notna(amount) else ""
-                result_text += f"{overlap}{i+1}위. {name} {amt_str}\n"
-
         both = [r['종목명'] for _, r in df_foreign.iterrows() if r['종목명'] in inst_names]
         if both:
             result_text += f"\n🎯 외국인+기관 동반매수: {', '.join(both)}"
