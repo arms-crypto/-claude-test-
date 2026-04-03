@@ -451,6 +451,9 @@ _GEMMA3_TOOL_SYSTEM = """나는 한국어 AI 어시스턴트입니다. 사용자
 사용자: 내 포트폴리오 보여줘
 {"tool":"query_portfolio","arguments":{"query":"현황"}}
 
+사용자: 왕과 사는 남자 줄거리 요약
+{"tool":"web_search","arguments":{"query":"왕과 사는 남자 영화 줄거리"}}
+
 사용자: 안녕
 안녕하세요! 무엇을 도와드릴까요?"""
 
@@ -514,8 +517,10 @@ def call_gemma3(prompt: str, use_tools: bool = True) -> str:
                 logger.info("Gemma3 tool call: %s(%s)", tool_name, args)
                 tool_result = _execute_tool_call(tool_name, args)
                 _tool_called = True
+                # 요약 호출: 시스템 프롬프트를 단순화해서 도구 재호출 방지
+                messages[0] = {"role": "system", "content": "한국어로 간결하게 답변하는 AI입니다. JSON이나 도구 호출 없이 텍스트로만 답하세요."}
                 messages.append({"role": "assistant", "content": content})
-                messages.append({"role": "user", "content": f"[도구 결과]\n{tool_result}\n\n위 결과를 바탕으로 한국어로 간결하게 답해줘."})
+                messages.append({"role": "user", "content": f"[검색 결과]\n{tool_result}\n\n위 내용을 바탕으로 한국어로 간결하게 답해줘."})
                 continue
             return content
         except Exception as e:
