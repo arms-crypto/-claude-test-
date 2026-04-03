@@ -433,21 +433,21 @@ _GEMMA3_TOOL_SYSTEM = """나는 한국어 AI 어시스턴트입니다. 사용자
 - deep_search: 복잡한 심층 분석
 - fetch_url: 특정 URL 읽기
 
-[예시 — 반드시 이 형식으로만]
+[예시]
 사용자: 삼성전자 주가
-출력: {"tool":"get_stock_price","arguments":{"query":"삼성전자"}}
+{"tool":"get_stock_price","arguments":{"query":"삼성전자"}}
 
 사용자: 애플 주가 조회해줘
-출력: {"tool":"get_stock_price","arguments":{"query":"AAPL"}}
+{"tool":"get_stock_price","arguments":{"query":"AAPL"}}
 
 사용자: 오늘 코스피 시황은?
-출력: {"tool":"get_news","arguments":{"query":"코스피 시황"}}
+{"tool":"get_news","arguments":{"query":"코스피 시황"}}
 
 사용자: 내 포트폴리오 보여줘
-출력: {"tool":"query_portfolio","arguments":{"query":"현황"}}
+{"tool":"query_portfolio","arguments":{"query":"현황"}}
 
 사용자: 안녕
-출력: 안녕하세요! 무엇을 도와드릴까요?"""
+안녕하세요! 무엇을 도와드릴까요?"""
 
 
 def call_gemma3(prompt: str, use_tools: bool = True) -> str:
@@ -479,18 +479,27 @@ def call_gemma3(prompt: str, use_tools: bool = True) -> str:
                 continue
             if not use_tools:
                 return content
-            # tool call 감지: 순수 JSON 또는 ```json 블록
+            # tool call 감지: 중첩 JSON 브레이스 카운팅으로 정확히 추출
             tool_data = None
-            try:
-                tool_data = _json.loads(content)
-            except Exception:
-                for pat in [r'```(?:json)?\s*(\{.*?\})\s*```',
-                            r'<tool_call>\s*(\{.*?\})\s*</tool_call>',
-                            r'(\{"tool"\s*:.*?\})']:
-                    m = _re.search(pat, content, _re.DOTALL)
-                    if m:
-                        try: tool_data = _json.loads(m.group(1)); break
-                        except Exception: pass
+            idx = content.find('{"tool"')
+            if idx >= 0:
+                depth, end = 0, idx
+                for i, ch in enumerate(content[idx:]):
+                    if ch == '{': depth += 1
+                    elif ch == '}':
+                        depth -= 1
+                        if depth == 0:
+                            end = idx + i + 1
+                            break
+                try:
+                    tool_data = _json.loads(content[idx:end])
+                except Exception:
+                    pass
+            if tool_data is None:
+                try:
+                    tool_data = _json.loads(content)
+                except Exception:
+                    pass
             if tool_data and "tool" in tool_data:
                 tool_name = tool_data["tool"]
                 args = tool_data.get("arguments", {})
