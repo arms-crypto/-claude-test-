@@ -168,27 +168,77 @@ _RAG_TOOL = {
     }
 }
 
-_ALL_TOOLS = [_WEB_SEARCH_TOOL, _STOCK_PRICE_TOOL, _NEWS_TOOL, _PORTFOLIO_TOOL, _RAG_TOOL]
+_DEEP_SEARCH_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "deep_search",
+        "description": "AI 심층 검색 (Perplexity 스타일). 복잡한 질문, 다각도 분석, 배경 설명이 필요할 때 사용. web_search보다 느리지만 훨씬 상세한 답변.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "검색 질문 (구체적일수록 좋음)"}
+            },
+            "required": ["query"]
+        }
+    }
+}
 
-_TOOL_SYSTEM = """당신은 친근한 한국어 AI 어시스턴트입니다.
-- 인사("안녕", "하이", "ㅎㅇ" 등)나 짧은 잡담에는 짧게 인사나 잡담으로만 답하세요.
-- 최신 정보(뉴스, 현재 날씨, 현재 인물, 최신 사건 등)가 필요하면 반드시 web_search 도구를 호출하세요.
-- 훈련 데이터 이후 사건(2024년 이후 포함)은 web_search로 확인하세요.
-- 답변은 항상 한국어로 작성하세요.
+_FETCH_URL_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "fetch_url",
+        "description": "특정 URL의 웹페이지 내용을 가져와 요약. 기사 링크나 공식 문서 URL을 직접 읽을 때 사용.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "url": {"type": "string", "description": "읽을 웹페이지 URL (https://...)"}
+            },
+            "required": ["url"]
+        }
+    }
+}
 
-[도구 사용 규칙]
-- 잔고, 포트폴리오, 보유종목, 수익, 손익, 거래내역, 매매내역 질문 → 반드시 query_portfolio 도구 호출
-  (query_portfolio 도구가 SQLite DB에서 직접 조회함 — "DB 접근 불가"라고 답하지 말 것)
-- 특정 종목 과거 매매 이력 → query_trade_history 도구 호출
-- 주식 현재가/시세 → get_stock_price 도구 호출
-- 종목/기업 뉴스 → get_news 도구 호출
-- 최신 시사/검색 필요 → web_search 도구 호출
+_LOCAL_KNOWLEDGE_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "search_local_knowledge",
+        "description": "로컬 지식베이스 검색. 시장 보고서, 저장된 뉴스 등 서버에 캐시된 데이터 조회. 시황/증시 전망/최근 뉴스 요약에 활용.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "검색 키워드. 예: '코스피 전망', '오늘 뉴스'"}
+            },
+            "required": ["query"]
+        }
+    }
+}
 
-[사용 가능한 로컬 데이터]
-- DB 최신 뉴스: Oracle DB daily_news 테이블에 자동 수집된 뉴스 저장됨
-- 시장 보고서: /home/ubuntu/.openclaw/workspace-research/data/market_report.txt (매일 20:00 KST 갱신)
-- 포트폴리오: SQLite /home/ubuntu/-claude-test-/mock_trading/portfolio.db (query_portfolio 도구로 조회)
-- [참고 데이터] 섹션이 프롬프트에 포함되면 그 수치를 우선 사용하세요."""
+_ALL_TOOLS = [
+    _WEB_SEARCH_TOOL, _DEEP_SEARCH_TOOL, _FETCH_URL_TOOL,
+    _STOCK_PRICE_TOOL, _NEWS_TOOL, _LOCAL_KNOWLEDGE_TOOL,
+    _PORTFOLIO_TOOL, _RAG_TOOL,
+]
+
+_TOOL_SYSTEM = """당신은 친근한 한국어 AI 어시스턴트입니다. 다음 서버 환경에서 실행되고 있으며, 이 환경에 실제로 접근할 수 있습니다.
+
+[당신이 접근 가능한 데이터베이스 및 저장소]
+- Oracle DB: daily_news 테이블에 매일 자동 수집된 뉴스 헤드라인이 저장됨
+- SQLite portfolio.db: 모의투자 매매 기록, 보유종목, 잔고, 손익
+- 시장 보고서 파일: 매일 갱신되는 코스피/코스닥 시장 분석 텍스트
+사용자가 "DB", "저장된 것", "서버에 있는", "로컬 데이터" 등을 언급하면 위 데이터베이스를 말하는 것임.
+→ 이 경우 반드시 도구를 호출해서 실제 데이터를 조회할 것. 절대 훈련 데이터로 추측하거나 생성하지 말 것.
+
+[도구 선택 기준]
+- DB/저장소 관련 질문 → search_local_knowledge (Oracle DB 뉴스 + 시장 보고서 키워드 검색)
+- 잔고, 보유종목, 거래내역 → query_portfolio (portfolio.db 직접 조회)
+- 특정 종목 과거 매매 이력 → query_trade_history
+- 주식 현재가/시세 → get_stock_price
+- 종목/기업 뉴스 → get_news
+- 간단한 최신 정보, 뉴스 헤드라인 → web_search
+- 복잡한 분석, 심층 조사 → deep_search
+- 특정 URL/기사 읽기 → fetch_url
+
+[참고 데이터] 섹션이 프롬프트에 포함되면 그 수치를 우선 사용하세요."""
 
 
 def _execute_tool_call(tool_name: str, arguments: dict) -> str:
@@ -200,16 +250,48 @@ def _execute_tool_call(tool_name: str, arguments: dict) -> str:
     query = arguments.get("query", "")
     if tool_name == "web_search":
         logger.info("Ollama tool call: web_search('%s')", query)
-        results = searxng_search(query, max_results=5)
+        results = searxng_search(query, categories="news", max_results=10)
+        if not results:
+            results = searxng_search(query, max_results=10)
         if results:
             lines = []
-            for r in results[:5]:
+            for r in results[:10]:
                 title = r.get("title", "")
-                content = r.get("content", "")[:200]
+                content = r.get("content", "")[:300]
                 url = r.get("url", "")
-                lines.append(f"- {title}: {content} ({url})")
-            return "\n".join(lines)
+                if content:
+                    lines.append(f"- {title}: {content} ({url})")
+            return "\n".join(lines) if lines else "검색 결과 없음"
         return "검색 결과 없음"
+    if tool_name == "deep_search":
+        logger.info("Ollama tool call: deep_search('%s')", query)
+        from search_utils import perplexica_search
+        result = perplexica_search(query)
+        return result or "심층 검색 실패"
+    if tool_name == "fetch_url":
+        url = arguments.get("url", query)
+        logger.info("Ollama tool call: fetch_url('%s')", url)
+        try:
+            import requests as _req
+            from html.parser import HTMLParser
+            resp = _req.get(url, timeout=15, headers={"User-Agent": "Mozilla/5.0"})
+            resp.encoding = resp.apparent_encoding or "utf-8"
+            class _P(HTMLParser):
+                def __init__(self):
+                    super().__init__()
+                    self.text = []
+                    self._skip = False
+                def handle_starttag(self, t, _a):
+                    if t in ("script", "style", "nav", "header", "footer"): self._skip = True
+                def handle_endtag(self, t):
+                    if t in ("script", "style", "nav", "header", "footer"): self._skip = False
+                def handle_data(self, d):
+                    if not self._skip and d.strip(): self.text.append(d.strip())
+            p = _P(); p.feed(resp.text)
+            text = " ".join(p.text)[:3000]
+            return f"[{url}]\n{text}" if text else "페이지 내용을 가져올 수 없습니다."
+        except Exception as e:
+            return f"URL 조회 실패: {e}"
     if tool_name == "get_stock_price":
         logger.info("Ollama tool call: get_stock_price('%s')", query)
         result = stock_price_overseas(query)
@@ -220,6 +302,50 @@ def _execute_tool_call(tool_name: str, arguments: dict) -> str:
         logger.info("Ollama tool call: get_news('%s')", query)
         result = naver_news(query)
         return result or "뉴스 조회 실패"
+    if tool_name == "search_local_knowledge":
+        logger.info("Ollama tool call: search_local_knowledge('%s')", query)
+        parts = []
+        # RAG 벡터 검색 (의미 기반)
+        try:
+            from rag_store import search_memory
+            rag_result = search_memory(query, n_results=5)
+            if rag_result:
+                parts.append(f"[RAG 기억 검색 결과]\n{rag_result}")
+        except Exception:
+            pass
+        # 1) 시장 보고서 (키워드 포함 시 우선)
+        rpt_path = "/home/ubuntu/.openclaw/workspace-research/data/market_report.txt"
+        if os.path.exists(rpt_path):
+            with open(rpt_path, "r", encoding="utf-8") as f:
+                rpt = f.read()
+            if not query or any(k in rpt for k in query.split()):
+                parts.append(f"[시장 보고서]\n{rpt[:2000]}")
+        # 2) Oracle DB 뉴스 — 키워드 검색
+        try:
+            from db_utils import get_db_pool
+            pool = get_db_pool()
+            if pool:
+                with pool.acquire() as conn:
+                    with conn.cursor() as cur:
+                        # 키워드 포함된 최신 뉴스 우선, 없으면 최신 1건
+                        cur.execute(
+                            "SELECT headlines, run_time FROM daily_news "
+                            "WHERE LOWER(headlines) LIKE LOWER(:kw) "
+                            "ORDER BY run_time DESC FETCH FIRST 3 ROWS ONLY",
+                            {"kw": f"%{query}%"}
+                        )
+                        rows = cur.fetchall()
+                        if rows:
+                            for r in rows:
+                                parts.append(f"[DB 뉴스 {str(r[1])[:10]}]\n{r[0][:800]}")
+                        else:
+                            cur.execute("SELECT headlines, run_time FROM daily_news ORDER BY run_time DESC FETCH FIRST 1 ROWS ONLY")
+                            row = cur.fetchone()
+                            if row:
+                                parts.append(f"[DB 최신 뉴스 {str(row[1])[:10]}]\n{row[0][:1500]}")
+        except Exception:
+            pass
+        return "\n\n".join(parts) if parts else f"로컬 DB에 '{query}' 관련 저장된 데이터 없음"
     if tool_name == "query_portfolio":
         logger.info("Ollama tool call: query_portfolio('%s')", query)
         import sqlite3 as _sq3
@@ -292,22 +418,90 @@ def _execute_tool_call(tool_name: str, arguments: dict) -> str:
     return f"알 수 없는 도구: {tool_name}"
 
 
+_GEMMA3_TOOL_SYSTEM = """한국어 AI 어시스턴트. 사용 가능한 도구: web_search, get_news, get_stock_price, search_local_knowledge, query_portfolio, query_trade_history, deep_search, fetch_url.
+도구 호출 형식(JSON 1줄): {"tool":"web_search","arguments":{"query":"검색어"}}
+도구 필요시 JSON만 출력. 일반 질문은 텍스트로 답변."""
+
+
+def call_gemma3(prompt: str, use_tools: bool = True) -> str:
+    """gemma3:4b 로컬 호출. 커스텀 tool calling (프롬프트 기반) 지원."""
+    import datetime as _dt, pytz as _pytz, json as _json, re as _re
+    _now = _dt.datetime.now(_pytz.timezone("Asia/Seoul"))
+    # 날짜를 유저 메시지 앞에 붙임 → 시스템 프롬프트 고정 → Ollama KV 캐시 재사용
+    _dated_prompt = f"[{_now.strftime('%Y-%m-%d %H:%M KST')}] {prompt}"
+    messages = [
+        {"role": "system", "content": _GEMMA3_TOOL_SYSTEM},
+        {"role": "user",   "content": _dated_prompt},
+    ]
+    for _ in range(3):
+        try:
+            r = requests.post(
+                config.LOCAL_OLLAMA_URL,
+                json={
+                    "model": "gemma3:4b",
+                    "messages": messages,
+                    "options": {"temperature": 0.7, "num_predict": 600, "num_ctx": 2048, "num_thread": 4},
+                    "stream": False,
+                },
+                timeout=(5, 240),
+                proxies={"http": None, "https": None},
+            )
+            r.raise_for_status()
+            content = r.json().get("message", {}).get("content", "").strip()
+            if not content:
+                continue
+            if not use_tools:
+                return content
+            # tool call 감지: 순수 JSON 또는 ```json 블록
+            tool_data = None
+            try:
+                tool_data = _json.loads(content)
+            except Exception:
+                for pat in [r'```(?:json)?\s*(\{.*?\})\s*```',
+                            r'<tool_call>\s*(\{.*?\})\s*</tool_call>',
+                            r'(\{"tool"\s*:.*?\})']:
+                    m = _re.search(pat, content, _re.DOTALL)
+                    if m:
+                        try: tool_data = _json.loads(m.group(1)); break
+                        except Exception: pass
+            if tool_data and "tool" in tool_data:
+                tool_name = tool_data["tool"]
+                args = tool_data.get("arguments", {})
+                # 잘못된 중첩 형식 보정: {"query": {"value": "..."}} → {"query": "..."}
+                args = {k: (v["value"] if isinstance(v, dict) and "value" in v else v)
+                        for k, v in args.items()}
+                logger.info("Gemma3 tool call: %s(%s)", tool_name, args)
+                tool_result = _execute_tool_call(tool_name, args)
+                messages.append({"role": "assistant", "content": content})
+                messages.append({"role": "user", "content": f"[도구 결과]\n{tool_result}\n\n위 결과로 한국어로 답해줘."})
+                continue
+            return content
+        except Exception as e:
+            logger.error("Gemma3 호출 실패: %s", e)
+            time.sleep(2)
+    return "⚠️ 서버 AI 응답 실패"
+
+
 def call_mistral_only(prompt: str, system: str = _TOOL_SYSTEM, use_tools: bool = True) -> str:
     """
     mistral-small:24b 단독 호출. tool calling 지원.
     - use_tools=True: Ollama가 web_search 도구를 스스로 호출 가능
     - 3회 재시도 후 최종 실패 시 안내 메시지 반환.
     """
-    config.WOL_SENT = False   # 매 요청마다 초기화
     send_wol()                # 무조건 WoL 전송 (UDP, PC 켜져있어도 무해)
+    _wol_waited = False       # 이번 호출에서 wait_for_ollama 대기 여부
+    # 날짜를 유저 메시지 앞에 붙임 → 시스템 프롬프트 고정 → KV 캐시 재사용
+    import datetime as _dt, pytz as _pytz
+    _now = _dt.datetime.now(_pytz.timezone("Asia/Seoul"))
+    _dated_prompt = f"[{_now.strftime('%Y-%m-%d %H:%M KST')}] {prompt}"
     messages = [
         {"role": "system", "content": system},
-        {"role": "user",   "content": prompt},
+        {"role": "user",   "content": _dated_prompt},
     ]
     payload = {
         "model": config.QWEN_MODEL,
         "messages": messages,
-        "options": {"temperature": 0.7, "num_predict": 2048},
+        "options": {"temperature": 0.7, "num_predict": 1024, "num_ctx": 4096},
         "stream": False,
     }
     if use_tools:
@@ -318,7 +512,6 @@ def call_mistral_only(prompt: str, system: str = _TOOL_SYSTEM, use_tools: bool =
         try:
             r = requests.post(config.QWEN_URL, json=payload, timeout=(1, 300))
             r.raise_for_status()
-            config.WOL_SENT = False   # 연결 성공 → 플래그 초기화
             data = r.json()
             msg = data.get("message", {})
 
@@ -338,7 +531,7 @@ def call_mistral_only(prompt: str, system: str = _TOOL_SYSTEM, use_tools: bool =
                 payload2 = {
                     "model": config.QWEN_MODEL,
                     "messages": messages,
-                    "options": {"temperature": 0.7, "num_predict": 2048},
+                    "options": {"temperature": 0.7, "num_predict": 1024, "num_ctx": 4096},
                     "stream": False,
                 }
                 r2 = requests.post(config.QWEN_URL, json=payload2, timeout=(1, 300))
@@ -353,10 +546,10 @@ def call_mistral_only(prompt: str, system: str = _TOOL_SYSTEM, use_tools: bool =
         except Exception as e:
             last_exc = e
             err_str = str(e).lower()
-            # 연결 오류 = PC 절전 가능성 → WoL 시도 (1회만)
-            if not config.WOL_SENT and any(k in err_str for k in ["connect", "refused", "timeout", "unreachable"]):
-                logger.warning("Ollama 연결 실패 — PC 절전 의심, WoL 전송 시도")
-                send_wol()
+            # 연결 오류 = PC 절전 가능성 → 대기 (1회만)
+            if not _wol_waited and any(k in err_str for k in ["connect", "refused", "timeout", "unreachable"]):
+                _wol_waited = True
+                logger.warning("Ollama 연결 실패 — PC 절전 의심, 응답 대기 중")
                 def _notify():
                     try:
                         import telebot as _tb

@@ -24,7 +24,7 @@ from stock_data import (
     get_foreign_net_buy, _get_today_institutional_net_buy
 )
 from search_utils import searxng_search, perplexica_search
-from llm_client import call_mistral_only, _ALL_TOOLS
+from llm_client import call_mistral_only, call_gemma3, _ALL_TOOLS
 
 logger = config.logger
 
@@ -353,17 +353,46 @@ def handle_tg_srv():
             srv_reply = handle_mobile_command(text.strip())
             if srv_reply:
                 reply = srv_reply
+                requests.post(
+                    f"{base_url}/sendMessage",
+                    json={"chat_id": chat_id, "text": reply},
+                    proxies=_no_proxy,
+                )
+                return
+            direct = _direct_reply(text)
+            if direct is not None:
+                reply = direct
+                requests.post(
+                    f"{base_url}/sendMessage",
+                    json={"chat_id": chat_id, "text": reply},
+                    proxies=_no_proxy,
+                )
+                return
+            # Gemma3 호출 전 즉시 "생각 중" 메시지 발송
+            thinking_res = requests.post(
+                f"{base_url}/sendMessage",
+                json={"chat_id": chat_id, "text": "⏳ 생각 중..."},
+                proxies=_no_proxy,
+            ).json()
+            thinking_msg_id = thinking_res.get("result", {}).get("message_id")
+            try:
+                reply = call_gemma3(text, use_tools=True) or GUIDE_MSG
+            except Exception:
+                reply = GUIDE_MSG
+            # "생각 중" 메시지를 실제 답변으로 교체
+            if thinking_msg_id:
+                requests.post(
+                    f"{base_url}/editMessageText",
+                    json={"chat_id": chat_id, "message_id": thinking_msg_id, "text": reply},
+                    proxies=_no_proxy,
+                )
             else:
-                direct = _direct_reply(text)
-                if direct is not None:
-                    reply = direct
-                else:
-                    try:
-                        reply = call_mistral_only(text, use_tools=True)
-                        if not reply:
-                            reply = GUIDE_MSG
-                    except Exception:
-                        reply = GUIDE_MSG
+                requests.post(
+                    f"{base_url}/sendMessage",
+                    json={"chat_id": chat_id, "text": reply},
+                    proxies=_no_proxy,
+                )
+            return
         except Exception as e:
             logger.exception("_process 오류")
             reply = f"⚠️ 처리 오류: {e}"
@@ -512,6 +541,14 @@ def auto_report_scheduler():
                     con.close()
                 except Exception:
                     logger.exception("prev_day_cash 저장 실패")
+                # 자정: RAG 뉴스/매매 자동 동기화
+                try:
+                    from rag_store import sync_news_from_db, sync_trades_from_db
+                    n = sync_news_from_db(limit=30)
+                    t = sync_trades_from_db(limit=50)
+                    logger.info("RAG 자정 동기화: 뉴스 %d건, 매매 %d건", n, t)
+                except Exception:
+                    logger.exception("RAG 동기화 실패")
         except Exception:
             logger.exception("auto_report_scheduler 예외")
         time.sleep(30)

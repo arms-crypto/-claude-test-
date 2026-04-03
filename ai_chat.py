@@ -114,9 +114,9 @@ def ask_ai(session_id, user_input):
             return f"✅ `{code}` 자동학습! 💾\\n현재가: **{price}**", None
         return f"❌ `{code}`: 가격 조회 실패", None
 
-    # 2) 이름만 입력시 DB 조회
+    # 2) 이름만 입력시 DB 조회 (3자 이상 + 숫자/영문 포함 또는 한자어만)
     clean_name = re.sub(r'\\d{6}', '', user_input).strip()
-    if clean_name and len(clean_name) > 1:
+    if clean_name and len(clean_name) >= 3 and not re.match(r'^[a-zA-Z가-힣]{1,2}$', clean_name):
         code = get_stock_code_from_db(clean_name)
         if code:
             price = get_yahoo_price(code) or get_price_by_code(code) or get_naver_price(code)
@@ -180,23 +180,7 @@ def ask_ai(session_id, user_input):
         summary = call_mistral_only(f"다음 뉴스를 3줄로 요약:\n\n{news_text}", system="증시 뉴스 요약 전문가. 핵심만 3줄 한국어로.")
         return f"🌅 [장 시작 전 AI 프리뷰]\n\n{summary}", None
 
-    # 3-1) 단순 인사 즉시 처리 — 나머지는 LLM이 판단
-    _raw = user_input.strip().lower().rstrip("?!. ~ㅋㅎ^*_")
-    _greet_map = {
-        "안녕": "안녕하세요! 😊", "안녕하세요": "안녕하세요! 😊",
-        "안녕하십니까": "안녕하세요! 😊", "안뇽": "안녕하세요! 😊",
-        "ㅎㅇ": "안녕하세요! 😊",
-        "하이": "안녕하세요! 😄", "hi": "안녕하세요! 😄",
-        "hello": "안녕하세요! 😄", "헬로": "안녕하세요! 😄",
-        "잘자": "잘 자요! 🌙", "잘자요": "잘 자요! 🌙",
-        "굿나잇": "잘 자요! 🌙", "ㅂㅂ": "잘 자요! 🌙",
-        "굿모닝": "좋은 아침이에요! ☀️", "좋은아침": "좋은 아침이에요! ☀️",
-    }
-    if _raw in _greet_map:
-        reply = _greet_map[_raw]
-        history.append(f"Human: {user_input}")
-        history.append(f"AI: {reply}")
-        return reply, None
+    # 3-1) 모든 메시지 PC Ollama가 판단
 
     # 4) 도구(뉴스/검색) 실행 로직 — 주가는 Ollama가 get_stock_price 도구로 직접 처리
     tool_info = []
