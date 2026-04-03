@@ -250,17 +250,16 @@ def _execute_tool_call(tool_name: str, arguments: dict) -> str:
     query = arguments.get("query", "")
     if tool_name == "web_search":
         logger.info("Ollama tool call: web_search('%s')", query)
-        results = searxng_search(query, categories="news", max_results=10)
+        results = searxng_search(query, categories="news", max_results=5)
         if not results:
-            results = searxng_search(query, max_results=10)
+            results = searxng_search(query, max_results=5)
         if results:
             lines = []
-            for r in results[:10]:
+            for r in results[:5]:
                 title = r.get("title", "")
-                content = r.get("content", "")[:300]
-                url = r.get("url", "")
+                content = r.get("content", "")[:150]
                 if content:
-                    lines.append(f"- {title}: {content} ({url})")
+                    lines.append(f"- {title}: {content}")
             return "\n".join(lines) if lines else "검색 결과 없음"
         return "검색 결과 없음"
     if tool_name == "deep_search":
