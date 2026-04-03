@@ -180,94 +180,28 @@ def ask_ai(session_id, user_input):
         summary = call_mistral_only(f"다음 뉴스를 3줄로 요약:\n\n{news_text}", system="증시 뉴스 요약 전문가. 핵심만 3줄 한국어로.")
         return f"🌅 [장 시작 전 AI 프리뷰]\n\n{summary}", None
 
-    # 3-1) 모든 메시지 PC Ollama가 판단
-
-    # 4) 도구(뉴스/검색) 실행 로직 — 주가는 Ollama가 get_stock_price 도구로 직접 처리
-    tool_info = []
-    from stock_data import naver_news
-
-    # b) 뉴스/검색/related 정보 요청이면
-    _search_keywords = [
-        "뉴스", "검색", "관련", "최신", "오늘", "동향", "전망", "분석",
-        "요약", "알려줘", "알려 줘", "알려줘요", "설명해", "소개해",
-        "찾아줘", "찾아봐", "검색해", "조회",
-        "영화", "드라마", "공연", "음악", "노래", "책", "소설", "웹툰",
-        "줄거리", "내용이", "정보", "특징", "장점", "단점",
-        "뭔지", "뭐야", "뭔가요", "뭔데", "뭐예요",
-        "어떤 영화", "어떤 드라마", "어떤 책",
-    ]
-    search_triggered = any(k in user_input for k in _search_keywords)
-    _news_keywords = ["뉴스", "시황", "동향", "전망", "분석", "오늘 증시", "오늘 주식"]
-    _use_perplexica_first = any(k in user_input for k in _news_keywords)
-    if search_triggered:
-        if _use_perplexica_first:
-            perplexica_result = perplexica_search(user_input)
-            if perplexica_result and perplexica_result != "검색 결과를 찾지 못했습니다.":
-                tool_info.append("🔍 Perplexica AI 검색:\n" + perplexica_result)
-            else:
-                news = naver_news(user_input)
-                if news:
-                    tool_info.append("📰 네이버 뉴스: " + news)
-                web_result = search_and_summarize(user_input)
-                if web_result and web_result != "검색 결과가 없습니다.":
-                    tool_info.append("🌐 SearXNG 웹 검색: " + web_result)
-        else:
-            web_result = search_and_summarize(user_input)
-            if web_result and web_result != "검색 결과가 없습니다.":
-                tool_info.append("🌐 웹 검색:\n" + web_result)
-            else:
-                perplexica_result = perplexica_search(user_input)
-                if perplexica_result and perplexica_result != "검색 결과를 찾지 못했습니다.":
-                    tool_info.append("🔍 Perplexica AI 검색:\n" + perplexica_result)
-
-        if not tool_info:
-            tool_info.append(
-                "⚠️ 실시간 검색 불가\n"
-                "- Perplexica(포트 3001) 또는 SearXNG(포트 8080)가 응답하지 않습니다.\n"
-                "- 확인 방법: docker compose ps\n"
-                "- 재시작 방법: docker compose up -d\n"
-                "최신 정보가 필요한 질문에는 답변드리기 어렵습니다."
-            )
-
-    # c) 외국인/기관/순매수 요청이면
+    # 4) 순매수/매매 데이터만 선수집 (Ollama가 처리하기 어려운 커스텀 API)
+    extra_data = []
     if "순매수" in user_input.lower() or "순매매" in user_input.lower():
         fnb = get_foreign_net_buy(user_input)
         if fnb:
-            tool_info.append("📈 순매수/매매 동향: " + fnb)
+            extra_data.append("📈 외국인/기관 순매수:\n" + fnb)
 
-    # 5) LLM 호출
+    # 5) LLM 호출 — 모든 검색/뉴스/주가는 Ollama가 도구로 직접 판단
     try:
-        if tool_info:
-            tool_str = "\n".join(tool_info)
-            prompt = f"""현재 시각: {current_time_str}
+        ctx = ""
+        if fact_str:
+            ctx += fact_str
+        if chat_history_str:
+            ctx += f"이전 대화:\n{chat_history_str}\n\n"
+        if extra_data:
+            ctx += "[참고 데이터]\n" + "\n".join(extra_data) + "\n\n"
 
-사용자 핵심 정보:
-{my_facts}
-
-이전 대화:
-{chat_history_str}
-
-[수집된 도구 정보]
-{tool_str}
-
-사용자 질문: {user_input}
-
-위 도구 정보를 활용하여 한국어로 답변. 단, 도구 정보에 관련 내용이 없으면 "실시간 검색 결과에 해당 정보가 없습니다. 검색 엔진을 확인해주세요." 라고 안내:"""
-            answer = call_qwen(prompt)
-        else:
-            prompt = f"""현재 시각: {current_time_str}
-
-사용자 핵심 정보:
-{my_facts}
-
-이전 대화:
-{chat_history_str}
-
-질문: {user_input}"""
-            answer = call_qwen(prompt)
+        prompt = f"{ctx}현재 시각: {current_time_str}\n질문: {user_input}"
+        answer = call_qwen(prompt)
 
         # 6) LLM 응답에 6자리 종목코드 언급 + 주가 질문이면 자동 재조회
-        if not tool_info and any(k in user_input for k in ["주가", "가격", "얼마", "시세"]):
+        if any(k in user_input for k in ["주가", "가격", "얼마", "시세"]):
             m6 = re.search(r'\b(\d{6})\b', answer)
             if m6:
                 auto_price = korea_invest_stock(m6.group(1))

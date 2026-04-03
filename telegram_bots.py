@@ -280,48 +280,12 @@ def handle_tg_srv():
     logger.info("oracleN 서버봇 시작")
 
     def _direct_reply(text: str):
-        """LLM 없이 Python에서 바로 포맷해서 반환 (구조화 데이터)"""
+        """슬래시 없는 서버 상태 확인만 즉시 처리. 나머지는 Gemma3 도구 호출로 위임."""
         t = re.sub(r'\s+', '', text).lower()
         t_raw = text.lower()
-        portfolio_kw = ["포트폴리오", "잔고", "보유종목", "수익률", "손익", "매매내역", "거래내역",
-                        "db", "데이터베이스", "최신데이터", "내역"]
-        if any(k in t for k in portfolio_kw):
-            return _srv_query_portfolio()
         if any(k in t for k in ["서버상태", "상태확인", "서버확인"]) or \
            any(k in t_raw for k in ["서버 상태", "상태 확인"]):
             return _srv_get_server_status()
-        if any(k in t for k in ["보고서", "marketreport", "증시", "시장", "나스닥", "s&p", "코스피", "코스닥", "미장", "vix", "환율"]):
-            r = _srv_read_market_report()
-            return r if r else "시장 보고서 없음 (매일 20:00 KST 갱신)"
-        overseas = {"애플": "AAPL", "테슬라": "TSLA", "엔비디아": "NVDA", "구글": "GOOGL",
-                    "아마존": "AMZN", "마이크로소프트": "MSFT", "메타": "META", "넷플릭스": "NFLX"}
-        for name, ticker in overseas.items():
-            if name in t or ticker.lower() in t:
-                return stock_price_overseas(name)
-        if any(k in t for k in ["주가", "현재가", "시세"]):
-            candidates = re.findall(r'[가-힣]{2,}', text)
-            skip = {"주가", "현재가", "시세", "주식", "조회", "알려줘", "보여줘"}
-            for name in candidates:
-                if name not in skip:
-                    return korea_invest_stock(name)
-        if any(k in t for k in ["뉴스", "최신", "소식", "이슈", "요약"]):
-            query = re.sub(r'뉴스|최신|소식|이슈|요약', '', text).strip() or "증시"
-            headlines = naver_news(query)
-            if not headlines or "실패" in headlines:
-                return "뉴스 조회 실패"
-            try:
-                r = requests.post(config.LOCAL_OLLAMA_URL, json={
-                    "model": config.LOCAL_MODEL,
-                    "messages": [
-                        {"role": "system", "content": "뉴스 제목을 한국어로만 요약. 영어 절대 사용 금지. 1~3줄 번호 목록. 인사말/설명 없이 요약만."},
-                        {"role": "user", "content": headlines}
-                    ],
-                    "stream": False
-                }, timeout=60, proxies={"http": None, "https": None})
-                summary = r.json().get("message", {}).get("content", "").strip()
-                return f"📰 {query} 뉴스\n{summary}" if summary else headlines
-            except Exception:
-                return f"📰 {query} 뉴스\n{headlines}"
         return None
 
     GUIDE_MSG = (
