@@ -501,7 +501,7 @@ def call_mistral_only(prompt: str, system: str = _TOOL_SYSTEM, use_tools: bool =
     payload = {
         "model": config.QWEN_MODEL,
         "messages": messages,
-        "options": {"temperature": 0.7, "num_predict": 1024, "num_ctx": 4096},
+        "options": {"temperature": 0.7, "num_predict": 1024, "num_ctx": 8192},
         "stream": False,
     }
     if use_tools:
@@ -531,7 +531,7 @@ def call_mistral_only(prompt: str, system: str = _TOOL_SYSTEM, use_tools: bool =
                 payload2 = {
                     "model": config.QWEN_MODEL,
                     "messages": messages,
-                    "options": {"temperature": 0.7, "num_predict": 1024, "num_ctx": 4096},
+                    "options": {"temperature": 0.7, "num_predict": 1024, "num_ctx": 8192},
                     "stream": False,
                 }
                 r2 = requests.post(config.QWEN_URL, json=payload2, timeout=(1, 300))
