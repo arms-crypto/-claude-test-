@@ -423,6 +423,12 @@ _GEMMA3_TOOL_SYSTEM = """나는 한국어 AI 어시스턴트입니다. 사용자
 도구 호출 형식 — JSON 한 줄만, 다른 텍스트 없이:
 {"tool":"도구명","arguments":{"query":"검색어"}}
 
+[접근 가능한 데이터]
+- Oracle DB: daily_news 테이블 (매일 수집된 뉴스 헤드라인) → search_local_knowledge
+- 시장 보고서: 매일 갱신되는 코스피/코스닥 분석 텍스트 → search_local_knowledge
+- SQLite portfolio.db: 모의투자 잔고·보유종목·거래내역 → query_portfolio
+사용자가 "DB", "저장된", "서버", "로컬" 등을 언급하면 반드시 도구로 조회할 것.
+
 사용 가능한 도구:
 - get_stock_price: 주가·시세 조회 (종목명 또는 티커)
 - get_news: 종목·기업·시장 뉴스
