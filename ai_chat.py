@@ -111,17 +111,17 @@ def ask_ai(session_id, user_input):
         save_stock_code_to_db("코드학습", code)
         price = get_yahoo_price(code) or get_price_by_code(code) or get_naver_price(code)
         if price:
-            return f"✅ `{code}` 자동학습! 💾\\n현재가: **{price}**", None
+            return f"✅ `{code}` 자동학습! 💾\n현재가: **{price}**", None
         return f"❌ `{code}`: 가격 조회 실패", None
 
     # 2) 이름만 입력시 DB 조회 (3자 이상 + 숫자/영문 포함 또는 한자어만)
-    clean_name = re.sub(r'\\d{6}', '', user_input).strip()
+    clean_name = re.sub(r'\d{6}', '', user_input).strip()
     if clean_name and len(clean_name) >= 3 and not re.match(r'^[a-zA-Z가-힣]{1,2}$', clean_name):
         code = get_stock_code_from_db(clean_name)
         if code:
             price = get_yahoo_price(code) or get_price_by_code(code) or get_naver_price(code)
             if price:
-                return f"**{clean_name}**: {price} (DB) 💾\\n`[{code}]`", None
+                return f"**{clean_name}**: {price} (DB) 💾\n`[{code}]`", None
 
     # 3) 시간/팩트/채팅 기록 준비
     now = datetime.datetime.now(pytz.timezone('Asia/Seoul'))
