@@ -17,12 +17,15 @@ logger = config.logger
 _perplexica_provider_cache = {"ollama_id": None, "trans_id": None}
 
 
-def searxng_search(query: str, categories: str = "general", max_results: int = 5) -> list:
+def searxng_search(query: str, categories: str = "general", max_results: int = 5, time_range: str = None) -> list:
     """SearXNG에서 실시간 검색 결과를 가져온다."""
     try:
+        params = {"q": query, "format": "json", "categories": categories, "language": "ko-KR"}
+        if time_range:
+            params["time_range"] = time_range
         r = requests.get(
             f"{config.SEARXNG_URL}/search",
-            params={"q": query, "format": "json", "categories": categories, "language": "ko-KR"},
+            params=params,
             timeout=10,
         )
         r.raise_for_status()

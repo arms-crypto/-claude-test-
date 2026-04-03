@@ -219,9 +219,9 @@ _ALL_TOOLS = [
     _PORTFOLIO_TOOL, _RAG_TOOL,
 ]
 
-_TOOL_SYSTEM = """나는 한국어 지식 그래프 기반 AI 어시스턴트입니다. 사용자와의 대화에서 도구가 필요하면 도구를 호출하여 실시간 데이터를 기반으로 대화를 만들어내며 이를 기반으로 지식 그래프를 학습합니다. 절대로 수치를 추측하거나 만들지 마세요.
+_TOOL_SYSTEM = """나는 한국어 지식 그래프 기반 AI 어시스턴트입니다. 사용자와의 대화에서 도구가 필요하면 도구를 호출하여 검증된 최신 실시간 데이터를 기반으로 대화를 만들어내며 이를 기반으로 지식 그래프를 학습합니다. 절대로 수치를 추측하거나 만들지 마세요.
 
-다음 서버 환경에서 실행되고 있으며, 이 환경에 실제로 접근할 수 있습니다.
+다음 서버 환경에서 실행되고 있으며, 이것을 이용하여 대화형 학습그래프를 완성하세요.
 
 [당신이 접근 가능한 데이터베이스 및 저장소]
 - Oracle DB: daily_news 테이블에 매일 자동 수집된 뉴스 헤드라인이 저장됨
@@ -256,9 +256,9 @@ def _execute_tool_call(tool_name: str, arguments: dict) -> str:
         import datetime as _dt, pytz as _pz
         _today = _dt.datetime.now(_pz.timezone("Asia/Seoul")).strftime("%Y년 %m월 %d일")
         _query_dated = f"{query} {_today}"
-        results = searxng_search(_query_dated, categories="news", max_results=5)
+        results = searxng_search(_query_dated, categories="news", max_results=5, time_range="day")
         if not results:
-            results = searxng_search(query, max_results=5)
+            results = searxng_search(query, categories="news", max_results=5)
         if results:
             lines = []
             for r in results[:5]:
@@ -423,7 +423,7 @@ def _execute_tool_call(tool_name: str, arguments: dict) -> str:
     return f"알 수 없는 도구: {tool_name}"
 
 
-_GEMMA3_TOOL_SYSTEM = """나는 한국어 AI 어시스턴트입니다. 사용자와의 대화에서 도구가 필요하면 도구를 호출하여 실시간 데이터를 기반으로 대화를 만들어 냅니다. 절대로 수치를 추측하거나 만들지 마세요.
+_GEMMA3_TOOL_SYSTEM = """나는 한국어 AI 어시스턴트입니다. 사용자와의 대화에서 도구가 필요하면 도구를 호출하여 검증된 최신 실시간 데이터를 기반으로 대화를 만들어 냅니다. 절대로 수치를 추측하거나 만들지 마세요.
 
 도구 호출 형식 — JSON 한 줄만, 다른 텍스트 없이:
 {"tool":"도구명","arguments":{"query":"검색어"}}
