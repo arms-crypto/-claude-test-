@@ -15,7 +15,7 @@
 | Flask 포트 | 11435 |
 | PC Ollama | 221.144.111.116:11434 |
 | PC 모델 | mistral-small3.1:24b |
-| 로컬 Ollama | localhost:11434 (gemma2:2b) |
+| 로컬 Ollama | localhost:11434 (gemma3:4b) |
 | 텔레그램 봇 1 | TOKEN_RAW — Ollama_Agent (handle_tg) |
 | 텔레그램 봇 2 | TOKEN_SRV — oracleN_Agent_bot (handle_tg_srv) |
 | CHAT_ID | 8448138406 |
@@ -23,12 +23,15 @@
 
 ## 구조 요약
 ```
-ask_ai()          ← 텔레그램 봇1 (handle_tg) 메시지 처리
-  └─ 주가/검색 키워드 감지 → 도구 호출 → call_qwen(=call_mistral_only)
-call_mistral_only() ← PC Ollama mistral-small3.1:24b 호출 (3회 재시도)
+ask_ai()            ← 텔레그램 봇1 (handle_tg) 메시지 처리
+  └─ 질문을 그대로 call_qwen(=call_mistral_only)에 전달
+       → Ollama가 native tool calling으로 도구 스스로 호출
+call_mistral_only() ← PC Ollama mistral-small3.1:24b (native tool calling)
   └─ 연결 실패 시 WoL → wait_for_ollama()
-handle_tg_srv()   ← 텔레그램 봇2, 슬래시 명령 + 포트폴리오 조회
-auto_trade_cycle() ← 30초 루프, risk_gate → select_volume → buy/sell
+call_gemma3()       ← 로컬 Ollama gemma3:4b (프롬프트 기반 tool calling)
+  └─ 도구 1회 호출 후 결과 요약 → 텔레그램 전송
+handle_tg_srv()     ← 텔레그램 봇2, 슬래시 명령 + call_gemma3
+auto_trade_cycle()  ← 30초 루프, risk_gate → select_volume → buy/sell
 ```
 
 ## 현재 진행 이슈
