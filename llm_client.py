@@ -515,8 +515,9 @@ def call_gemma3(prompt: str, use_tools: bool = True) -> str:
                 logger.info("Gemma3 tool call: %s(%s)", tool_name, args)
                 tool_result = _execute_tool_call(tool_name, args)
                 _tool_called = True
-                # CPU 속도 한계로 두 번째 LLM 호출 생략 → 결과 직접 반환
-                return tool_result or "검색 결과가 없습니다."
+                messages.append({"role": "assistant", "content": content})
+                messages.append({"role": "user", "content": f"[도구 결과]\n{tool_result}\n\n위 결과를 바탕으로 한국어로 간결하게 답해줘."})
+                continue
             return content
         except Exception as e:
             logger.error("Gemma3 호출 실패: %s", e)
