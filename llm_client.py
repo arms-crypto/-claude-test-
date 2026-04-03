@@ -253,12 +253,9 @@ def _execute_tool_call(tool_name: str, arguments: dict) -> str:
     query = arguments.get("query", "")
     if tool_name == "web_search":
         logger.info("Ollama tool call: web_search('%s')", query)
-        import datetime as _dt, pytz as _pz
-        _today = _dt.datetime.now(_pz.timezone("Asia/Seoul")).strftime("%Y년 %m월 %d일")
-        _query_dated = f"{query} {_today}"
-        results = searxng_search(_query_dated, categories="news", max_results=5, time_range="day")
+        results = searxng_search(query, categories="news", max_results=5, time_range="day")
         if not results:
-            results = searxng_search(query, categories="news", max_results=5)
+            results = searxng_search(query, categories="news", max_results=5, time_range="week")
         if results:
             lines = []
             for r in results[:5]:
