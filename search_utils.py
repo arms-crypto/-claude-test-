@@ -97,7 +97,7 @@ def perplexica_search(query: str, focus_mode: str = "webSearch") -> str:
         r = requests.post(
             f"{config.PERPLEXICA_URL}/api/chat",
             json=payload,
-            timeout=90,
+            timeout=30,
         )
         r.raise_for_status()
         r.encoding = 'utf-8'

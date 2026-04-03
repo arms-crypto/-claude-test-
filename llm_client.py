@@ -466,24 +466,25 @@ def call_gemma3(prompt: str, use_tools: bool = True) -> str:
         {"role": "system", "content": _GEMMA3_TOOL_SYSTEM},
         {"role": "user",   "content": _dated_prompt},
     ]
-    for _ in range(3):
+    _tool_called = False  # 도구는 1회만 허용 (연쇄 호출 방지)
+    for attempt in range(3):
         try:
             r = requests.post(
                 config.LOCAL_OLLAMA_URL,
                 json={
                     "model": "gemma3:4b",
                     "messages": messages,
-                    "options": {"temperature": 0.7, "num_predict": 600, "num_ctx": 2048, "num_thread": 4},
+                    "options": {"temperature": 0.7, "num_predict": 600, "num_ctx": 1024, "num_thread": 4},
                     "stream": False,
                 },
-                timeout=(5, 240),
+                timeout=(5, 120),
                 proxies={"http": None, "https": None},
             )
             r.raise_for_status()
             content = r.json().get("message", {}).get("content", "").strip()
             if not content:
                 continue
-            if not use_tools:
+            if not use_tools or _tool_called:
                 return content
             # tool call 감지: 중첩 JSON 브레이스 카운팅으로 정확히 추출
             tool_data = None
@@ -509,14 +510,13 @@ def call_gemma3(prompt: str, use_tools: bool = True) -> str:
             if tool_data and "tool" in tool_data:
                 tool_name = tool_data["tool"]
                 args = tool_data.get("arguments", {})
-                # 잘못된 중첩 형식 보정: {"query": {"value": "..."}} → {"query": "..."}
                 args = {k: (v["value"] if isinstance(v, dict) and "value" in v else v)
                         for k, v in args.items()}
                 logger.info("Gemma3 tool call: %s(%s)", tool_name, args)
                 tool_result = _execute_tool_call(tool_name, args)
-                messages.append({"role": "assistant", "content": content})
-                messages.append({"role": "user", "content": f"[도구 결과]\n{tool_result}\n\n위 결과로 한국어로 답해줘."})
-                continue
+                _tool_called = True
+                # CPU 속도 한계로 두 번째 LLM 호출 생략 → 결과 직접 반환
+                return tool_result or "검색 결과가 없습니다."
             return content
         except Exception as e:
             logger.error("Gemma3 호출 실패: %s", e)
