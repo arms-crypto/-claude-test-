@@ -141,7 +141,7 @@ _PORTFOLIO_TOOL = {
     "type": "function",
     "function": {
         "name": "query_portfolio",
-        "description": "모의투자 포트폴리오 조회. 보유종목, 잔고, 손익, 매매내역 등 포트폴리오 관련 질문에 반드시 사용.",
+        "description": "모의투자 포트폴리오 현황 조회. 현재 보유종목, 잔고, 평가손익 등 지금 상태를 물어볼 때 사용. 과거 거래 이력은 query_trade_history 사용.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -156,7 +156,7 @@ _RAG_TOOL = {
     "type": "function",
     "function": {
         "name": "query_trade_history",
-        "description": "과거 매매 이력(RAG) 조회. 특정 종목의 과거 매매 결과, 손익률, 매수/매도 시점 등을 물어볼 때 사용.",
+        "description": "과거 매매 이력 조회. '최근 매매 내역', '거래 기록', '언제 샀어', '매수/매도 시점', '거래 내역 보여줘' 등 과거 거래 기록을 물어볼 때 사용.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -202,7 +202,7 @@ _LOCAL_KNOWLEDGE_TOOL = {
     "type": "function",
     "function": {
         "name": "search_local_knowledge",
-        "description": "로컬 지식베이스 검색. 시장 보고서, 저장된 뉴스 등 서버에 캐시된 데이터 조회. 시황/증시 전망/최근 뉴스 요약에 활용.",
+        "description": "서버 로컬 데이터 검색. '시장 보고서', '저장된 뉴스', '서버에 있는', 'DB 뉴스', '로컬 데이터' 등을 언급할 때 반드시 사용. Oracle DB 뉴스 + 시장 분석 보고서 조회.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -233,9 +233,9 @@ _TOOL_SYSTEM = """나는 한국어 지식 그래프 기반 AI 어시스턴트입
 [도구 선택 기준] — 절대로 훈련 데이터로 추측하지 말 것. 반드시 도구를 직접 호출할 것. 사용자에게 어떤 도구를 쓸지 묻거나 선택지를 제시하지 말 것.
 - 주가/시세/현재가 → get_stock_price (시장 개장 여부 무관하게 항상 호출)
 - 시황/증시/나스닥/코스피/미국주식/한국주식 동향 → web_search 또는 search_local_knowledge
-- DB/저장소 관련 질문 → search_local_knowledge (Oracle DB 뉴스 + 시장 보고서 키워드 검색)
-- 잔고, 보유종목, 거래내역 → query_portfolio (portfolio.db 직접 조회)
-- 특정 종목 과거 매매 이력 → query_trade_history
+- DB/저장소/시장보고서/저장된뉴스 관련 질문 → search_local_knowledge (Oracle DB 뉴스 + 시장 보고서)
+- 잔고, 보유종목, 현재 평가손익, 포트폴리오 현황 → query_portfolio (현재 상태만)
+- 매매 내역, 거래 기록, 거래 이력, 언제 샀어, 거래 내역 보여줘 → query_trade_history (과거 거래 로그, query_portfolio 사용 금지)
 - 종목/기업 뉴스 → get_news
 - 간단한 최신 정보, 뉴스 헤드라인 → web_search
 - 복잡한 분석, 심층 조사 → deep_search
