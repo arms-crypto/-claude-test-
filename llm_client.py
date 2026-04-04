@@ -21,18 +21,40 @@ logger = config.logger
 # -------------------------
 # Wake on LAN
 def send_wol():
-    """Wake on LAN: UDP 매직패킷 전송."""
+    """Wake on LAN: 라우터 SSH ether-wake (1순위) + UDP 직접 전송 (2순위)."""
+    import subprocess
+    mac = config.WOL_MAC  # 예: 3C:7C:3F:F2:B0:41
+
+    # 1순위: 라우터 SSH로 ether-wake (LAN에서 직접 전송 → 2차 절전도 깨어남)
     try:
-        mac = config.WOL_MAC.replace(":", "").replace("-", "")
-        magic = bytes.fromhex("F" * 12 + mac * 16)
+        result = subprocess.run(
+            ["ssh", "-o", "ConnectTimeout=5", "-o", "StrictHostKeyChecking=no",
+             "-p", "2222", "-i", "/home/ubuntu/.ssh/id_rsa",
+             "qflavor12@221.144.111.116",
+             f"ether-wake -i br0 {mac}"],
+            capture_output=True, timeout=10
+        )
+        if result.returncode == 0:
+            logger.info("WoL ether-wake (라우터 SSH) 전송 완료")
+            config.WOL_SENT = True
+            return True
+        logger.warning("ether-wake 실패: %s", result.stderr.decode()[:100])
+    except Exception as e:
+        logger.warning("라우터 SSH WoL 실패: %s", e)
+
+    # 2순위: UDP 직접 전송 (폴백)
+    try:
+        _mac = mac.replace(":", "").replace("-", "")
+        magic = bytes.fromhex("F" * 12 + _mac * 16)
         with __import__("socket").socket(__import__("socket").AF_INET, __import__("socket").SOCK_DGRAM) as s:
             s.setsockopt(__import__("socket").SOL_SOCKET, __import__("socket").SO_BROADCAST, 1)
             for _ in range(5):
                 s.sendto(magic, (config.WOL_IP, 9))
                 s.sendto(magic, (config.WOL_IP, 7))
-        logger.info("WoL UDP 즉시 전송 완료 → %s", config.WOL_IP)
+        logger.info("WoL UDP 폴백 전송 완료 → %s", config.WOL_IP)
     except Exception as e:
-        logger.error("WoL UDP 실패: %s", e)
+        logger.error("WoL UDP 폴백 실패: %s", e)
+
     config.WOL_SENT = True
     return True
 
@@ -667,7 +689,7 @@ def call_mistral_only(prompt: str, system: str = _TOOL_SYSTEM, use_tools: bool =
     payload = {
         "model": config.QWEN_MODEL,
         "messages": messages,
-        "options": {"temperature": 0.7, "num_predict": 1024, "num_ctx": 8192},
+        "options": {"temperature": 0.7, "num_predict": 3000, "num_ctx": 8192},
         "stream": False,
     }
     if use_tools:
@@ -698,7 +720,7 @@ def call_mistral_only(prompt: str, system: str = _TOOL_SYSTEM, use_tools: bool =
                 payload2 = {
                     "model": config.QWEN_MODEL,
                     "messages": messages,
-                    "options": {"temperature": 0.7, "num_predict": 1024, "num_ctx": 8192},
+                    "options": {"temperature": 0.7, "num_predict": 3000, "num_ctx": 8192},
                     "stream": False,
                 }
                 r2 = requests.post(config.QWEN_URL, json=payload2, timeout=(1, 300))
