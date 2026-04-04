@@ -419,14 +419,16 @@ def auto_report_scheduler():
                     else:
                         summary = "현재 검색 서버(Perplexica/SearXNG)가 응답하지 않습니다.\n`docker compose up -d` 로 재시작해보세요."
                     requests.post(f"{base_url}/sendMessage", json={"chat_id": config.CHAT_ID, "text": f"🌅 [장 시작 전 AI 프리뷰]\n\n{summary}"}, proxies=_np)
+                    requests.post(f"{base_url}/sendMessage", json={"chat_id": "-1003796486837", "text": f"🌅 [장 시작 전 AI 프리뷰]\n\n{summary}"}, proxies=_np)
                     last_run_time = "morning"
                 elif now.hour == 18 and now.minute == 0 and last_run_time != "afternoon":
                     _np = {"http": None, "https": None}
 
                     def _send(text):
-                        requests.post(f"{base_url}/sendMessage",
-                                      json={"chat_id": config.CHAT_ID, "text": text},
-                                      proxies=_np, timeout=10)
+                        for _cid in [config.CHAT_ID, "-1003796486837"]:
+                            requests.post(f"{base_url}/sendMessage",
+                                          json={"chat_id": _cid, "text": text},
+                                          proxies=_np, timeout=10)
 
                     foreign = get_foreign_net_buy("순매수")
                     _send(foreign if foreign and "실패" not in foreign
