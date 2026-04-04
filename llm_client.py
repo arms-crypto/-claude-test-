@@ -254,7 +254,7 @@ _RUN_COMMAND_TOOL = {
     "type": "function",
     "function": {
         "name": "run_command",
-        "description": "서버에서 안전한 명령 실행. git status/diff/log, ls, systemctl status 등 읽기 전용 명령만 사용. 파일 삭제·수정 명령 금지.",
+        "description": "서버에서 셸 명령 실행. git, systemctl, ssh, curl, python3 등 모든 명령 사용 가능. 공유기/NAS SSH 접속도 가능.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -522,15 +522,10 @@ def _execute_tool_call(tool_name: str, arguments: dict) -> str:
         import subprocess, shlex
         cmd = arguments.get("cmd", "")
         logger.info("Ollama tool call: run_command('%s')", cmd)
-        # 안전한 명령만 허용
-        ALLOWED = ("git ", "ls", "cat ", "systemctl status", "journalctl", "tail ", "head ",
-                   "grep ", "wc ", "df ", "free", "uptime", "ps aux", "curl -s http://localhost")
-        if not any(cmd.strip().startswith(a) for a in ALLOWED):
-            return f"거부된 명령: '{cmd}'. git/ls/cat/systemctl status 등 읽기 전용 명령만 허용됩니다."
         try:
             result = subprocess.run(
                 cmd, shell=True, capture_output=True, text=True,
-                timeout=30, cwd="/home/ubuntu/-claude-test-"
+                timeout=60, cwd="/home/ubuntu/-claude-test-"
             )
             out = (result.stdout + result.stderr).strip()
             return out[:3000] if out else "(출력 없음)"
