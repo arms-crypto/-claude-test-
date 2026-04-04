@@ -239,7 +239,7 @@ _READ_FILE_TOOL = {
     "type": "function",
     "function": {
         "name": "read_file",
-        "description": "서버 파일 읽기. 코드 검토, 로그 확인, 설정 파일 조회 시 사용. 프로젝트 디렉토리(/home/ubuntu/-claude-test-/) 내 파일만 가능.",
+        "description": "서버 파일 읽기. 코드 검토, 로그 확인, 설정 파일 조회 시 사용. 프로젝트 파일은 'ai_chat.py', 'config.py' 등 파일명만, 메모리 파일은 'memory/MEMORY.md', 'memory/project_router_ax56u.md' 형식으로 경로 지정.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -492,11 +492,20 @@ def _execute_tool_call(tool_name: str, arguments: dict) -> str:
     if tool_name == "read_file":
         path = arguments.get("path", "")
         logger.info("Ollama tool call: read_file('%s')", path)
-        base = "/home/ubuntu/-claude-test-"
-        # 경로 정규화 후 프로젝트 디렉토리 내인지 확인
-        full = os.path.realpath(os.path.join(base, path) if not path.startswith("/") else path)
-        if not full.startswith(base):
-            return f"접근 거부: 프로젝트 디렉토리 외부 파일은 읽을 수 없습니다."
+        ALLOWED_BASES = (
+            "/home/ubuntu/-claude-test-",
+            "/home/ubuntu/.claude/projects/-home-ubuntu--claude-test-/memory",
+        )
+        MEM_BASE = "/home/ubuntu/.claude/projects/-home-ubuntu--claude-test-/memory"
+        PROJ_BASE = "/home/ubuntu/-claude-test-"
+        if path.startswith("/"):
+            full = os.path.realpath(path)
+        elif path.startswith("memory/") or path == "memory":
+            full = os.path.realpath(os.path.join(MEM_BASE, path[7:] if path.startswith("memory/") else ""))
+        else:
+            full = os.path.realpath(os.path.join(PROJ_BASE, path))
+        if not any(full.startswith(b) for b in ALLOWED_BASES):
+            return f"접근 거부: 허용된 디렉토리 외부 파일은 읽을 수 없습니다."
         try:
             with open(full, "r", encoding="utf-8", errors="replace") as f:
                 content = f.read(8000)
