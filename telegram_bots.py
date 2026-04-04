@@ -28,6 +28,20 @@ from llm_client import call_mistral_only, call_gemma3, _ALL_TOOLS
 
 logger = config.logger
 
+_TG_MAX = 4000  # 텔레그램 4096자 제한 (여유 96자)
+
+def _send_long(base_url: str, chat_id: str, text: str, proxies: dict = None):
+    """4000자 초과 메시지를 자동으로 쪼개서 전송."""
+    if proxies is None:
+        proxies = {"http": None, "https": None}
+    if not text:
+        return
+    chunks = [text[i:i+_TG_MAX] for i in range(0, len(text), _TG_MAX)]
+    for chunk in chunks:
+        requests.post(f"{base_url}/sendMessage",
+                      json={"chat_id": chat_id, "text": chunk},
+                      proxies=proxies, timeout=10)
+
 MARKET_REPORT_PATH = "/home/ubuntu/.openclaw/workspace-research/data/market_report.txt"
 PORTFOLIO_DB_PATH = "/home/ubuntu/-claude-test-/mock_trading/portfolio.db"
 
@@ -262,7 +276,7 @@ def handle_tg():
                             continue
                         from ai_chat import ask_ai
                         reply_text, image_path = ask_ai(config.CHAT_ID, msg_text)
-                        requests.post(f"{base_url}/sendMessage", json={"chat_id": config.CHAT_ID, "text": reply_text}, proxies=_no_proxy)
+                        _send_long(base_url, config.CHAT_ID, reply_text, _no_proxy)
                         if image_path and os.path.exists(image_path):
                             with open(image_path, "rb") as photo:
                                 requests.post(f"{base_url}/sendPhoto", data={"chat_id": config.CHAT_ID}, files={"photo": photo}, proxies=_no_proxy)
@@ -343,31 +357,23 @@ def handle_tg_srv():
                 reply = call_gemma3(text, use_tools=True) or GUIDE_MSG
             except Exception:
                 reply = GUIDE_MSG
-            # Telegram 4096자 제한 처리
-            if len(reply) > 4000:
-                reply = reply[:3950] + "\n...(이하 생략)"
-            # "생각 중" 메시지를 실제 답변으로 교체
+            # "생각 중" 메시지를 실제 답변으로 교체 (첫 4000자), 나머지는 추가 전송
+            first = reply[:_TG_MAX]
             if thinking_msg_id:
                 requests.post(
                     f"{base_url}/editMessageText",
-                    json={"chat_id": chat_id, "message_id": thinking_msg_id, "text": reply},
+                    json={"chat_id": chat_id, "message_id": thinking_msg_id, "text": first},
                     proxies=_no_proxy,
                 )
+                if len(reply) > _TG_MAX:
+                    _send_long(base_url, chat_id, reply[_TG_MAX:], _no_proxy)
             else:
-                requests.post(
-                    f"{base_url}/sendMessage",
-                    json={"chat_id": chat_id, "text": reply},
-                    proxies=_no_proxy,
-                )
+                _send_long(base_url, chat_id, reply, _no_proxy)
             return
         except Exception as e:
             logger.exception("_process 오류")
             reply = f"⚠️ 처리 오류: {e}"
-        requests.post(
-            f"{base_url}/sendMessage",
-            json={"chat_id": chat_id, "text": reply},
-            proxies=_no_proxy,
-        )
+        _send_long(base_url, chat_id, reply, _no_proxy)
 
     while True:
         try:

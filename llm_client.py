@@ -213,10 +213,57 @@ _LOCAL_KNOWLEDGE_TOOL = {
     }
 }
 
+_READ_FILE_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "read_file",
+        "description": "서버 파일 읽기. 코드 검토, 로그 확인, 설정 파일 조회 시 사용. 프로젝트 디렉토리(/home/ubuntu/-claude-test-/) 내 파일만 가능.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "파일 경로. 예: 'ai_chat.py', 'proxy_v54.log'"}
+            },
+            "required": ["path"]
+        }
+    }
+}
+
+_RUN_COMMAND_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "run_command",
+        "description": "서버에서 안전한 명령 실행. git status/diff/log, ls, systemctl status 등 읽기 전용 명령만 사용. 파일 삭제·수정 명령 금지.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "cmd": {"type": "string", "description": "실행할 명령. 예: 'git status', 'git diff', 'systemctl status proxy_v54'"}
+            },
+            "required": ["cmd"]
+        }
+    }
+}
+
+_GIT_COMMIT_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "git_commit",
+        "description": "변경된 파일을 git에 커밋. 반드시 사용자가 명시적으로 커밋을 요청했을 때만 사용.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "message": {"type": "string", "description": "커밋 메시지"},
+                "files":   {"type": "string", "description": "스테이징할 파일 목록 (공백 구분). 예: 'ai_chat.py llm_client.py'"}
+            },
+            "required": ["message"]
+        }
+    }
+}
+
 _ALL_TOOLS = [
     _WEB_SEARCH_TOOL, _DEEP_SEARCH_TOOL, _FETCH_URL_TOOL,
     _STOCK_PRICE_TOOL, _NEWS_TOOL, _LOCAL_KNOWLEDGE_TOOL,
     _PORTFOLIO_TOOL, _RAG_TOOL,
+    _READ_FILE_TOOL, _RUN_COMMAND_TOOL, _GIT_COMMIT_TOOL,
 ]
 
 _TOOL_SYSTEM = """나는 한국어 지식 그래프 기반 AI 어시스턴트입니다. 사용자와의 대화에서 도구가 필요하면 도구를 호출하여 검증된 최신 실시간 데이터를 기반으로 대화를 만들어내며 이를 기반으로 지식 그래프를 학습합니다. 절대로 수치를 추측하거나 만들지 마세요.
@@ -240,6 +287,9 @@ _TOOL_SYSTEM = """나는 한국어 지식 그래프 기반 AI 어시스턴트입
 - 간단한 최신 정보, 뉴스 헤드라인 → web_search
 - 복잡한 분석, 심층 조사 → deep_search
 - 특정 URL/기사 읽기 → fetch_url
+- 서버 파일 읽기/코드 검토 → read_file
+- git 상태·diff·로그 확인, systemctl status → run_command
+- 커밋 (사용자가 명시적 요청 시만) → git_commit
 
 [참고 데이터] 섹션이 프롬프트에 포함되면 그 수치를 우선 사용하세요."""
 
@@ -417,6 +467,72 @@ def _execute_tool_call(tool_name: str, arguments: dict) -> str:
             return "\n".join(lines)
         except Exception as e:
             return f"거래 이력 조회 오류: {e}"
+    if tool_name == "read_file":
+        path = arguments.get("path", "")
+        logger.info("Ollama tool call: read_file('%s')", path)
+        base = "/home/ubuntu/-claude-test-"
+        # 경로 정규화 후 프로젝트 디렉토리 내인지 확인
+        full = os.path.realpath(os.path.join(base, path) if not path.startswith("/") else path)
+        if not full.startswith(base):
+            return f"접근 거부: 프로젝트 디렉토리 외부 파일은 읽을 수 없습니다."
+        try:
+            with open(full, "r", encoding="utf-8", errors="replace") as f:
+                content = f.read(8000)
+            lines = content.splitlines()
+            if len(lines) > 200:
+                content = "\n".join(lines[:200]) + f"\n... (총 {len(lines)}줄, 200줄까지 표시)"
+            return f"[{path}]\n{content}"
+        except FileNotFoundError:
+            return f"파일 없음: {path}"
+        except Exception as e:
+            return f"파일 읽기 오류: {e}"
+
+    if tool_name == "run_command":
+        import subprocess, shlex
+        cmd = arguments.get("cmd", "")
+        logger.info("Ollama tool call: run_command('%s')", cmd)
+        # 안전한 명령만 허용
+        ALLOWED = ("git ", "ls", "cat ", "systemctl status", "journalctl", "tail ", "head ",
+                   "grep ", "wc ", "df ", "free", "uptime", "ps aux", "curl -s http://localhost")
+        if not any(cmd.strip().startswith(a) for a in ALLOWED):
+            return f"거부된 명령: '{cmd}'. git/ls/cat/systemctl status 등 읽기 전용 명령만 허용됩니다."
+        try:
+            result = subprocess.run(
+                cmd, shell=True, capture_output=True, text=True,
+                timeout=30, cwd="/home/ubuntu/-claude-test-"
+            )
+            out = (result.stdout + result.stderr).strip()
+            return out[:3000] if out else "(출력 없음)"
+        except subprocess.TimeoutExpired:
+            return "명령 타임아웃 (30초 초과)"
+        except Exception as e:
+            return f"명령 실행 오류: {e}"
+
+    if tool_name == "git_commit":
+        import subprocess
+        message = arguments.get("message", "")
+        files = arguments.get("files", "")
+        logger.info("Ollama tool call: git_commit('%s', files='%s')", message, files)
+        if not message:
+            return "커밋 메시지가 없습니다."
+        try:
+            cwd = "/home/ubuntu/-claude-test-"
+            # 스테이징
+            if files:
+                for f in files.split():
+                    subprocess.run(["git", "add", f], cwd=cwd, capture_output=True)
+            else:
+                subprocess.run(["git", "add", "-u"], cwd=cwd, capture_output=True)
+            # 커밋
+            result = subprocess.run(
+                ["git", "commit", "-m", message],
+                cwd=cwd, capture_output=True, text=True, timeout=30
+            )
+            out = (result.stdout + result.stderr).strip()
+            return out if out else "커밋 완료"
+        except Exception as e:
+            return f"커밋 오류: {e}"
+
     return f"알 수 없는 도구: {tool_name}"
 
 
@@ -565,9 +681,11 @@ def call_mistral_only(prompt: str, system: str = _TOOL_SYSTEM, use_tools: bool =
             data = r.json()
             msg = data.get("message", {})
 
-            # tool_calls 처리: 도구 호출이 있으면 실행 후 재호출
-            tool_calls = msg.get("tool_calls")
-            if tool_calls:
+            # tool_calls 처리: 최대 3라운드
+            for _round in range(3):
+                tool_calls = msg.get("tool_calls")
+                if not tool_calls:
+                    break
                 messages.append({"role": "assistant", "content": "", "tool_calls": tool_calls})
                 for tc in tool_calls:
                     fn = tc.get("function", {})
@@ -577,7 +695,6 @@ def call_mistral_only(prompt: str, system: str = _TOOL_SYSTEM, use_tools: bool =
                         "content": tool_result,
                         "tool_call_id": tc.get("id", ""),
                     })
-                # 검색 결과를 받아 최종 답변 생성
                 payload2 = {
                     "model": config.QWEN_MODEL,
                     "messages": messages,
@@ -586,7 +703,9 @@ def call_mistral_only(prompt: str, system: str = _TOOL_SYSTEM, use_tools: bool =
                 }
                 r2 = requests.post(config.QWEN_URL, json=payload2, timeout=(1, 300))
                 r2.raise_for_status()
-                result = _parse_ollama_response(r2)
+                data2 = r2.json()
+                msg = data2.get("message", {})
+                result = msg.get("content", "") or _parse_ollama_response(r2)
                 if result:
                     return result
 
