@@ -716,23 +716,30 @@ def call_mistral_only(prompt: str, system: str = _TOOL_SYSTEM, use_tools: bool =
                 # 폴백: content에 JSON 도구 호출이 텍스트로 들어온 경우
                 if not tool_calls:
                     _content = msg.get("content", "")
-                    import re as _re
-                    # [TOOL_CALLS][{...}] 또는 [{..."name":..."arguments":...}] 패턴 모두 처리
-                    _m = _re.search(r'(?:\[TOOL_CALLS\])?\s*(\[\s*\{.*?"name"\s*:.*?(?:"arguments"|"parameters")\s*:.*?\}\s*\])', _content, _re.DOTALL)
-                    if _m:
-                        try:
-                            _parsed = json.loads(_m.group(1))
-                            _normalized = []
-                            for t in _parsed:
-                                args = t.get("arguments") or t.get("parameters") or {}
-                                # "command" → "cmd" 키 정규화
-                                if "command" in args and "cmd" not in args:
-                                    args["cmd"] = args.pop("command")
-                                _normalized.append({"function": {"name": t["name"], "arguments": args}, "id": ""})
-                            tool_calls = _normalized
-                            logger.info("content 텍스트에서 tool_calls 파싱: %s", [t["function"]["name"] for t in tool_calls])
-                        except Exception:
-                            pass
+                    # [TOOL_CALLS][{...}] 또는 [{...}] 형태 모두 처리 — json.loads 직접 시도
+                    _parsed = None
+                    for _start in range(len(_content)):
+                        if _content[_start] != '[':
+                            continue
+                        for _end in range(len(_content), _start, -1):
+                            try:
+                                _candidate = json.loads(_content[_start:_end])
+                                if isinstance(_candidate, list) and _candidate and isinstance(_candidate[0], dict) and "name" in _candidate[0]:
+                                    _parsed = _candidate
+                                    break
+                            except Exception:
+                                continue
+                        if _parsed:
+                            break
+                    if _parsed:
+                        _normalized = []
+                        for t in _parsed:
+                            args = t.get("arguments") or t.get("parameters") or {}
+                            if "command" in args and "cmd" not in args:
+                                args["cmd"] = args.pop("command")
+                            _normalized.append({"function": {"name": t["name"], "arguments": args}, "id": ""})
+                        tool_calls = _normalized
+                        logger.info("content 텍스트에서 tool_calls 파싱: %s", [t["function"]["name"] for t in tool_calls])
                 if not tool_calls:
                     break
                 messages.append({"role": "assistant", "content": "", "tool_calls": tool_calls})
