@@ -713,6 +713,18 @@ def call_mistral_only(prompt: str, system: str = _TOOL_SYSTEM, use_tools: bool =
             # tool_calls 처리: 최대 3라운드
             for _round in range(3):
                 tool_calls = msg.get("tool_calls")
+                # 폴백: content에 JSON 도구 호출이 텍스트로 들어온 경우
+                if not tool_calls:
+                    _content = msg.get("content", "")
+                    import re as _re
+                    _m = _re.search(r'\[\s*\{.*?"name"\s*:.*?"arguments"\s*:.*?\}\s*\]', _content, _re.DOTALL)
+                    if _m:
+                        try:
+                            _parsed = json.loads(_m.group())
+                            tool_calls = [{"function": {"name": t["name"], "arguments": t["arguments"]}, "id": ""} for t in _parsed]
+                            logger.info("content 텍스트에서 tool_calls 파싱: %s", [t["name"] for t in _parsed])
+                        except Exception:
+                            pass
                 if not tool_calls:
                     break
                 messages.append({"role": "assistant", "content": "", "tool_calls": tool_calls})
