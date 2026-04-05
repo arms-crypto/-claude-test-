@@ -716,14 +716,20 @@ def call_mistral_only(prompt: str, system: str = _TOOL_SYSTEM, use_tools: bool =
                 # 폴백: content에 JSON 도구 호출이 텍스트로 들어온 경우
                 if not tool_calls:
                     _content = msg.get("content", "")
-                    # [TOOL_CALLS][{...}] 또는 [{...}] 형태 모두 처리 — json.loads 직접 시도
+                    # [TOOL_CALLS]{...} / [TOOL_CALLS][{...}] / [{...}] 형태 모두 처리
+                    import re as _re
+                    # [TOOL_CALLS] 접두사 제거
+                    _stripped = _re.sub(r'^\s*\[TOOL_CALLS\]\s*', '', _content).strip()
+                    # 단일 객체 {..} → 배열로 감싸기
+                    if _stripped.startswith('{'):
+                        _stripped = '[' + _stripped + ']'
                     _parsed = None
-                    for _start in range(len(_content)):
-                        if _content[_start] != '[':
+                    for _start in range(len(_stripped)):
+                        if _stripped[_start] != '[':
                             continue
-                        for _end in range(len(_content), _start, -1):
+                        for _end in range(len(_stripped), _start, -1):
                             try:
-                                _candidate = json.loads(_content[_start:_end])
+                                _candidate = json.loads(_stripped[_start:_end])
                                 if isinstance(_candidate, list) and _candidate and isinstance(_candidate[0], dict) and "name" in _candidate[0]:
                                     _parsed = _candidate
                                     break
