@@ -523,7 +523,7 @@ def _execute_tool_call(tool_name: str, arguments: dict) -> str:
 
     if tool_name == "run_command":
         import subprocess, shlex
-        cmd = arguments.get("cmd", "")
+        cmd = arguments.get("cmd") or arguments.get("command") or arguments.get("shell_command") or ""
         logger.info("Ollama tool call: run_command('%s')", cmd)
         try:
             result = subprocess.run(
@@ -717,12 +717,20 @@ def call_mistral_only(prompt: str, system: str = _TOOL_SYSTEM, use_tools: bool =
                 if not tool_calls:
                     _content = msg.get("content", "")
                     import re as _re
-                    _m = _re.search(r'\[\s*\{.*?"name"\s*:.*?"arguments"\s*:.*?\}\s*\]', _content, _re.DOTALL)
+                    # [TOOL_CALLS][{...}] 또는 [{..."name":..."arguments":...}] 패턴 모두 처리
+                    _m = _re.search(r'(?:\[TOOL_CALLS\])?\s*(\[\s*\{.*?"name"\s*:.*?(?:"arguments"|"parameters")\s*:.*?\}\s*\])', _content, _re.DOTALL)
                     if _m:
                         try:
-                            _parsed = json.loads(_m.group())
-                            tool_calls = [{"function": {"name": t["name"], "arguments": t["arguments"]}, "id": ""} for t in _parsed]
-                            logger.info("content 텍스트에서 tool_calls 파싱: %s", [t["name"] for t in _parsed])
+                            _parsed = json.loads(_m.group(1))
+                            _normalized = []
+                            for t in _parsed:
+                                args = t.get("arguments") or t.get("parameters") or {}
+                                # "command" → "cmd" 키 정규화
+                                if "command" in args and "cmd" not in args:
+                                    args["cmd"] = args.pop("command")
+                                _normalized.append({"function": {"name": t["name"], "arguments": args}, "id": ""})
+                            tool_calls = _normalized
+                            logger.info("content 텍스트에서 tool_calls 파싱: %s", [t["function"]["name"] for t in tool_calls])
                         except Exception:
                             pass
                 if not tool_calls:
