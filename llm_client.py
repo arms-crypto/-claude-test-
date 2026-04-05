@@ -768,7 +768,9 @@ def call_mistral_only(prompt: str, system: str = _TOOL_SYSTEM, use_tools: bool =
                 data2 = r2.json()
                 msg = data2.get("message", {})
                 result = msg.get("content", "") or _parse_ollama_response(r2)
-                if result:
+                # tool call JSON이면 반환하지 말고 다음 라운드에서 처리
+                _looks_like_tool = bool(result and (result.strip().startswith('[{') or result.strip().startswith('[TOOL_CALLS]') or result.strip().startswith('{')))
+                if result and not _looks_like_tool:
                     return result
 
             result = msg.get("content", "") or _parse_ollama_response(r)
