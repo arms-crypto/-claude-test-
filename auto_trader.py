@@ -1330,8 +1330,9 @@ def scan_buy_signals_for_chat(months: int = 3) -> str:
             def v(k): return "✅" if s.get(k) else "❌"
             lines.append(
                 f"▶ {name}({code}) [{tt}] 신호 {sig['buy_count']}/16 (교집합 {days}일)\n"
+                f"  월봉: 일목{v('월봉_일목균형표')} ADX{v('월봉_ADX')} RSI{v('월봉_RSI')} MACD{v('월봉_MACD')}\n"
+                f"  주봉: 일목{v('주봉_일목균형표')} ADX{v('주봉_ADX')} RSI{v('주봉_RSI')} MACD{v('주봉_MACD')}\n"
                 f"  일봉: 일목{v('일봉_일목균형표')} ADX{v('일봉_ADX')} RSI{v('일봉_RSI')} MACD{v('일봉_MACD')} 정배열{v('일봉_정배열')}\n"
-                f"  주봉: 일목{v('주봉_일목균형표')} ADX{v('주봉_ADX')} MACD{v('주봉_MACD')}\n"
                 f"  판단: {decision.get('reason','')}"
             )
     else:
