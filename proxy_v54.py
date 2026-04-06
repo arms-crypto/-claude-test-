@@ -22,6 +22,7 @@ matplotlib.rcParams['axes.unicode_minus'] = False
 from config import logger
 from db_utils import get_db_pool, ensure_db_initialized
 from ai_chat import ask_ai
+from llm_client import call_mistral_only
 from search_utils import perplexica_search, search_and_summarize
 from auto_trader import collect_smart_flows, get_smart_recommendations
 from telegram_bots import handle_tg, handle_tg_srv, auto_report_scheduler
@@ -114,6 +115,27 @@ def search():
         mode_used = "searxng"
 
     return jsonify({"query": query, "answer": answer, "mode_used": mode_used})
+
+
+@app.route('/agent', methods=['POST'])
+def agent():
+    """
+    Claude Code → PC Ollama 에이전트 엔드포인트.
+
+    Request JSON:
+        { "prompt": "서버 디스크 사용량 확인해줘" }
+
+    Response JSON:
+        { "result": "..." }
+    """
+    data = request.json or {}
+    prompt = data.get("prompt", "").strip()
+    if not prompt:
+        return jsonify({"error": "prompt 파라미터가 필요합니다."}), 400
+    logger.info("/agent 요청: %s", prompt[:100])
+    result = call_mistral_only(prompt, use_tools=True)
+    logger.info("/agent 완료: %s", result[:100])
+    return jsonify({"result": result})
 
 
 @app.route('/collect_smart', methods=['GET', 'POST'])
