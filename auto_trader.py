@@ -1088,14 +1088,16 @@ def collect_smart_flows(date_str=None):
             if df is None or df.empty:
                 logger.warning("collect_smart_flows: %s 데이터 없음", investor_type)
                 continue
+            from stock_data import get_stock_code_from_db, naver_search_code
             for rank, row in enumerate(df.itertuples(), 1):
                 name = str(row.종목명)
                 amount_mil = int(row.금액) if hasattr(row, '금액') and str(row.금액) not in ('nan','') else 0
+                code = get_stock_code_from_db(name) or naver_search_code(name) or name
                 results.append({
                     "date_str": date_str,
                     "investor_type": investor_type,
                     "rank_no": rank,
-                    "ticker": name,
+                    "ticker": code,
                     "name": name,
                     "net_buy_amount": amount_mil * 1_000_000
                 })
@@ -1251,42 +1253,83 @@ def analyze_chart_for_chat(query: str) -> str:
     )
 
 
-def scan_buy_signals_for_chat() -> str:
+def get_watchlist_from_db(months: int = 3) -> list:
     """
-    채팅용 — 오늘 외국인+기관 순매수 교집합 종목 중 매수 신호 있는 종목 스캔.
-    장중/마감 무관하게 실행 (OHLCV는 마감 후에도 조회 가능).
+    DB mock_smart_flows에서 최근 N개월간 외국인+기관 모두 순매수한 종목 코드 목록 반환.
+    등장 횟수 내림차순 정렬.
     """
-    # 외국인 순매수 ∩ 기관 순매수
-    foreign = _scrape_naver_codes("9000", limit=20)
-    inst_set = set(_scrape_naver_codes("1000", limit=20))
-    candidates = [c for c in foreign if c in inst_set]
+    p = get_db_pool()
+    if not p:
+        return []
+    try:
+        with p.acquire() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT ticker, name, COUNT(DISTINCT date_str) AS days "
+                    "FROM mock_smart_flows "
+                    "WHERE collected_at >= ADD_MONTHS(SYSTIMESTAMP, :1) "
+                    "GROUP BY ticker, name "
+                    "HAVING COUNT(DISTINCT investor_type) >= 2 "
+                    "ORDER BY days DESC",
+                    [-months]
+                )
+                rows = cur.fetchall()
+        # ticker가 6자리 코드인 것만, 아니면 이름으로 코드 조회
+        from stock_data import get_stock_code_from_db
+        result = []
+        seen = set()
+        for ticker, name, days in rows:
+            code = ticker if (len(ticker) == 6 and ticker.isdigit()) else get_stock_code_from_db(name)
+            if code and code not in seen:
+                seen.add(code)
+                result.append((code, name, days))
+        return result
+    except Exception:
+        logger.exception("get_watchlist_from_db 오류")
+        return []
+
+
+def scan_buy_signals_for_chat(months: int = 3) -> str:
+    """
+    채팅용 — DB 누적 N개월간 외국인+기관 동시 순매수 종목 워치리스트 기반 매수 신호 스캔.
+    오늘 교집합이 없어도 과거 이력이 있으면 유지, N개월간 미등장 시 자동 제외.
+    """
+    watchlist = get_watchlist_from_db(months)
+
+    # 워치리스트 없으면 오늘 실시간으로 폴백
+    if not watchlist:
+        foreign = _scrape_naver_codes("9000", limit=20)
+        inst_set = set(_scrape_naver_codes("1000", limit=20))
+        today_both = [c for c in foreign if c in inst_set]
+        candidates = [(c, _get_name_by_code(c) or c, 1) for c in today_both]
+    else:
+        candidates = watchlist
 
     if not candidates:
-        return "오늘 외국인+기관 동시 순매수 종목이 없습니다."
+        return "외국인+기관 동시 순매수 워치리스트가 비어있습니다."
 
     results_buy, results_skip = [], []
-    for code in candidates:
-        name = _get_name_by_code(code) or code
+    for code, name, days in candidates:
         sig = calculate_chart_signals(code)
         if not sig:
             continue
         decision = _ollama_buy_decision(code, name, sig)
-        entry = (code, name, sig, decision)
+        entry = (code, name, days, sig, decision)
         if decision["action"] == "BUY":
             results_buy.append(entry)
         else:
             results_skip.append(entry)
 
-    lines = [f"📊 외국인+기관 동시 순매수 {len(candidates)}종목 스캔\n"]
+    lines = [f"📊 외국인+기관 워치리스트 {len(candidates)}종목 스캔 (최근 {months}개월 누적)\n"]
 
     if results_buy:
         lines.append(f"✅ 매수 신호 ({len(results_buy)}개)")
-        for code, name, sig, decision in results_buy:
+        for code, name, days, sig, decision in results_buy:
             s  = sig.get("signals", {})
             tt = decision.get("trade_type", "스윙")
             def v(k): return "✅" if s.get(k) else "❌"
             lines.append(
-                f"▶ {name}({code}) [{tt}] 신호 {sig['buy_count']}/16\n"
+                f"▶ {name}({code}) [{tt}] 신호 {sig['buy_count']}/16 (교집합 {days}일)\n"
                 f"  일봉: 일목{v('일봉_일목균형표')} ADX{v('일봉_ADX')} RSI{v('일봉_RSI')} MACD{v('일봉_MACD')} 정배열{v('일봉_정배열')}\n"
                 f"  주봉: 일목{v('주봉_일목균형표')} ADX{v('주봉_ADX')} MACD{v('주봉_MACD')}\n"
                 f"  판단: {decision.get('reason','')}"
@@ -1296,6 +1339,6 @@ def scan_buy_signals_for_chat() -> str:
 
     if results_skip:
         lines.append(f"\n⏸ 관망 ({len(results_skip)}개): " +
-                     ", ".join(f"{name}({code})" for code, name, _, __ in results_skip))
+                     ", ".join(f"{name}({code}) {days}일" for code, name, days, _, __ in results_skip))
 
     return "\n".join(lines)
