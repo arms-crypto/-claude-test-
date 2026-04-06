@@ -128,8 +128,16 @@ def ask_ai(session_id, user_input):
     current_time_str = now.strftime("%Y년 %m월 %d일 %p %I:%M")
     my_facts = get_verified_facts(session_id)
     fact_str = f"[사용자 핵심 정보]\\n{my_facts}\\n\\n" if my_facts else ""
-    past_messages = list(history)[-10:] if len(history) > 0 else []
-    chat_history_str = "\\n".join(past_messages)
+    # 히스토리를 messages 배열로 변환 (텍스트 혼합 방지)
+    past_messages = list(history)[-8:] if len(history) > 0 else []
+    chat_history_str = ""  # 더 이상 텍스트로 사용 안 함
+    hist_msgs = []
+    for i in range(0, len(past_messages) - 1, 2):
+        if i + 1 < len(past_messages):
+            u = past_messages[i].removeprefix("Human: ")
+            a = past_messages[i + 1].removeprefix("AI: ")
+            hist_msgs.append({"role": "user", "content": u})
+            hist_msgs.append({"role": "assistant", "content": a})
 
     # 3-1) DB/로컬 데이터 키워드 감지 → 컨텍스트 주입
     _u = re.sub(r'\s+', '', user_input).lower()
@@ -142,6 +150,11 @@ def ask_ai(session_id, user_input):
         _rpt = _srv_read_market_report()
         if _rpt:
             _extra_ctx.append(f"[시장보고서]\n{_rpt[:2000]}")
+    if any(k in _u for k in ["파일목록", "파일나열", ".py목록", ".py나열", "어떤파일", "뭐가있어", "뭐있어", "파일뭐", "ls"]):
+        import subprocess as _sp
+        _ls = _sp.run("ls /home/ubuntu/-claude-test-/*.py", shell=True, capture_output=True, text=True)
+        if _ls.stdout.strip():
+            _extra_ctx.append(f"[서버 .py 파일 목록]\n{_ls.stdout.strip()}")
     if _extra_ctx:
         fact_str = "[참고 데이터]\n" + "\n\n".join(_extra_ctx) + "\n\n" + fact_str
 
@@ -192,13 +205,11 @@ def ask_ai(session_id, user_input):
         ctx = ""
         if fact_str:
             ctx += fact_str
-        if chat_history_str:
-            ctx += f"이전 대화:\n{chat_history_str}\n\n"
         if extra_data:
             ctx += "[참고 데이터]\n" + "\n".join(extra_data) + "\n\n"
 
         prompt = f"{ctx}현재 시각: {current_time_str}\n질문: {user_input}"
-        answer = call_qwen(prompt)
+        answer = call_qwen(prompt, history_messages=hist_msgs)
 
         # 6) LLM 응답에 6자리 종목코드 언급 + 주가 질문이면 자동 재조회
         if any(k in user_input for k in ["주가", "가격", "얼마", "시세"]):
