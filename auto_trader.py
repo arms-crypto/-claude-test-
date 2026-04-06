@@ -1276,17 +1276,11 @@ def get_watchlist_from_db(months: int = 3) -> list:
                 rows = cur.fetchall()
         # ticker가 6자리 코드인 것만, 아니면 이름으로 코드 조회
         from stock_data import get_stock_code_from_db
-        # ETF 코드 대역 제외 (069XXX 등 ETF 제외)
-        ETF_PREFIXES = ('069', '102', '114', '117', '122', '148', '152', '157', '176', '195', '229', '233', '252', '261', '278', '305', '360', '394', '441')
         result = []
         seen = set()
         for ticker, name, days in rows:
             code = ticker if (len(ticker) == 6 and ticker.isdigit()) else get_stock_code_from_db(name)
-            if not code:
-                continue
-            if any(code.startswith(p) for p in ETF_PREFIXES):
-                continue
-            if code not in seen:
+            if code and code not in seen:
                 seen.add(code)
                 result.append((code, name, days))
         return result
