@@ -971,15 +971,28 @@ def auto_trade_loop():
     _restore_today_trades()
     logger.info("자동매매 루프 시작 (30초 간격, 장중 KST만 실행)")
     last_hourly_log = None
+    last_scan_time  = None   # 매수신호 스캔 마지막 실행 시각 (HH:MM)
+    _SCAN_MINUTES   = {30}   # 매 시 30분에 스캔 (09:30, 10:30, 11:30, 13:30, 14:30)
     while True:
         try:
             auto_trade_cycle()
-            # 매시 정각 보유종목 로그
             kst_now = datetime.datetime.now(pytz.timezone("Asia/Seoul"))
-            if (is_trading_hours() and kst_now.minute == 0
-                    and last_hourly_log != kst_now.hour):
-                _log_holdings_status()
-                last_hourly_log = kst_now.hour
+            if is_trading_hours():
+                # 매시 정각 보유종목 로그
+                if kst_now.minute == 0 and last_hourly_log != kst_now.hour:
+                    _log_holdings_status()
+                    last_hourly_log = kst_now.hour
+
+                # 30분마다 매수신호 스캔 → 텔레그램 브로드캐스트
+                tick = f"{kst_now.hour}:{kst_now.minute:02d}"
+                if kst_now.minute in _SCAN_MINUTES and last_scan_time != tick:
+                    last_scan_time = tick
+                    try:
+                        result = scan_buy_signals_for_chat()
+                        _tg_notify(f"🔍 [{tick} KST] 매수신호 스캔\n\n{result}")
+                        logger.info("매수신호 스캔 브로드캐스트 완료")
+                    except Exception:
+                        logger.exception("매수신호 스캔 브로드캐스트 실패")
         except Exception:
             logger.exception("auto_trade_cycle 예외")
         import time
@@ -1236,3 +1249,30 @@ def analyze_chart_for_chat(query: str) -> str:
         f"{signal_summary}"
         f"판단: {action_str} (신호 {cnt}/16 기준)"
     )
+
+
+def scan_buy_signals_for_chat() -> str:
+    """
+    채팅용 — 오늘 거래량/스마트머니 순매수 종목 중 매수 신호 있는 종목 스캔.
+    장중에만 의미 있는 실시간 데이터 사용.
+    """
+    if not is_trading_hours():
+        return "⚠️ 현재 장 마감 시간입니다. 장중(09:00~15:30)에 다시 요청해주세요."
+
+    targets = select_volume_smart_chart()
+    if not targets:
+        return "현재 매수 신호가 있는 순매수 종목이 없습니다."
+
+    lines = [f"📊 매수 신호 종목 ({len(targets)}개)\n"]
+    for code, sig in targets:
+        name = sig.get("name", code)
+        cnt  = sig.get("buy_count", 0)
+        tt   = sig.get("trade_type", "스윙")
+        s    = sig.get("signals", {})
+        def v(k): return "✅" if s.get(k) else "❌"
+        lines.append(
+            f"▶ {name}({code}) [{tt}] 신호 {cnt}/16\n"
+            f"  일봉: 일목{v('일봉_일목균형표')} ADX{v('일봉_ADX')} RSI{v('일봉_RSI')} MACD{v('일봉_MACD')} 정배열{v('일봉_정배열')}\n"
+            f"  주봉: 일목{v('주봉_일목균형표')} ADX{v('주봉_ADX')} MACD{v('주봉_MACD')}\n"
+        )
+    return "\n".join(lines)
