@@ -1276,11 +1276,17 @@ def get_watchlist_from_db(months: int = 3) -> list:
                 rows = cur.fetchall()
         # ticker가 6자리 코드인 것만, 아니면 이름으로 코드 조회
         from stock_data import get_stock_code_from_db
+        # ETF 코드 대역 제외 (069XXX 등 ETF 제외)
+        ETF_PREFIXES = ('069', '102', '114', '117', '122', '148', '152', '157', '176', '195', '229', '233', '252', '261', '278', '305', '360', '394', '441')
         result = []
         seen = set()
         for ticker, name, days in rows:
             code = ticker if (len(ticker) == 6 and ticker.isdigit()) else get_stock_code_from_db(name)
-            if code and code not in seen:
+            if not code:
+                continue
+            if any(code.startswith(p) for p in ETF_PREFIXES):
+                continue
+            if code not in seen:
                 seen.add(code)
                 result.append((code, name, days))
         return result
@@ -1296,14 +1302,17 @@ def scan_buy_signals_for_chat(months: int = 3) -> str:
     """
     watchlist = get_watchlist_from_db(months)
 
-    # 워치리스트 없으면 오늘 실시간으로 폴백
-    if not watchlist:
-        foreign = _scrape_naver_codes("9000", limit=20)
-        inst_set = set(_scrape_naver_codes("1000", limit=20))
-        today_both = [c for c in foreign if c in inst_set]
-        candidates = [(c, _get_name_by_code(c) or c, 1) for c in today_both]
-    else:
-        candidates = watchlist
+    # 오늘 실시간 데이터로 보강 (워치리스트에 없는 종목 추가)
+    foreign = _scrape_naver_codes("9000", limit=20)
+    inst_set = set(_scrape_naver_codes("1000", limit=20))
+    today_both = [c for c in foreign if c in inst_set]
+    existing_codes = {c for c, _, __ in watchlist}
+    for code in today_both:
+        if code not in existing_codes:
+            name = _get_name_by_code(code) or code
+            watchlist.append((code, name, 1))  # 오늘 첫 등장
+
+    candidates = watchlist
 
     if not candidates:
         return "외국인+기관 동시 순매수 워치리스트가 비어있습니다."
