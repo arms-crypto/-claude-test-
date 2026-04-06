@@ -1253,24 +1253,49 @@ def analyze_chart_for_chat(query: str) -> str:
 
 def scan_buy_signals_for_chat() -> str:
     """
-    채팅용 — 오늘 거래량/스마트머니 순매수 종목 중 매수 신호 있는 종목 스캔.
+    채팅용 — 오늘 외국인+기관 순매수 교집합 종목 중 매수 신호 있는 종목 스캔.
     장중/마감 무관하게 실행 (OHLCV는 마감 후에도 조회 가능).
     """
+    # 외국인 순매수 ∩ 기관 순매수
+    foreign = _scrape_naver_codes("9000", limit=20)
+    inst_set = set(_scrape_naver_codes("1000", limit=20))
+    candidates = [c for c in foreign if c in inst_set]
 
-    targets = select_volume_smart_chart()
-    if not targets:
-        return "현재 매수 신호가 있는 순매수 종목이 없습니다."
+    if not candidates:
+        return "오늘 외국인+기관 동시 순매수 종목이 없습니다."
 
-    lines = [f"📊 매수 신호 종목 ({len(targets)}개)\n"]
-    for code, sig in targets:
-        name = sig.get("name", code)
-        cnt  = sig.get("buy_count", 0)
-        tt   = sig.get("trade_type", "스윙")
-        s    = sig.get("signals", {})
-        def v(k): return "✅" if s.get(k) else "❌"
-        lines.append(
-            f"▶ {name}({code}) [{tt}] 신호 {cnt}/16\n"
-            f"  일봉: 일목{v('일봉_일목균형표')} ADX{v('일봉_ADX')} RSI{v('일봉_RSI')} MACD{v('일봉_MACD')} 정배열{v('일봉_정배열')}\n"
-            f"  주봉: 일목{v('주봉_일목균형표')} ADX{v('주봉_ADX')} MACD{v('주봉_MACD')}\n"
-        )
+    results_buy, results_skip = [], []
+    for code in candidates:
+        name = _get_name_by_code(code) or code
+        sig = calculate_chart_signals(code)
+        if not sig:
+            continue
+        decision = _ollama_buy_decision(code, name, sig)
+        entry = (code, name, sig, decision)
+        if decision["action"] == "BUY":
+            results_buy.append(entry)
+        else:
+            results_skip.append(entry)
+
+    lines = [f"📊 외국인+기관 동시 순매수 {len(candidates)}종목 스캔\n"]
+
+    if results_buy:
+        lines.append(f"✅ 매수 신호 ({len(results_buy)}개)")
+        for code, name, sig, decision in results_buy:
+            s  = sig.get("signals", {})
+            tt = decision.get("trade_type", "스윙")
+            def v(k): return "✅" if s.get(k) else "❌"
+            lines.append(
+                f"▶ {name}({code}) [{tt}] 신호 {sig['buy_count']}/16\n"
+                f"  일봉: 일목{v('일봉_일목균형표')} ADX{v('일봉_ADX')} RSI{v('일봉_RSI')} MACD{v('일봉_MACD')} 정배열{v('일봉_정배열')}\n"
+                f"  주봉: 일목{v('주봉_일목균형표')} ADX{v('주봉_ADX')} MACD{v('주봉_MACD')}\n"
+                f"  판단: {decision.get('reason','')}"
+            )
+    else:
+        lines.append("✅ 매수 신호 없음")
+
+    if results_skip:
+        lines.append(f"\n⏸ 관망 ({len(results_skip)}개): " +
+                     ", ".join(f"{name}({code})" for code, name, _, __ in results_skip))
+
     return "\n".join(lines)
