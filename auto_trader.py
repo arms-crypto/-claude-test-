@@ -1254,10 +1254,8 @@ def analyze_chart_for_chat(query: str) -> str:
 def scan_buy_signals_for_chat() -> str:
     """
     채팅용 — 오늘 거래량/스마트머니 순매수 종목 중 매수 신호 있는 종목 스캔.
-    장중에만 의미 있는 실시간 데이터 사용.
+    장중/마감 무관하게 실행 (OHLCV는 마감 후에도 조회 가능).
     """
-    if not is_trading_hours():
-        return "⚠️ 현재 장 마감 시간입니다. 장중(09:00~15:30)에 다시 요청해주세요."
 
     targets = select_volume_smart_chart()
     if not targets:
