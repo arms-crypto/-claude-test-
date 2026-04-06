@@ -65,15 +65,53 @@ auto_trade_cycle()  ← 30초 루프, risk_gate → select_volume → buy/sell
 - "절대로 수치를 추측하거나 만들지 마세요"
 - "사용자에게 어떤 도구를 쓸지 묻거나 선택지를 제시하지 말 것"
 
+## 스캔/신호 시스템 (2026-04-06 확정)
+
+### 신호 구조
+- **12신호 스윙**: 월봉4 + 주봉4 + 일봉4 (일목균형표·ADX·RSI·MACD)
+- **4신호 단타**: 분봉4 — buy_count에 포함 안 함, "단타타이밍" 참고용만 표시
+- **RSI 기준**: `RSI > 50` (강한 추세 종목 포함, 구: 30<RSI<70)
+- **BUY**: 신호 ≥ 6/12 | **HOLD**: 4-5/12 | **SELL**: < 4/12
+
+### 워치리스트 구조
+- `get_watchlist_from_db()` — 외국인 OR 기관 등장 종목 전체 (최대 ~34개)
+- 반환: `(code, name, day_cnt, both)` — `both=True`면 외국인+기관 동시 (⭐ 표시)
+- SQL: `GROUP BY ticker, name` + `COUNT(DISTINCT investor_type)` → inv_cnt≥2 이면 both
+- 오늘 실시간 스크래핑 데이터도 병합 (DB에 없는 신규 종목 추가)
+
+### pre-injection (ai_chat.py 3-2, 3-3) — 절대 제거 금지
+```
+"순매수" + 스캔키워드 → scan_buy_signals_for_chat() 직접 호출, Ollama 우회
+차트 키워드 → analyze_chart_for_chat() 직접 호출, Ollama 우회
+```
+- 이 블록 없으면 Ollama가 결과를 재가공해 환각 발생
+
+### 병렬 스캔
+- `scan_buy_signals_for_chat()` — `ThreadPoolExecutor(max_workers=6)` 병렬 처리
+- 결과 신호 수 내림차순 정렬 후 반환
+
+### Ollama 직접 반환 도구 (llm_client.py)
+- `_DIRECT_RETURN_TOOLS = {"scan_buy_signals", "get_watchlist", "analyze_chart"}`
+- 이 도구들의 결과는 Ollama 재응답 없이 그대로 반환 (환각 방지)
+
+### 남은 숙제
+- `_ollama_buy_decision()` — 여전히 Ollama 호출 → 신호 수 기반 룰로 대체 고려
+- 분봉 데이터: 장 마감 후(15:30~) 불안정 → 시간대별 제외 옵션 검토
+
+### 히스토리 복구
+- `_naver_net_buy_list(date_str='YYYYMMDD')` — `&ntp=` 파라미터로 과거 날짜 조회 가능
+- `collect_smart_flows` — Oracle DB `mock_smart_flows` 테이블에 6개월 보관
+
 ## 현재 진행 이슈
 - **모의투자 중** — KIS 실전 키 보관 중, 1개월 검증 후 전환 예정 (2026-05)
 - **모듈화 예정** — proxy_v54.py → 16개 파일 분리 (안정화 후 진행)
 - **장중 자동점검** — 스케줄 에이전트 trig_01NTvrDUFKtYzoNoHfGPMrTF (3/31 09/11/13/15시 KST)
 
 ## 절대 하지 말 것
-- pre-injection 블록(ai_chat.py 3-1) 제거 금지 — 시장보고서 품질에 핵심
+- pre-injection 블록(ai_chat.py 3-1, 3-2, 3-3) 제거 금지 — 환각 방지 핵심
 - 단일 파일(proxy_v54.py)로 되돌리기 금지 — 8개 모듈로 분리된 상태 유지
 - `query_portfolio`에 거래내역 라우팅 금지 — `query_trade_history` 사용
+- 분봉 신호를 buy_count(12)에 포함 금지 — 단타타이밍 참고용으로만 표시
 
 ## 자주 쓰는 명령
 ```bash

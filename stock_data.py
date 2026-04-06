@@ -205,12 +205,17 @@ def stock_price_overseas(query: str) -> str:
 
 # -------------------------
 # 네이버 Finance에서 외국인/기관 순매수 상위 종목 스크래핑
-def _naver_net_buy_list(investor_gubun='9000', sosok='01', buy_type='buy'):
-    """네이버 Finance 순매수 상위 종목 반환. investor_gubun: 9000=외국인, 1000=금융투자"""
+def _naver_net_buy_list(investor_gubun='9000', sosok='01', buy_type='buy', date_str=None):
+    """네이버 Finance 순매수 상위 종목 반환.
+    investor_gubun: 9000=외국인, 1000=금융투자
+    date_str: 'YYYYMMDD' 형식 과거 날짜 (None=오늘)
+    """
     try:
         from io import StringIO
         url = (f"https://finance.naver.com/sise/sise_deal_rank_iframe.naver"
                f"?sosok={sosok}&investor_gubun={investor_gubun}&type={buy_type}")
+        if date_str:
+            url += f"&ntp={date_str}"
         headers = {
             'User-Agent': 'Mozilla/5.0',
             'Referer': 'https://finance.naver.com/sise/sise_deal_rank.naver'

@@ -193,6 +193,36 @@ def ask_ai(session_id, user_input):
         summary = call_mistral_only(f"다음 뉴스를 3줄로 요약:\n\n{news_text}", system="증시 뉴스 요약 전문가. 핵심만 3줄 한국어로.")
         return f"🌅 [장 시작 전 AI 프리뷰]\n\n{summary}", None
 
+    # 3-2) 순매수 스캔 — Ollama 도구 호출 없이 직접 실행 후 반환
+    _SCAN_SIGNAL_KEYS = ["매도신호", "매수신호", "관망종목", "스캔", "워치리스트스캔",
+                         "신호종목", "매도종목", "매수종목", "살만한종목", "추천종목"]
+    if "순매수" in _u and any(k in _u for k in _SCAN_SIGNAL_KEYS):
+        from auto_trader import scan_buy_signals_for_chat
+        # 기간 추출: N일 / N개월 / 오늘
+        _days = None
+        _months = 3
+        _dm = re.search(r'(\d+)\s*일', user_input)
+        _mm = re.search(r'(\d+)\s*개월', user_input)
+        if "오늘" in user_input:
+            _days = 1
+        elif _dm:
+            _days = int(_dm.group(1))
+        elif _mm:
+            _months = int(_mm.group(1))
+        _scan_result = scan_buy_signals_for_chat(months=_months, days=_days)
+        return _scan_result, None
+
+    # 3-3) 차트 분석 — 신호 데이터를 미리 계산해 Ollama에 주입 (도구 호출 없음)
+    _CHART_KEYS = ["차트분석", "차트봐", "매수인지", "매도인지", "관망인지",
+                   "매수해도", "매도해도", "사도될까", "팔아도될까", "지금살까", "지금팔까"]
+    if any(k in _u for k in _CHART_KEYS):
+        from auto_trader import analyze_chart_for_chat
+        # 종목명/코드 추출 (6자리 숫자 우선, 없으면 앞 단어)
+        _code_m = re.search(r'\b(\d{6})\b', user_input)
+        _query = _code_m.group(1) if _code_m else user_input.strip()
+        _chart_result = analyze_chart_for_chat(_query)
+        return _chart_result, None
+
     # 4) 순매수/매매 데이터만 선수집 (Ollama가 처리하기 어려운 커스텀 API)
     extra_data = []
     if "순매수" in user_input.lower() or "순매매" in user_input.lower():

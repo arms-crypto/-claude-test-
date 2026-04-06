@@ -216,7 +216,7 @@ def _tf_four_signals(df, label: str, signals: dict):
     signals[f"{label}_adx_val"] = round(adx_v, 1) if adx_v else None
     try:
         rsi_v = float(ta.momentum.rsi(c, window=6).iloc[-1]) if len(c) >= 7 else None
-        signals[f"{label}_RSI"]     = bool(rsi_v and 30 < rsi_v < 70)
+        signals[f"{label}_RSI"]     = bool(rsi_v and rsi_v > 50)
         signals[f"{label}_rsi_val"] = round(rsi_v, 1) if rsi_v else None
     except Exception:
         signals[f"{label}_RSI"] = False; signals[f"{label}_rsi_val"] = None
@@ -286,19 +286,21 @@ def calculate_chart_signals(code: str) -> dict | None:
     signals["분봉_RSI"]       = swing_scores["RSI"]       >= 2
     signals["분봉_MACD"]      = swing_scores["MACD"]      >= 2
 
-    tf_keys = [
+    # 스윙 판단용 12신호 (월봉/주봉/일봉) — 분봉은 단타 타이밍용으로 별도
+    swing_keys = [
         "월봉_일목균형표","월봉_ADX","월봉_RSI","월봉_MACD",
         "주봉_일목균형표","주봉_ADX","주봉_RSI","주봉_MACD",
         "일봉_일목균형표","일봉_ADX","일봉_RSI","일봉_MACD",
-        "분봉_일목균형표","분봉_ADX","분봉_RSI","분봉_MACD",
     ]
-    buy_count = sum(bool(signals.get(k)) for k in tf_keys)
+    minute_keys = ["분봉_일목균형표","분봉_ADX","분봉_RSI","분봉_MACD"]
+    buy_count   = sum(bool(signals.get(k)) for k in swing_keys)   # /12
+    minute_count = sum(bool(signals.get(k)) for k in minute_keys) # /4 (참고용)
 
     logger.info(
-        "차트신호 %s → %d/16 | 월봉[이치=%s ADX=%s RSI=%s MACD=%s] "
+        "차트신호 %s → %d/12 (분봉%d/4) | 월봉[이치=%s ADX=%s RSI=%s MACD=%s] "
         "주봉[이치=%s ADX=%s RSI=%s MACD=%s] 일봉[이치=%s ADX=%s RSI=%s MACD=%s] "
         "분봉[이치=%s ADX=%s RSI=%s MACD=%s]",
-        code, buy_count,
+        code, buy_count, minute_count,
         signals.get("월봉_일목균형표"), signals.get("월봉_ADX"),
         signals.get("월봉_RSI"), signals.get("월봉_MACD"),
         signals.get("주봉_일목균형표"), signals.get("주봉_ADX"),
@@ -313,7 +315,8 @@ def calculate_chart_signals(code: str) -> dict | None:
     macd_hist = signals.get("일봉_macd_val")
     return {
         "signals":        signals,
-        "buy_count":      buy_count,
+        "buy_count":      buy_count,       # 스윙 판단 /12
+        "minute_count":   minute_count,    # 단타 타이밍 참고 /4
         "sig_ichimoku":   signals.get("주봉_일목균형표", False),
         "sig_d_ichimoku": signals.get("일봉_일목균형표", False),
         "sig_macd":       signals.get("일봉_MACD", False),
@@ -332,7 +335,7 @@ def calculate_chart_signals(code: str) -> dict | None:
 
 def chart_buy_signal(code: str) -> bool:
     sig = calculate_chart_signals(code)
-    return sig is not None and sig["buy_count"] >= 8
+    return sig is not None and sig["buy_count"] >= 6  # /12 기준 50%+
 
 
 # ── 장중 시간 체크 (KST) ────────────────────────────────────────────────────
@@ -495,7 +498,7 @@ def _ollama_buy_decision(code: str, name: str, sig: dict) -> dict:
     """
     PC Ollama(mistral)에게 매수 여부 + 전략 유형 판단 요청.
     반환: {"action": "BUY"|"SKIP", "trade_type": "단타"|"스윙", "reason": str}
-    실패 시 폴백: buy_count >= 8
+    실패 시 폴백: buy_count >= 6
     """
     import re as _re, json as _json
 
@@ -509,7 +512,7 @@ def _ollama_buy_decision(code: str, name: str, sig: dict) -> dict:
     가격위치 = "✅" if s.get("일봉_가격위치") else "❌"
 
     prompt = (
-        f"종목: {name}({code}) | 총신호={sig['buy_count']}/16\n\n"
+        f"종목: {name}({code}) | 총신호={sig['buy_count']}/12\n\n"
 
         "주봉 (스윙 방향)\n"
         f"  일목균형표={v('주봉_일목균형표')} | ADX={v('주봉_ADX')} | MACD={v('주봉_MACD')}\n\n"
@@ -547,7 +550,7 @@ def _ollama_buy_decision(code: str, name: str, sig: dict) -> dict:
                 return d
     except Exception:
         logger.warning("Ollama 매수판단 실패 %s, 폴백룰 적용", code)
-    return {"action": "SKIP", "trade_type": trade_type, "reason": f"폴백SKIP(신호 {sig['buy_count']}/16, Ollama실패)"}
+    return {"action": "SKIP", "trade_type": trade_type, "reason": f"폴백SKIP(신호 {sig['buy_count']}/12, Ollama실패)"}
 
 
 def select_volume_smart_chart() -> list:
@@ -695,7 +698,7 @@ def _ollama_sell_decision(code: str, name: str, pnl: float, qty: int,
         sig_txt = (f"RSI={sig['rsi']} MACD_hist={sig['macd_hist']} "
                    f"ADX={sig.get('adx','?')} PDI={sig.get('pdi','?')} MDI={sig.get('mdi','?')} "
                    f"일목균형표={'✅' if sig['sig_ichimoku'] else '❌'} "
-                   f"매수신호={sig['buy_count']}/16")
+                   f"매수신호={sig['buy_count']}/12")
 
     rag_sell = _rag_trade_history(code, sig or {})
     kst_time_str = datetime.datetime.now(pytz.timezone("Asia/Seoul")).strftime("%H:%M")
@@ -894,7 +897,7 @@ def auto_trade_cycle():
                 config._daily_trade_log.append(
                     f"{time_str} 🟢 신규매수 {name}({code}) [{trade_type}] {amount:,}원\n"
                     f"  └ RSI={sig['rsi']} MACD={sig['macd_hist']} "
-                    f"ADX={sig.get('adx','?')} 신호={sig['buy_count']}/16"
+                    f"ADX={sig.get('adx','?')} 신호={sig['buy_count']}/12"
                 )
             except Exception:
                 logger.exception("신규매수 오류: %s", code)
@@ -1052,7 +1055,7 @@ def _handle_auto_trade_cmd(text: str) -> str:
             f"  분봉       | {v('분봉_일목균형표')}  | {v('분봉_ADX')} | {v('분봉_MACD')}\n"
             f"MA정배열={v('일봉_정배열')} | 현재가>MA20={v('일봉_가격위치')}\n"
             f"MACD히스트={sig['macd_hist']} | ADX={sig.get('adx','?')} | RSI={sig['rsi']}\n"
-            f"총신호: {sig['buy_count']}/16 → {'🟢 BUY 후보' if sig['buy_count'] >= 8 else '🔴 신호 부족'}"
+            f"총신호: {sig['buy_count']}/12 → {'🟢 BUY 후보' if sig['buy_count'] >= 6 else '🔴 신호 부족'}"
         )
 
     status = "ON 🟢" if config._auto_enabled else "OFF 🔴"
@@ -1084,11 +1087,12 @@ def collect_smart_flows(date_str=None):
     results = []
     for investor_type, gubun in investor_map.items():
         try:
-            df = _naver_net_buy_list(gubun, '01', 'buy')
+            df = _naver_net_buy_list(gubun, '01', 'buy', date_str=date_str)
             if df is None or df.empty:
                 logger.warning("collect_smart_flows: %s 데이터 없음", investor_type)
                 continue
-            from stock_data import get_stock_code_from_db, naver_search_code
+            from db_utils import get_stock_code_from_db
+            from stock_data import naver_search_code
             for rank, row in enumerate(df.itertuples(), 1):
                 name = str(row.종목명)
                 amount_mil = int(row.금액) if hasattr(row, '금액') and str(row.금액) not in ('nan','') else 0
@@ -1126,6 +1130,7 @@ def collect_smart_flows(date_str=None):
                     )
                 conn.commit()
         logger.info("collect_smart_flows: %d건 저장 (date=%s)", len(results), date_str)
+
         return True, f"{date_str} 기준 {len(results)}건 저장 완료"
     except Exception:
         logger.exception("collect_smart_flows DB 저장 실패")
@@ -1204,7 +1209,7 @@ def analyze_chart_for_chat(query: str) -> str:
     def v(k): return "✅" if s.get(k) else "❌"
 
     signal_summary = (
-        f"종목: {name}({code}) | 총신호: {sig['buy_count']}/16\n\n"
+        f"종목: {name}({code}) | 총신호: {sig['buy_count']}/12\n\n"
         f"월봉: 일목{v('월봉_일목균형표')} ADX{v('월봉_ADX')} RSI{v('월봉_RSI')} MACD{v('월봉_MACD')}\n"
         f"주봉: 일목{v('주봉_일목균형표')} ADX{v('주봉_ADX')} RSI{v('주봉_RSI')} MACD{v('주봉_MACD')}\n"
         f"일봉: 일목{v('일봉_일목균형표')} ADX{v('일봉_ADX')} RSI{v('일봉_RSI')} MACD{v('일봉_MACD')} "
@@ -1249,14 +1254,15 @@ def analyze_chart_for_chat(query: str) -> str:
     return (
         f"📊 {name}({code}) 차트 분석\n\n"
         f"{signal_summary}"
-        f"판단: {action_str} (신호 {cnt}/16 기준)"
+        f"판단: {action_str} (신호 {cnt}/12 기준)"
     )
 
 
-def get_watchlist_from_db(months: int = 3) -> list:
+def get_watchlist_from_db(months: int = 3, days: int = None) -> list:
     """
-    DB mock_smart_flows에서 최근 N개월간 외국인+기관 모두 순매수한 종목 코드 목록 반환.
-    등장 횟수 내림차순 정렬.
+    DB mock_smart_flows에서 최근 N개월(또는 N일)간 외국인 또는 기관 순매수 등장 종목 반환.
+    동시 등장(⭐) 여부도 표시. 등장 횟수 내림차순 정렬.
+    반환: [(code, name, days, both)] — both=True면 외국인+기관 동시
     """
     p = get_db_pool()
     if not p:
@@ -1264,85 +1270,137 @@ def get_watchlist_from_db(months: int = 3) -> list:
     try:
         with p.acquire() as conn:
             with conn.cursor() as cur:
+                if days is not None:
+                    where_clause = "WHERE collected_at >= SYSTIMESTAMP - :1"
+                    param = [days]
+                else:
+                    where_clause = "WHERE collected_at >= ADD_MONTHS(SYSTIMESTAMP, :1)"
+                    param = [-months]
                 cur.execute(
-                    "SELECT ticker, name, COUNT(DISTINCT date_str) AS days "
-                    "FROM mock_smart_flows "
-                    "WHERE collected_at >= ADD_MONTHS(SYSTIMESTAMP, :1) "
-                    "GROUP BY ticker, name "
-                    "HAVING COUNT(DISTINCT investor_type) >= 2 "
-                    "ORDER BY days DESC",
-                    [-months]
+                    f"SELECT ticker, name, COUNT(DISTINCT date_str) AS days, "
+                    f"COUNT(DISTINCT investor_type) AS inv_cnt "
+                    f"FROM mock_smart_flows "
+                    f"{where_clause} "
+                    f"AND REGEXP_LIKE(ticker, '^[0-9]{{6}}$') "
+                    f"GROUP BY ticker, name "
+                    f"ORDER BY inv_cnt DESC, days DESC",
+                    param
                 )
                 rows = cur.fetchall()
-        # ticker가 6자리 코드인 것만, 아니면 이름으로 코드 조회
-        from stock_data import get_stock_code_from_db
         result = []
         seen = set()
-        for ticker, name, days in rows:
-            code = ticker if (len(ticker) == 6 and ticker.isdigit()) else get_stock_code_from_db(name)
-            if code and code not in seen:
-                seen.add(code)
-                result.append((code, name, days))
+        for ticker, name, day_cnt, inv_cnt in rows:
+            if ticker not in seen:
+                seen.add(ticker)
+                result.append((ticker, name, day_cnt, inv_cnt >= 2))
         return result
     except Exception:
         logger.exception("get_watchlist_from_db 오류")
         return []
 
 
-def scan_buy_signals_for_chat(months: int = 3) -> str:
+def scan_buy_signals_for_chat(months: int = 3, days: int = None) -> str:
     """
-    채팅용 — DB 누적 N개월간 외국인+기관 동시 순매수 종목 워치리스트 기반 매수 신호 스캔.
-    오늘 교집합이 없어도 과거 이력이 있으면 유지, N개월간 미등장 시 자동 제외.
+    채팅용 — DB 누적 N개월(또는 N일)간 외국인+기관 동시 순매수 종목 워치리스트 기반 매수 신호 스캔.
+    days 지정 시 days 우선 적용.
     """
-    watchlist = get_watchlist_from_db(months)
+    period_label = f"{days}일" if days is not None else f"{months}개월"
+    watchlist = get_watchlist_from_db(months=months, days=days)
 
-    # 오늘 실시간 데이터로 보강 (워치리스트에 없는 종목 추가)
+    # 오늘 실시간 데이터로 보강 (DB에 없는 신규 종목 추가)
     foreign = _scrape_naver_codes("9000", limit=20)
     inst_set = set(_scrape_naver_codes("1000", limit=20))
-    today_both = [c for c in foreign if c in inst_set]
-    existing_codes = {c for c, _, __ in watchlist}
-    for code in today_both:
+    existing_codes = {c for c, _, __, ___ in watchlist}
+    for code in set(foreign) | inst_set:
         if code not in existing_codes:
             name = _get_name_by_code(code) or code
-            watchlist.append((code, name, 1))  # 오늘 첫 등장
+            both = code in foreign and code in inst_set
+            watchlist.append((code, name, 1, both))
 
     candidates = watchlist
 
     if not candidates:
-        return "외국인+기관 동시 순매수 워치리스트가 비어있습니다."
+        return "순매수 워치리스트가 비어있습니다."
 
-    results_buy, results_skip = [], []
-    for code, name, days in candidates:
+    def _scan_one(item):
+        code, name, day_cnt, both = item
         sig = calculate_chart_signals(code)
         if not sig:
-            continue
+            return None
         decision = _ollama_buy_decision(code, name, sig)
-        entry = (code, name, days, sig, decision)
-        if decision["action"] == "BUY":
-            results_buy.append(entry)
-        else:
-            results_skip.append(entry)
+        return (code, name, day_cnt, both, sig, decision)
 
-    lines = [f"📊 외국인+기관 워치리스트 {len(candidates)}종목 스캔 (최근 {months}개월 누적)\n"]
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    results_buy, results_hold, results_sell = [], [], []
+    with ThreadPoolExecutor(max_workers=6) as ex:
+        futures = {ex.submit(_scan_one, item): item for item in candidates}
+        for fut in as_completed(futures):
+            entry = fut.result()
+            if entry is None:
+                continue
+            cnt = entry[4]["buy_count"]
+            if entry[5]["action"] == "BUY":
+                results_buy.append(entry)
+            elif cnt < 4:
+                results_sell.append(entry)
+            else:
+                results_hold.append(entry)
+
+    # 신호 수 내림차순 정렬
+    results_buy.sort(key=lambda x: x[4]["buy_count"], reverse=True)
+    results_hold.sort(key=lambda x: x[4]["buy_count"], reverse=True)
+    results_sell.sort(key=lambda x: x[4]["buy_count"], reverse=True)
+
+    lines = [f"📊 외국인+기관 워치리스트 {len(candidates)}종목 스캔 (최근 {period_label} 누적)\n"]
 
     if results_buy:
         lines.append(f"✅ 매수 신호 ({len(results_buy)}개)")
-        for code, name, days, sig, decision in results_buy:
-            s  = sig.get("signals", {})
-            tt = decision.get("trade_type", "스윙")
-            def v(k): return "✅" if s.get(k) else "❌"
+        for code, name, day_cnt, both, sig, decision in results_buy:
+            s    = sig.get("signals", {})
+            tt   = decision.get("trade_type", "스윙")
+            star = "⭐" if both else ""
+            _v = lambda k, _s=s: "✅" if _s.get(k) else "❌"
             lines.append(
-                f"▶ {name}({code}) [{tt}] 신호 {sig['buy_count']}/16 (교집합 {days}일)\n"
-                f"  월봉: 일목{v('월봉_일목균형표')} ADX{v('월봉_ADX')} RSI{v('월봉_RSI')} MACD{v('월봉_MACD')}\n"
-                f"  주봉: 일목{v('주봉_일목균형표')} ADX{v('주봉_ADX')} RSI{v('주봉_RSI')} MACD{v('주봉_MACD')}\n"
-                f"  일봉: 일목{v('일봉_일목균형표')} ADX{v('일봉_ADX')} RSI{v('일봉_RSI')} MACD{v('일봉_MACD')} 정배열{v('일봉_정배열')}\n"
+                f"{star}▶ {name}({code}) [{tt}] 신호 {sig['buy_count']}/12 (누적 {day_cnt}일)\n"
+                f"  월봉: 일목{_v('월봉_일목균형표')} ADX{_v('월봉_ADX')} RSI{_v('월봉_RSI')} MACD{_v('월봉_MACD')}\n"
+                f"  주봉: 일목{_v('주봉_일목균형표')} ADX{_v('주봉_ADX')} RSI{_v('주봉_RSI')} MACD{_v('주봉_MACD')}\n"
+                f"  일봉: 일목{_v('일봉_일목균형표')} ADX{_v('일봉_ADX')} RSI{_v('일봉_RSI')} MACD{_v('일봉_MACD')} 정배열{_v('일봉_정배열')}\n"
+                f"  단타타이밍: 분봉{sig.get('minute_count',0)}/4 일목{_v('분봉_일목균형표')} ADX{_v('분봉_ADX')} RSI{_v('분봉_RSI')} MACD{_v('분봉_MACD')}\n"
                 f"  판단: {decision.get('reason','')}"
             )
     else:
         lines.append("✅ 매수 신호 없음")
 
-    if results_skip:
-        lines.append(f"\n⏸ 관망 ({len(results_skip)}개): " +
-                     ", ".join(f"{name}({code}) {days}일" for code, name, days, _, __ in results_skip))
+    if results_hold:
+        lines.append(f"\n⏸ 관망 ({len(results_hold)}개)")
+        for code, name, day_cnt, both, sig, decision in results_hold:
+            s    = sig.get("signals", {})
+            tt   = decision.get("trade_type", "스윙")
+            star = "⭐" if both else ""
+            _v = lambda k, _s=s: "✅" if _s.get(k) else "❌"
+            lines.append(
+                f"{star}▶ {name}({code}) [{tt}] 신호 {sig['buy_count']}/12 (누적 {day_cnt}일)\n"
+                f"  월봉: 일목{_v('월봉_일목균형표')} ADX{_v('월봉_ADX')} RSI{_v('월봉_RSI')} MACD{_v('월봉_MACD')}\n"
+                f"  주봉: 일목{_v('주봉_일목균형표')} ADX{_v('주봉_ADX')} RSI{_v('주봉_RSI')} MACD{_v('주봉_MACD')}\n"
+                f"  일봉: 일목{_v('일봉_일목균형표')} ADX{_v('일봉_ADX')} RSI{_v('일봉_RSI')} MACD{_v('일봉_MACD')} 정배열{_v('일봉_정배열')}\n"
+                f"  단타타이밍: 분봉{sig.get('minute_count',0)}/4 일목{_v('분봉_일목균형표')} ADX{_v('분봉_ADX')} RSI{_v('분봉_RSI')} MACD{_v('분봉_MACD')}\n"
+                f"  판단: {decision.get('reason','')}"
+            )
+
+    if results_sell:
+        lines.append(f"\n📉 매도 ({len(results_sell)}개 — 신호 4 미만)")
+        for code, name, day_cnt, both, sig, decision in results_sell:
+            s    = sig.get("signals", {})
+            tt   = decision.get("trade_type", "스윙")
+            star = "⭐" if both else ""
+            _v = lambda k, _s=s: "✅" if _s.get(k) else "❌"
+            lines.append(
+                f"{star}▶ {name}({code}) [{tt}] 신호 {sig['buy_count']}/12 (누적 {day_cnt}일)\n"
+                f"  월봉: 일목{_v('월봉_일목균형표')} ADX{_v('월봉_ADX')} RSI{_v('월봉_RSI')} MACD{_v('월봉_MACD')}\n"
+                f"  주봉: 일목{_v('주봉_일목균형표')} ADX{_v('주봉_ADX')} RSI{_v('주봉_RSI')} MACD{_v('주봉_MACD')}\n"
+                f"  일봉: 일목{_v('일봉_일목균형표')} ADX{_v('일봉_ADX')} RSI{_v('일봉_RSI')} MACD{_v('일봉_MACD')} 정배열{_v('일봉_정배열')}\n"
+                f"  단타타이밍: 분봉{sig.get('minute_count',0)}/4 일목{_v('분봉_일목균형표')} ADX{_v('분봉_ADX')} RSI{_v('분봉_RSI')} MACD{_v('분봉_MACD')}\n"
+                f"  판단: {decision.get('reason','')}"
+            )
 
     return "\n".join(lines)
