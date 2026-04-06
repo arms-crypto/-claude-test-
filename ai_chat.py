@@ -46,6 +46,42 @@ def get_fact_info_for_session(session_id: str) -> str:
 
 
 # -------------------------
+# 응답 품질 학습 — 좋은 응답은 RAG에, 나쁜 응답은 교정 후 RAG에
+_BAD_PATTERNS = ["2023년", "2024년 이전", "학습 데이터", "학습된 데이터", "지식 한계",
+                 "훈련 데이터", "학습 날짜", "제 지식은", "알 수 없습니다만"]
+_GOOD_RESPONSE_COUNTER = [0]  # 좋은 응답 빈도 조절용
+
+def learn_from_response(user_input: str, ai_response: str):
+    """응답 품질을 판단해 RAG knowledge_memory에 저장."""
+    try:
+        from rag_store import store_knowledge
+        has_bad = any(p in ai_response for p in _BAD_PATTERNS)
+
+        if has_bad:
+            # 나쁜 패턴 발견 → Qwen에게 교정 버전 생성 요청
+            fix_prompt = (
+                f"다음 AI 응답에서 '학습 데이터 날짜', '지식 한계' 같은 불필요한 면책 발언을 제거하고 "
+                f"자연스럽게 다시 써줘. 핵심 내용은 유지.\n\n"
+                f"원본: {ai_response[:400]}"
+            )
+            corrected = call_qwen(fix_prompt, use_tools=False)
+            if corrected and len(corrected) > 20:
+                example = f"Q: {user_input[:200]}\nA(교정): {corrected[:400]}"
+                store_knowledge(example, category="corrected_response",
+                                tags="면책발언교정,응답패턴")
+                logger.info("나쁜 응답 교정 후 RAG 저장")
+        else:
+            # 좋은 응답 — 10회에 1번만 저장 (노이즈 방지)
+            _GOOD_RESPONSE_COUNTER[0] += 1
+            if _GOOD_RESPONSE_COUNTER[0] % 10 == 0 and len(ai_response) > 30:
+                example = f"Q: {user_input[:200]}\nA: {ai_response[:400]}"
+                store_knowledge(example, category="good_response",
+                                tags="자연스러운응답,대화패턴")
+                logger.info("좋은 응답 RAG 저장 (10회 주기)")
+    except Exception:
+        logger.exception("learn_from_response 예외")
+
+
 # 팩트 검증 백그라운드
 def check_and_store_fact(session_id, user_input, ai_response):
     check_prompt = f"""
@@ -128,6 +164,15 @@ def ask_ai(session_id, user_input):
     current_time_str = now.strftime("%Y년 %m월 %d일 %p %I:%M")
     my_facts = get_verified_facts(session_id)
     fact_str = f"[사용자 핵심 정보]\\n{my_facts}\\n\\n" if my_facts else ""
+
+    # 3-0) RAG 지식 베이스에서 유사 응답 패턴 검색 → 컨텍스트 주입
+    try:
+        from rag_store import search_knowledge
+        _know = search_knowledge(user_input, n_results=2)
+        if _know:
+            fact_str = f"[응답 참고 예시]\n{_know}\n\n" + fact_str
+    except Exception:
+        pass
     # 히스토리를 messages 배열로 변환 (텍스트 혼합 방지)
     past_messages = list(history)[-8:] if len(history) > 0 else []
     chat_history_str = ""  # 더 이상 텍스트로 사용 안 함
@@ -266,6 +311,7 @@ def ask_ai(session_id, user_input):
     history.append(f"AI: {answer}")
 
     threading.Thread(target=check_and_store_fact, args=(session_id, user_input, answer)).start()
+    threading.Thread(target=learn_from_response, args=(user_input, answer)).start()
 
     if any(k in answer for k in ["원", "$", "매수"]):
         threading.Thread(target=save_fact_to_db, args=(answer,)).start()
