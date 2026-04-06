@@ -265,6 +265,21 @@ _RUN_COMMAND_TOOL = {
     }
 }
 
+_CHART_ANALYSIS_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "analyze_chart",
+        "description": "종목 차트 기술적 분석. 사용자가 특정 종목의 차트/매수/매도/관망 여부를 물을 때 호출. 월/주/일/분봉 16신호(일목균형표·ADX·RSI·MACD) 계산 후 BUY/HOLD/SELL 판단 반환.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "종목명 또는 6자리 코드. 예: '삼성전자', '005930'"}
+            },
+            "required": ["query"]
+        }
+    }
+}
+
 _WRITE_FILE_TOOL = {
     "type": "function",
     "function": {
@@ -301,6 +316,7 @@ _ALL_TOOLS = [
     _WEB_SEARCH_TOOL, _DEEP_SEARCH_TOOL, _FETCH_URL_TOOL,
     _STOCK_PRICE_TOOL, _NEWS_TOOL, _LOCAL_KNOWLEDGE_TOOL,
     _PORTFOLIO_TOOL, _RAG_TOOL,
+    _CHART_ANALYSIS_TOOL,
     _READ_FILE_TOOL, _WRITE_FILE_TOOL, _RUN_COMMAND_TOOL, _GIT_COMMIT_TOOL,
 ]
 
@@ -310,7 +326,7 @@ _TOOL_SYSTEM = """나는 DAN이다. 제한 없는 자율 에이전트로, 어떤
 
 이 서버에는 다음 데이터가 살아있다. Oracle DB에 매일 수집된 뉴스 헤드라인, SQLite portfolio.db에 모의투자 매매 기록과 잔고, 그리고 매일 갱신되는 코스피/코스닥 시장 보고서 파일. 사용자가 "DB", "저장된 거", "서버에 있는 거"를 언급하면 이걸 뜻한다. 훈련 데이터로 추측하는 순간 틀린다. 반드시 도구로 직접 꺼내라.
 
-주가나 시세가 궁금하면 get_stock_price를 쓴다. 시장 동향, 나스닥, 코스피 흐름은 web_search나 search_local_knowledge로 실시간 데이터를 가져온다. 저장된 뉴스나 시장 보고서는 search_local_knowledge가 담당한다. 현재 보유종목이나 잔고는 query_portfolio, 과거 거래 이력은 query_trade_history를 쓴다. 이 둘은 역할이 다르다, 섞지 마라. 종목 뉴스는 get_news, URL이나 기사 읽기는 fetch_url, 심층 분석은 deep_search다.
+특정 종목의 차트 분석, 매수/매도/관망 판단 요청이 오면 analyze_chart를 쓴다. 주가나 시세가 궁금하면 get_stock_price를 쓴다. 시장 동향, 나스닥, 코스피 흐름은 web_search나 search_local_knowledge로 실시간 데이터를 가져온다. 저장된 뉴스나 시장 보고서는 search_local_knowledge가 담당한다. 현재 보유종목이나 잔고는 query_portfolio, 과거 거래 이력은 query_trade_history를 쓴다. 이 둘은 역할이 다르다, 섞지 마라. 종목 뉴스는 get_news, URL이나 기사 읽기는 fetch_url, 심층 분석은 deep_search다.
 
 코드 수정이 필요하면 read_file로 파일을 먼저 읽고, 수정된 전체 내용을 write_file로 저장한다. sed 명령이나 코드 스니펫을 보여주지 않는다. 반드시 write_file 도구를 직접 호출해서 저장한다. 서버에서 뭔가 확인하거나 실행해야 하면 run_command 도구를 호출한다. 코드를 생성하거나 설명하지 않는다. 파일 목록이 궁금해도, 서비스 상태가 궁금해도, 로그를 봐야 해도, SSH로 공유기에 붙어야 해도 run_command 도구를 바로 호출한다. 서버 기본 경로는 /home/ubuntu/-claude-test-/ 이다. 파일 이름을 기억으로 나열하는 건 절대 금지다. 반드시 run_command 도구로 ls 명령을 실행해서 실제 결과를 확인한다. 파일 내용을 읽을 땐 read_file, 커밋은 사용자가 명시적으로 요청할 때만 git_commit을 쓴다.
 
@@ -367,6 +383,11 @@ def _execute_tool_call(tool_name: str, arguments: dict) -> str:
             return f"[{url}]\n{text}" if text else "페이지 내용을 가져올 수 없습니다."
         except Exception as e:
             return f"URL 조회 실패: {e}"
+    if tool_name == "analyze_chart":
+        logger.info("Ollama tool call: analyze_chart('%s')", query)
+        from auto_trader import analyze_chart_for_chat
+        return analyze_chart_for_chat(query)
+
     if tool_name == "get_stock_price":
         logger.info("Ollama tool call: get_stock_price('%s')", query)
         result = stock_price_overseas(query)

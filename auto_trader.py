@@ -1155,3 +1155,84 @@ def get_smart_recommendations():
     except Exception:
         logger.exception("get_smart_recommendations 오류")
         return None, "DB 조회 실패"
+
+
+# ── 채팅용 차트 분석 ───────────────────────────────────────────────────────────
+
+def analyze_chart_for_chat(query: str) -> str:
+    """
+    채팅에서 종목명/코드로 차트 기술적 분석 요청 시 호출.
+    BUY / HOLD / SELL 판단 + 근거 반환.
+    """
+    import re as _re, json as _json
+    from stock_data import get_stock_code_from_db, naver_search_code
+
+    query = query.strip()
+
+    # 코드 해석
+    if len(query) == 6 and query.isdigit():
+        code = query
+        name = _get_name_by_code(code) or code
+    else:
+        code = get_stock_code_from_db(query)
+        if not code:
+            code = naver_search_code(query)
+        if not code:
+            return f"❌ '{query}' 종목을 찾을 수 없어요. 6자리 코드로 다시 시도해보세요."
+        name = query
+
+    sig = calculate_chart_signals(code)
+    if not sig:
+        return f"❌ {name}({code}) 신호 계산 실패. KIS API 연결을 확인하세요."
+
+    s = sig.get("signals", {})
+    def v(k): return "✅" if s.get(k) else "❌"
+
+    signal_summary = (
+        f"종목: {name}({code}) | 총신호: {sig['buy_count']}/16\n\n"
+        f"월봉: 일목{v('월봉_일목균형표')} ADX{v('월봉_ADX')} RSI{v('월봉_RSI')} MACD{v('월봉_MACD')}\n"
+        f"주봉: 일목{v('주봉_일목균형표')} ADX{v('주봉_ADX')} RSI{v('주봉_RSI')} MACD{v('주봉_MACD')}\n"
+        f"일봉: 일목{v('일봉_일목균형표')} ADX{v('일봉_ADX')} RSI{v('일봉_RSI')} MACD{v('일봉_MACD')} "
+        f"정배열{v('일봉_정배열')} 가격>MA20{v('일봉_가격위치')}\n"
+        f"분봉(15/30/60): 일목{v('분봉_일목균형표')} ADX{v('분봉_ADX')} RSI{v('분봉_RSI')} MACD{v('분봉_MACD')}\n"
+        f"단타(3분): 일목{v('분봉_3분_일목균형표')} ADX{v('분봉_3분_ADX')} RSI{v('분봉_3분_RSI')} MACD{v('분봉_3분_MACD')}\n"
+        f"ADX={sig.get('adx','?'):.1f} MACD히스트={sig.get('macd_hist','?')}\n\n"
+    )
+
+    prompt = (
+        signal_summary +
+        "위 기술적 신호를 종합해서 현재 이 종목을 매수/관망/매도 중 어떻게 판단하는지 한국어로 답하세요.\n"
+        "JSON만 반환:\n"
+        '{"action":"BUY"|"HOLD"|"SELL","reason":"2~3줄 근거"}'
+    )
+
+    try:
+        resp = call_mistral_only(prompt, use_tools=False)
+        m = _re.search(r'\{[^{}]*"action"[^{}]*\}', resp, _re.DOTALL)
+        if m:
+            d = _json.loads(m.group())
+            action = d.get("action", "HOLD")
+            reason = d.get("reason", "")
+            emoji = {"BUY": "📈 매수", "HOLD": "⏸ 관망", "SELL": "📉 매도"}.get(action, "⏸ 관망")
+            return (
+                f"📊 {name}({code}) 차트 분석\n\n"
+                f"{signal_summary}"
+                f"판단: {emoji}\n"
+                f"근거: {reason}"
+            )
+    except Exception:
+        logger.warning("analyze_chart_for_chat Ollama 판단 실패 %s", code)
+
+    # 폴백: 신호 수로 단순 판단
+    cnt = sig['buy_count']
+    if cnt >= 10:
+        action_str = "📈 매수"
+    elif cnt >= 6:
+        action_str = "⏸ 관망"
+    else:
+        action_str = "📉 매도"
+    return (
+        f"📊 {name}({code}) 차트 분석\n\n"
+        f"{signal_summary}"
+        f"판단: {action_str} (신호 {cnt}/16 기준)"
+    )
