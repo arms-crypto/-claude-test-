@@ -1,0 +1,351 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+rag_store.py — 진화형 RAG 저장소
+nomic-embed-text(서버 Ollama) + Chroma 벡터DB
+- Oracle DB 뉴스 자동 임베딩/누적
+- 매매 결과 임베딩/누적
+- 시장 보고서 임베딩/누적
+- 질문에서 관련 기억 검색
+"""
+
+import os
+import json
+import hashlib
+import logging
+import requests
+import chromadb
+
+import config
+
+logger = logging.getLogger("proxy_v53")
+
+_CHROMA_DIR = os.path.join(os.path.dirname(__file__), "rag_data")
+_EMBED_URL  = "http://localhost:11434/api/embeddings"
+_EMBED_MODEL = "nomic-embed-text"
+
+_client = None
+_news_col = None
+_trade_col = None
+
+
+def _get_client():
+    global _client, _news_col, _trade_col
+    if _client is None:
+        _client    = chromadb.PersistentClient(path=_CHROMA_DIR)
+        _news_col  = _client.get_or_create_collection("news_memory")
+        _trade_col = _client.get_or_create_collection("trade_memory")
+    return _client, _news_col, _trade_col
+
+
+def _embed(text: str) -> list:
+    """nomic-embed-text로 텍스트 임베딩."""
+    try:
+        r = requests.post(
+            _EMBED_URL,
+            json={"model": _EMBED_MODEL, "prompt": text[:2000]},
+            timeout=30,
+            proxies={"http": None, "https": None},
+        )
+        r.raise_for_status()
+        return r.json().get("embedding", [])
+    except Exception as e:
+        logger.error("임베딩 실패: %s", e)
+        return []
+
+
+def _doc_id(text: str) -> str:
+    return hashlib.md5(text.encode()).hexdigest()
+
+
+# -------------------------
+# 뉴스 임베딩 저장
+def store_news(headline: str, date_str: str = "") -> bool:
+    """뉴스 헤드라인을 임베딩해서 Chroma에 저장."""
+    try:
+        _, news_col, _ = _get_client()
+        doc_id = _doc_id(headline)
+        # 중복 체크
+        existing = news_col.get(ids=[doc_id])
+        if existing["ids"]:
+            return False  # 이미 저장됨
+        emb = _embed(headline)
+        if not emb:
+            return False
+        news_col.add(
+            ids=[doc_id],
+            embeddings=[emb],
+            documents=[headline],
+            metadatas=[{"date": date_str, "type": "news"}],
+        )
+        logger.info("뉴스 RAG 저장: %s...", headline[:40])
+        return True
+    except Exception as e:
+        logger.error("뉴스 저장 실패: %s", e)
+        return False
+
+
+# -------------------------
+# 매매 결과 임베딩 저장
+def store_trade(ticker: str, name: str, action: str, price: float,
+                signals: int = 0, rsi: float = 0.0, pnl: float = None,
+                date_str: str = "") -> bool:
+    """매매 기록을 임베딩해서 Chroma에 저장."""
+    try:
+        _, _, trade_col = _get_client()
+        text = (f"{date_str} {action} {name}({ticker}) @{int(price):,}원 "
+                f"신호{signals}/16 RSI{rsi:.1f}"
+                + (f" 손익{pnl:+.1f}%" if pnl is not None else ""))
+        doc_id = _doc_id(text)
+        existing = trade_col.get(ids=[doc_id])
+        if existing["ids"]:
+            return False
+        emb = _embed(text)
+        if not emb:
+            return False
+        trade_col.add(
+            ids=[doc_id],
+            embeddings=[emb],
+            documents=[text],
+            metadatas={"ticker": ticker, "name": name, "action": action,
+                       "pnl": pnl or 0.0, "signals": signals, "date": date_str},
+        )
+        logger.info("매매 RAG 저장: %s", text[:60])
+        return True
+    except Exception as e:
+        logger.error("매매 저장 실패: %s", e)
+        return False
+
+
+# -------------------------
+# 관련 기억 검색
+def search_memory(query: str, n_results: int = 3, collection: str = "both") -> str:
+    """질문과 유사한 기억을 Chroma에서 검색해서 반환. 순매수/스캔 관련 질문은 scan_memory 우선."""
+    try:
+        _, news_col, trade_col = _get_client()
+        emb = _embed(query)
+        if not emb:
+            return ""
+        results = []
+
+        # 순매수/스캔/신호 관련 질문이면 scan_memory 먼저
+        _scan_keywords = ["순매수", "스캔", "매도신호", "매수신호", "워치리스트", "신호종목"]
+        if any(k in query for k in _scan_keywords):
+            scan_result = search_scan(query, n_results=1)
+            if scan_result:
+                results.append(scan_result)
+
+        if collection in ("both", "news"):
+            r = news_col.query(query_embeddings=[emb], n_results=n_results)
+            for doc, meta in zip(r["documents"][0], r["metadatas"][0]):
+                results.append(f"[뉴스 {meta.get('date','')}] {doc}")
+        if collection in ("both", "trade"):
+            r = trade_col.query(query_embeddings=[emb], n_results=n_results)
+            for doc, meta in zip(r["documents"][0], r["metadatas"][0]):
+                results.append(f"[매매기록] {doc}")
+        return "\n".join(results) if results else ""
+    except Exception as e:
+        logger.error("RAG 검색 실패: %s", e)
+        return ""
+
+
+# -------------------------
+# Oracle DB 뉴스 일괄 임베딩 (초기 로딩 / 주기적 업데이트)
+def sync_news_from_db(limit: int = 30) -> int:
+    """Oracle DB daily_news에서 최신 뉴스를 가져와 RAG에 저장."""
+    try:
+        from db_utils import get_db_pool
+        pool = get_db_pool()
+        if not pool:
+            return 0
+        stored = 0
+        with pool.acquire() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT headlines, run_time FROM daily_news "
+                    "ORDER BY run_time DESC FETCH FIRST :n ROWS ONLY",
+                    {"n": limit}
+                )
+                rows = cur.fetchall()
+        for headlines, run_time in rows:
+            date_str = str(run_time)[:10]
+            # Oracle LOB 타입 처리
+            if hasattr(headlines, "read"):
+                headlines = headlines.read()
+            # 헤드라인은 • 로 구분된 여러 줄
+            for line in str(headlines).split("\n"):
+                line = line.strip().lstrip("•").strip()
+                if len(line) > 10:
+                    if store_news(line, date_str):
+                        stored += 1
+        logger.info("뉴스 RAG 동기화 완료: %d건 신규 저장", stored)
+        return stored
+    except Exception as e:
+        logger.error("뉴스 DB 동기화 실패: %s", e)
+        return 0
+
+
+# -------------------------
+# portfolio.db 매매기록 일괄 임베딩
+def sync_trades_from_db(limit: int = 50) -> int:
+    """portfolio.db SELL 기록을 RAG에 저장 (손익 포함)."""
+    try:
+        import sqlite3 as _sq3
+        db_path = os.path.join(os.path.dirname(__file__), "mock_trading", "portfolio.db")
+        stored = 0
+        with _sq3.connect(db_path) as con:
+            cols = [r[1] for r in con.execute("PRAGMA table_info(trades)").fetchall()]
+            extra = ", ".join(c for c in ["buy_signals", "rsi", "pnl"] if c in cols)
+            sel = f"ticker, name, action, price, created_at" + (f", {extra}" if extra else "")
+            rows = con.execute(
+                f"SELECT {sel} FROM trades ORDER BY id DESC LIMIT ?", [limit]
+            ).fetchall()
+        for row in rows:
+            ticker, name, action, price, ts = row[0], row[1], row[2], row[3], row[4]
+            extras = {}
+            for i, c in enumerate([c for c in ["buy_signals","rsi","pnl"] if c in cols]):
+                extras[c] = row[5+i]
+            if store_trade(ticker, name, action, price,
+                           signals=int(extras.get("buy_signals") or 0),
+                           rsi=float(extras.get("rsi") or 0),
+                           pnl=extras.get("pnl"),
+                           date_str=str(ts)[:10]):
+                stored += 1
+        logger.info("매매 RAG 동기화 완료: %d건 신규 저장", stored)
+        return stored
+    except Exception as e:
+        logger.error("매매 DB 동기화 실패: %s", e)
+        return 0
+
+
+# -------------------------
+# 스캔 결과 저장 (고정 ID로 항상 최신 유지)
+def store_scan_result(scan_text: str, period_label: str = "3개월") -> bool:
+    """
+    scan_buy_signals_for_chat() 결과를 RAG에 저장.
+    같은 기간 결과는 덮어씀 (고정 ID 사용).
+    collect_smart_flows 실행 후 자동 호출 권장.
+    """
+    try:
+        _get_client()
+        scan_col = _client.get_or_create_collection("scan_memory")
+        doc_id = f"scan_{period_label}"  # 고정 ID → 덮어쓰기
+        # 기존 삭제
+        try:
+            scan_col.delete(ids=[doc_id])
+        except Exception:
+            pass
+        emb = _embed(scan_text[:2000])
+        if not emb:
+            return False
+        import datetime as _dt
+        scan_col.add(
+            ids=[doc_id],
+            embeddings=[emb],
+            documents=[scan_text],
+            metadatas=[{"period": period_label, "updated": _dt.datetime.now().strftime("%Y-%m-%d %H:%M")}],
+        )
+        logger.info("스캔 결과 RAG 저장: [%s] %d자", period_label, len(scan_text))
+        return True
+    except Exception as e:
+        logger.error("스캔 저장 실패: %s", e)
+        return False
+
+
+def search_scan(query: str, n_results: int = 2) -> str:
+    """스캔 결과 컬렉션에서 검색."""
+    try:
+        _get_client()
+        scan_col = _client.get_or_create_collection("scan_memory")
+        if scan_col.count() == 0:
+            return ""
+        emb = _embed(query)
+        if not emb:
+            return ""
+        r = scan_col.query(query_embeddings=[emb], n_results=min(n_results, scan_col.count()))
+        results = []
+        for doc, meta in zip(r["documents"][0], r["metadatas"][0]):
+            results.append(f"[순매수 스캔결과 {meta.get('period','')} / 갱신:{meta.get('updated','')}]\n{doc}")
+        return "\n\n".join(results) if results else ""
+    except Exception as e:
+        logger.error("스캔 검색 실패: %s", e)
+        return ""
+
+
+# -------------------------
+# 범용 지식 저장 (도구 행동 교정용 예시, 룰, FAQ 등)
+def store_knowledge(text: str, category: str = "general", tags: str = "") -> bool:
+    """
+    범용 텍스트를 임베딩해서 Chroma에 저장.
+    category: 'tool_example' | 'rule' | 'faq' | 'general'
+    tags: 쉼표구분 키워드 (예: '순매수,매도신호,scan_buy_signals')
+    """
+    try:
+        _, news_col, _ = _get_client()
+        # knowledge 컬렉션 별도 사용
+        knowledge_col = _client.get_or_create_collection("knowledge_memory")
+        doc_id = _doc_id(text)
+        existing = knowledge_col.get(ids=[doc_id])
+        if existing["ids"]:
+            logger.info("이미 저장된 지식: %s...", text[:40])
+            return False
+        emb = _embed(text)
+        if not emb:
+            return False
+        knowledge_col.add(
+            ids=[doc_id],
+            embeddings=[emb],
+            documents=[text],
+            metadatas=[{"category": category, "tags": tags}],
+        )
+        logger.info("지식 RAG 저장: [%s] %s...", category, text[:60])
+        return True
+    except Exception as e:
+        logger.error("지식 저장 실패: %s", e)
+        return False
+
+
+def search_knowledge(query: str, n_results: int = 3) -> str:
+    """지식 베이스에서 유사 항목 검색."""
+    try:
+        _get_client()
+        knowledge_col = _client.get_or_create_collection("knowledge_memory")
+        if knowledge_col.count() == 0:
+            return ""
+        emb = _embed(query)
+        if not emb:
+            return ""
+        r = knowledge_col.query(query_embeddings=[emb], n_results=min(n_results, knowledge_col.count()))
+        results = []
+        for doc, meta in zip(r["documents"][0], r["metadatas"][0]):
+            results.append(f"[{meta.get('category','')}] {doc}")
+        return "\n".join(results) if results else ""
+    except Exception as e:
+        logger.error("지식 검색 실패: %s", e)
+        return ""
+
+
+# -------------------------
+# 상태 확인
+def rag_status() -> str:
+    try:
+        _get_client()
+        news_col  = _client.get_or_create_collection("news_memory")
+        trade_col = _client.get_or_create_collection("trade_memory")
+        know_col  = _client.get_or_create_collection("knowledge_memory")
+        return (f"📚 RAG 저장소\n"
+                f"  뉴스 기억: {news_col.count()}건\n"
+                f"  매매 기억: {trade_col.count()}건\n"
+                f"  지식 베이스: {know_col.count()}건")
+    except Exception as e:
+        return f"RAG 상태 확인 실패: {e}"
+
+
+if __name__ == "__main__":
+    print("RAG 초기 동기화 시작...")
+    n = sync_news_from_db(limit=50)
+    t = sync_trades_from_db(limit=100)
+    print(f"뉴스 {n}건, 매매 {t}건 저장 완료")
+    print(rag_status())
+    print("\n검색 테스트: '반도체'")
+    print(search_memory("반도체"))
