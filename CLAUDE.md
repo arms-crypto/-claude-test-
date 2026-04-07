@@ -83,8 +83,10 @@ auto_trade_cycle()  ← 30초 루프, risk_gate → select_volume → buy/sell
 ```
 "순매수" + 스캔키워드 → scan_buy_signals_for_chat() 직접 호출, Ollama 우회
 차트 키워드 → analyze_chart_for_chat() 직접 호출, Ollama 우회
+"다시보여/방금분석/아까분석" → 세션 캐시(__last_chart_{session_id})에서 반환
 ```
 - 이 블록 없으면 Ollama가 결과를 재가공해 환각 발생
+- 차트 분석 결과는 `config.store[f"__last_chart_{session_id}"]`에 캐시 (서버 재시작 시 초기화)
 
 ### 병렬 스캔
 - `scan_buy_signals_for_chat()` — `ThreadPoolExecutor(max_workers=6)` 병렬 처리
@@ -96,6 +98,10 @@ auto_trade_cycle()  ← 30초 루프, risk_gate → select_volume → buy/sell
 ### Ollama 직접 반환 도구 (llm_client.py)
 - `_DIRECT_RETURN_TOOLS = {"scan_buy_signals", "get_watchlist", "analyze_chart"}`
 - 이 도구들의 결과는 Ollama 재응답 없이 그대로 반환 (환각 방지)
+
+### Ollama 모델 정체성 (llm_client.py _TOOL_SYSTEM)
+- 시스템 프롬프트 첫 줄에 명시: `"나는 Ollama_Agent다. mistral-small3.1:24b 모델 기반"`
+- 모델명 질문 시 "mistral-small3.1:24b" 정확히 답변 (Claude/GPT 오답 방지)
 
 ### 남은 숙제
 - `_ollama_buy_decision()` — 여전히 Ollama 호출 → 신호 수 기반 룰로 대체 고려
