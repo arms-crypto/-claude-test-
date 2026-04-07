@@ -1237,16 +1237,65 @@ def generate_chart_png(code: str, name: str, df_daily=None) -> str | None:
             df = df[["Open","High","Low","Close","Volume"]].copy()
             df.index.name = "Date"
         df = df.dropna()
+        close = df["Close"]
+        high  = df["High"]
+        low   = df["Low"]
+
+        # 일목균형표 (전환선/기준선)
+        tenkan = (high.rolling(9).max()  + low.rolling(9).min())  / 2
+        kijun  = (high.rolling(26).max() + low.rolling(26).min()) / 2
+
+        # RSI(14)
+        delta = close.diff()
+        gain  = delta.clip(lower=0).rolling(14).mean()
+        loss  = (-delta.clip(upper=0)).rolling(14).mean()
+        rsi_s = 100 - (100 / (1 + gain / loss.replace(0, 1e-9)))
+
+        # MACD(12,26,9)
+        ema12     = close.ewm(span=12, adjust=False).mean()
+        ema26     = close.ewm(span=26, adjust=False).mean()
+        macd_line = ema12 - ema26
+        sig_line  = macd_line.ewm(span=9, adjust=False).mean()
+        macd_hist = macd_line - sig_line
+
+        # ADX(14)
+        adx_s, _, _ = _calc_adx(df.rename(columns=str.lower), 14)
+        if adx_s is None:
+            adx_s = pd.Series([float("nan")] * len(df), index=df.index)
+
+        # NaN 채우기 (addplot 타입 오류 방지)
+        def _s(series):
+            if not isinstance(series, pd.Series):
+                series = pd.Series(series, index=df.index)
+            return series.ffill().fillna(50)
+
+        apds = [
+            # 메인 패널 — 일목 전환선/기준선
+            mpf.make_addplot(tenkan,        panel=0, color='blue',   width=0.9, linestyle='--'),
+            mpf.make_addplot(kijun,         panel=0, color='orange', width=0.9, linestyle='--'),
+            # RSI 패널
+            mpf.make_addplot(_s(rsi_s),     panel=2, color='purple', width=1.1, ylabel='RSI'),
+            mpf.make_addplot(pd.Series(70, index=df.index, dtype=float), panel=2, color='red',  width=0.5, linestyle='--'),
+            mpf.make_addplot(pd.Series(30, index=df.index, dtype=float), panel=2, color='blue', width=0.5, linestyle='--'),
+            # MACD 패널
+            mpf.make_addplot(_s(macd_line), panel=3, color='blue',   width=1.1, ylabel='MACD'),
+            mpf.make_addplot(_s(sig_line),  panel=3, color='red',    width=0.9),
+            mpf.make_addplot(_s(macd_hist), panel=3, type='bar', color='dimgray', alpha=0.4),
+            # ADX 패널
+            mpf.make_addplot(_s(adx_s),     panel=4, color='green',  width=1.1, ylabel='ADX'),
+            mpf.make_addplot(pd.Series(25, index=df.index, dtype=float), panel=4, color='red', width=0.5, linestyle='--'),
+        ]
 
         chart_path = os.path.join(os.path.dirname(__file__), f"chart_{code}.png")
         fig, axes = mpf.plot(
-            df, type='candle', mav=(5, 20),
-            volume=True, style='yahoo', figsize=(10, 7),
-            returnfig=True,
+            df, type='line', mav=(5, 20),
+            volume=True, style='yahoo', figsize=(12, 14),
+            addplot=apds, returnfig=True,
+            panel_ratios=(4, 1, 1.5, 1.5, 1.5),
         )
         _title_kwargs = {"fontproperties": _font_prop, "fontsize": 13} if _font_prop else {"fontsize": 13}
         fig.suptitle(f"{name}({code})", **_title_kwargs)
-        fig.savefig(chart_path, bbox_inches='tight')
+        fig.savefig(chart_path, bbox_inches='tight', dpi=100)
         plt.close(fig)
         return chart_path
     except Exception as e:
@@ -1254,11 +1303,11 @@ def generate_chart_png(code: str, name: str, df_daily=None) -> str | None:
         return None
 
 
-def analyze_chart_for_chat(query: str) -> str:
+def analyze_chart_for_chat(query: str) -> tuple:
     """
     채팅에서 종목명/코드로 차트 기술적 분석 요청 시 호출.
     차트 PNG 생성 → Ollama 비전 분석 → BUY/HOLD/SELL 판단 반환.
-    비전 실패 시 텍스트 신호 기반 폴백.
+    반환: (텍스트, chart_path or None)
     """
     import re as _re, json as _json
     from stock_data import get_stock_code_from_db, naver_search_code
@@ -1274,12 +1323,12 @@ def analyze_chart_for_chat(query: str) -> str:
         if not code:
             code = naver_search_code(query)
         if not code:
-            return f"❌ '{query}' 종목을 찾을 수 없어요. 6자리 코드로 다시 시도해보세요."
+            return f"❌ '{query}' 종목을 찾을 수 없어요. 6자리 코드로 다시 시도해보세요.", None
         name = query
 
     sig = calculate_chart_signals(code)
     if not sig:
-        return f"❌ {name}({code}) 신호 계산 실패. KIS API 연결을 확인하세요."
+        return f"❌ {name}({code}) 신호 계산 실패. KIS API 연결을 확인하세요.", None
 
     s = sig.get("signals", {})
     def v(k): return "✅" if s.get(k) else "❌"
@@ -1314,7 +1363,7 @@ def analyze_chart_for_chat(query: str) -> str:
                     f"📊 {name}({code}) 차트 분석 (비전)\n\n"
                     f"{signal_summary}"
                     f"{vision_result}"
-                )
+                ), chart_path
         except Exception as e:
             logger.warning("비전 분석 실패 %s: %s", code, e)
 
@@ -1339,7 +1388,7 @@ def analyze_chart_for_chat(query: str) -> str:
                 f"{signal_summary}"
                 f"판단: {emoji}\n"
                 f"근거: {reason}"
-            )
+            ), chart_path
     except Exception:
         logger.warning("analyze_chart_for_chat Ollama 판단 실패 %s", code)
 
@@ -1355,7 +1404,7 @@ def analyze_chart_for_chat(query: str) -> str:
         f"📊 {name}({code}) 차트 분석\n\n"
         f"{signal_summary}"
         f"판단: {action_str} (신호 {cnt}/12 기준)"
-    )
+    ), chart_path
 
 
 def get_watchlist_from_db(months: int = 3, days: int = None) -> list:

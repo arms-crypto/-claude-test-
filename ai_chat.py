@@ -286,16 +286,18 @@ def ask_ai(session_id, user_input):
     if any(k in _u for k in _REPLAY_KEYS):
         _cached = config.store.get(f"__last_chart_{session_id}")
         if _cached:
+            if isinstance(_cached, tuple):
+                return _cached
             return _cached, None
     if any(k in _u for k in _CHART_KEYS):
         from auto_trader import analyze_chart_for_chat
         # 종목명/코드 추출 (6자리 숫자 우선, 없으면 앞 단어)
         _code_m = re.search(r'\b(\d{6})\b', user_input)
         _query = _code_m.group(1) if _code_m else user_input.strip()
-        _chart_result = analyze_chart_for_chat(_query)
+        _chart_result, _chart_path = analyze_chart_for_chat(_query)
         # 세션별 마지막 차트 분석 결과 캐시
-        config.store[f"__last_chart_{session_id}"] = _chart_result
-        return _chart_result, None
+        config.store[f"__last_chart_{session_id}"] = (_chart_result, _chart_path)
+        return _chart_result, _chart_path
 
     # 4) 순매수/매매 데이터만 선수집 (Ollama가 처리하기 어려운 커스텀 API)
     extra_data = []
