@@ -1218,20 +1218,15 @@ def generate_chart_png(code: str, name: str) -> str | None:
         _font_prop = fm.FontProperties(fname=_font_path) if os.path.exists(_font_path) else None
         plt.rcParams['axes.unicode_minus'] = False
         import datetime
-        from mock_trading.kis_client import get_ohlcv
-
-        rows = get_ohlcv(code, "D", 90)
-        if not rows or len(rows) < 10:
+        today_str = datetime.date.today().strftime("%Y%m%d")
+        from_str  = (datetime.date.today() - datetime.timedelta(days=130)).strftime("%Y%m%d")
+        df = pykrx_stock.get_market_ohlcv(from_str, today_str, code)
+        if df is None or len(df) < 10:
             return None
-
-        df = pd.DataFrame(rows)
-        df["date"] = pd.to_datetime(df["date"])
-        df = df.set_index("date")
-        for col in ("open", "high", "low", "close", "volume"):
-            df[col] = pd.to_numeric(df[col], errors="coerce")
-        df = df.dropna()
-        df.columns = [c.capitalize() for c in df.columns]
+        df = df.rename(columns={"시가":"Open","고가":"High","저가":"Low","종가":"Close","거래량":"Volume"})
+        df = df[["Open","High","Low","Close","Volume"]].copy()
         df.index.name = "Date"
+        df = df.dropna()
 
         chart_path = os.path.join(os.path.dirname(__file__), f"chart_{code}.png")
         mc = mpf.make_marketcolors(up='red', down='blue', inherit=True)
