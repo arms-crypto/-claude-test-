@@ -254,6 +254,28 @@ def ask_ai(session_id, user_input):
         elif _mm:
             _months = int(_mm.group(1))
         _scan_result = scan_buy_signals_for_chat(months=_months, days=_days)
+        # Ollama 분석 — 스캔 데이터 직접 주입, 도구 호출 없이 분석만
+        try:
+            _prompt = f"""다음은 외국인+기관 순매수 워치리스트 차트 신호 스캔 결과야.
+아래 형식으로 분석해줘.
+
+[스캔 결과]
+{_scan_result}
+
+[요청 형식]
+1. 매수 신호 종목 — 종목명·신호 수 명시, ⭐(외국인+기관 동시)는 특히 강조. 신호 높은 순.
+2. 주목 TOP 2~3 — 신호 수+누적일수+단타/스윙 기준으로 가장 유망한 종목 선정 이유.
+3. 주의 종목 — 매도 신호나 신호 급감 종목.
+
+종목명과 신호 수를 반드시 숫자로 명시. 위 데이터만 기반으로."""
+            _analysis = call_mistral_only(
+                _prompt,
+                system="한국 주식 트레이딩 전문가. 데이터 기반으로 구체적이고 간결하게 한국어로."
+            )
+            if _analysis and len(_analysis) > 20:
+                return f"{_scan_result}\n\n🤖 [Ollama 분석]\n{_analysis}", None
+        except Exception:
+            pass
         return _scan_result, None
 
     # 3-3) 차트 분석 — 신호 데이터를 미리 계산해 Ollama에 주입 (도구 호출 없음)
