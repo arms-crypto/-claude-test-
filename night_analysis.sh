@@ -29,6 +29,12 @@ $RESULT
 📅 분석시각: $NOW_KST KST
 💡 장 시작 전 참고용 — 실제 매매 시 장중 재확인 필요"
 
+    # RAG scan_memory에 저장 (장중 Ollama 참조용)
+    cd "$WORKDIR" && python3 -c "
+from rag_store import store_scan_result
+store_scan_result('''$RESULT''', period_label='3개월')
+" 2>/dev/null
+
     # Ollama에 추가 분석 의뢰
     ANALYSIS=$(cd "$WORKDIR" && timeout 180 python3 -c "
 from llm_client import call_mistral_only
