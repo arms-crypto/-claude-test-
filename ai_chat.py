@@ -272,12 +272,20 @@ def ask_ai(session_id, user_input):
     # 3-3) 차트 분석 — 신호 데이터를 미리 계산해 Ollama에 주입 (도구 호출 없음)
     _CHART_KEYS = ["차트분석", "차트봐", "매수인지", "매도인지", "관망인지",
                    "매수해도", "매도해도", "사도될까", "팔아도될까", "지금살까", "지금팔까"]
+    _REPLAY_KEYS = ["다시보여", "다시봐", "방금분석", "아까분석", "이전분석", "다시줘"]
+    # "다시 보여줄래" — 마지막 차트 분석 결과 캐시에서 반환
+    if any(k in _u for k in _REPLAY_KEYS):
+        _cached = config.store.get(f"__last_chart_{session_id}")
+        if _cached:
+            return _cached, None
     if any(k in _u for k in _CHART_KEYS):
         from auto_trader import analyze_chart_for_chat
         # 종목명/코드 추출 (6자리 숫자 우선, 없으면 앞 단어)
         _code_m = re.search(r'\b(\d{6})\b', user_input)
         _query = _code_m.group(1) if _code_m else user_input.strip()
         _chart_result = analyze_chart_for_chat(_query)
+        # 세션별 마지막 차트 분석 결과 캐시
+        config.store[f"__last_chart_{session_id}"] = _chart_result
         return _chart_result, None
 
     # 4) 순매수/매매 데이터만 선수집 (Ollama가 처리하기 어려운 커스텀 API)
