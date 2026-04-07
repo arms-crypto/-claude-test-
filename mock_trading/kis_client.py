@@ -3,6 +3,7 @@
 """KIS API / Yahoo Finance / Naver 주가 조회 + 종목코드 검색"""
 
 import time
+import threading
 import logging
 import requests
 from bs4 import BeautifulSoup
@@ -21,28 +22,35 @@ ACCOUNT_CD = "01"         # 계좌상품코드 (주식)
 REAL_TRADE = False        # True로 바꿔야 실제 주문 전송 — 현재 주문 차단
 
 _token_cache = {"token": None, "expires_at": 0}
+_token_lock  = threading.Lock()   # 동시 토큰 발급 방지
 
 
 def get_token() -> str:
     now = time.time()
+    # 락 없이 먼저 캐시 확인 (빠른 경로)
     if _token_cache["token"] and now < _token_cache["expires_at"]:
         return _token_cache["token"]
-    try:
-        r = requests.post(
-            f"{KIS_URL}/oauth2/tokenP",
-            json={"grant_type": "client_credentials", "appkey": APP_KEY, "appsecret": APP_SECRET},
-            timeout=6,
-            proxies={"http": None, "https": None},
-        )
-        r.raise_for_status()
-        data = r.json()
-        token = data.get("access_token")
-        if token:
-            _token_cache["token"] = token
-            _token_cache["expires_at"] = now + int(data.get("expires_in", 43200)) - 60
-            return token
-    except Exception:
-        logger.exception("KIS 토큰 발급 실패")
+    with _token_lock:
+        # 락 획득 후 다시 확인 (다른 스레드가 이미 발급했을 수 있음)
+        now = time.time()
+        if _token_cache["token"] and now < _token_cache["expires_at"]:
+            return _token_cache["token"]
+        try:
+            r = requests.post(
+                f"{KIS_URL}/oauth2/tokenP",
+                json={"grant_type": "client_credentials", "appkey": APP_KEY, "appsecret": APP_SECRET},
+                timeout=6,
+                proxies={"http": None, "https": None},
+            )
+            r.raise_for_status()
+            data = r.json()
+            token = data.get("access_token")
+            if token:
+                _token_cache["token"] = token
+                _token_cache["expires_at"] = now + int(data.get("expires_in", 86400)) - 60
+                return token
+        except Exception:
+            logger.exception("KIS 토큰 발급 실패")
     return None
 
 

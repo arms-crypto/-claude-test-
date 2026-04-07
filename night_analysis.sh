@@ -14,7 +14,7 @@ send_tg() {
 
 send_tg "📡 [$NOW_KST] 내일 참고용 워치리스트 분석 시작..."
 
-RESULT=$(cd "$WORKDIR" && python3 -c "
+RESULT=$(cd "$WORKDIR" && timeout 600 python3 -c "
 from auto_trader import scan_buy_signals_for_chat
 print(scan_buy_signals_for_chat(months=3))
 " 2>/dev/null)

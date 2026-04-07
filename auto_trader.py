@@ -1376,54 +1376,29 @@ def scan_buy_signals_for_chat(months: int = 3, days: int = None) -> str:
 
     lines = [f"📊 외국인+기관 워치리스트 {len(candidates)}종목 스캔 (최근 {period_label} 누적)\n"]
 
+    def _one_line(code, name, day_cnt, both, sig, decision):
+        star   = "⭐" if both else "  "
+        tt     = decision.get("trade_type", "스윙")
+        reason = (decision.get("reason") or "")[:20]
+        bc     = sig["buy_count"]
+        mc     = sig.get("minute_count", 0)
+        return f"{star}{name}({code}) {bc}/12 단타{mc}/4 [{tt}] 누적{day_cnt}일 — {reason}"
+
     if results_buy:
         lines.append(f"✅ 매수 신호 ({len(results_buy)}개)")
-        for code, name, day_cnt, both, sig, decision in results_buy:
-            s    = sig.get("signals", {})
-            tt   = decision.get("trade_type", "스윙")
-            star = "⭐" if both else ""
-            _v = lambda k, _s=s: "✅" if _s.get(k) else "❌"
-            lines.append(
-                f"{star}▶ {name}({code}) [{tt}] 신호 {sig['buy_count']}/12 (누적 {day_cnt}일)\n"
-                f"  월봉: 일목{_v('월봉_일목균형표')} ADX{_v('월봉_ADX')} RSI{_v('월봉_RSI')} MACD{_v('월봉_MACD')}\n"
-                f"  주봉: 일목{_v('주봉_일목균형표')} ADX{_v('주봉_ADX')} RSI{_v('주봉_RSI')} MACD{_v('주봉_MACD')}\n"
-                f"  일봉: 일목{_v('일봉_일목균형표')} ADX{_v('일봉_ADX')} RSI{_v('일봉_RSI')} MACD{_v('일봉_MACD')} 정배열{_v('일봉_정배열')}\n"
-                f"  단타타이밍: 분봉{sig.get('minute_count',0)}/4 일목{_v('분봉_일목균형표')} ADX{_v('분봉_ADX')} RSI{_v('분봉_RSI')} MACD{_v('분봉_MACD')}\n"
-                f"  판단: {decision.get('reason','')}"
-            )
+        for entry in results_buy:
+            lines.append(_one_line(*entry))
     else:
         lines.append("✅ 매수 신호 없음")
 
     if results_hold:
         lines.append(f"\n⏸ 관망 ({len(results_hold)}개)")
-        for code, name, day_cnt, both, sig, decision in results_hold:
-            s    = sig.get("signals", {})
-            tt   = decision.get("trade_type", "스윙")
-            star = "⭐" if both else ""
-            _v = lambda k, _s=s: "✅" if _s.get(k) else "❌"
-            lines.append(
-                f"{star}▶ {name}({code}) [{tt}] 신호 {sig['buy_count']}/12 (누적 {day_cnt}일)\n"
-                f"  월봉: 일목{_v('월봉_일목균형표')} ADX{_v('월봉_ADX')} RSI{_v('월봉_RSI')} MACD{_v('월봉_MACD')}\n"
-                f"  주봉: 일목{_v('주봉_일목균형표')} ADX{_v('주봉_ADX')} RSI{_v('주봉_RSI')} MACD{_v('주봉_MACD')}\n"
-                f"  일봉: 일목{_v('일봉_일목균형표')} ADX{_v('일봉_ADX')} RSI{_v('일봉_RSI')} MACD{_v('일봉_MACD')} 정배열{_v('일봉_정배열')}\n"
-                f"  단타타이밍: 분봉{sig.get('minute_count',0)}/4 일목{_v('분봉_일목균형표')} ADX{_v('분봉_ADX')} RSI{_v('분봉_RSI')} MACD{_v('분봉_MACD')}\n"
-                f"  판단: {decision.get('reason','')}"
-            )
+        for entry in results_hold:
+            lines.append(_one_line(*entry))
 
     if results_sell:
         lines.append(f"\n📉 매도 ({len(results_sell)}개 — 신호 4 미만)")
-        for code, name, day_cnt, both, sig, decision in results_sell:
-            s    = sig.get("signals", {})
-            tt   = decision.get("trade_type", "스윙")
-            star = "⭐" if both else ""
-            _v = lambda k, _s=s: "✅" if _s.get(k) else "❌"
-            lines.append(
-                f"{star}▶ {name}({code}) [{tt}] 신호 {sig['buy_count']}/12 (누적 {day_cnt}일)\n"
-                f"  월봉: 일목{_v('월봉_일목균형표')} ADX{_v('월봉_ADX')} RSI{_v('월봉_RSI')} MACD{_v('월봉_MACD')}\n"
-                f"  주봉: 일목{_v('주봉_일목균형표')} ADX{_v('주봉_ADX')} RSI{_v('주봉_RSI')} MACD{_v('주봉_MACD')}\n"
-                f"  일봉: 일목{_v('일봉_일목균형표')} ADX{_v('일봉_ADX')} RSI{_v('일봉_RSI')} MACD{_v('일봉_MACD')} 정배열{_v('일봉_정배열')}\n"
-                f"  단타타이밍: 분봉{sig.get('minute_count',0)}/4 일목{_v('분봉_일목균형표')} ADX{_v('분봉_ADX')} RSI{_v('분봉_RSI')} MACD{_v('분봉_MACD')}\n"
-                f"  판단: {decision.get('reason','')}"
-            )
+        for entry in results_sell:
+            lines.append(_one_line(*entry))
 
     return "\n".join(lines)
