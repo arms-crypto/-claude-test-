@@ -28,4 +28,22 @@ $RESULT
 
 📅 분석시각: $NOW_KST KST
 💡 장 시작 전 참고용 — 실제 매매 시 장중 재확인 필요"
+
+    # Ollama에 추가 분석 의뢰
+    ANALYSIS=$(cd "$WORKDIR" && timeout 180 python3 -c "
+from llm_client import call_mistral_only
+result = '''$RESULT'''
+prompt = f'''다음은 오늘 외국인+기관 순매수 워치리스트 차트 신호 스캔 결과야.
+내일 장 시작 전 참고용으로 핵심만 3~5줄로 요약해줘.
+매수 신호 종목 중 특히 주목할 것, 관망/매도 신호 중 주의할 것 위주로.
+
+{result}'''
+print(call_mistral_only(prompt, system='주식 트레이딩 전문가. 핵심만 간결하게 한국어로.'))
+" 2>/dev/null)
+
+    if [ -n "$ANALYSIS" ]; then
+        send_tg "🤖 [Ollama 분석]
+
+$ANALYSIS"
+    fi
 fi
