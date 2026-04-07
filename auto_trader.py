@@ -1258,9 +1258,12 @@ def generate_chart_png(code: str, name: str, df_daily=None) -> str | None:
         sig_line  = macd_line.ewm(span=9, adjust=False).mean()
         macd_hist = macd_line - sig_line
 
-        # ADX(14)
-        adx_s, _, _ = _calc_adx(df.rename(columns=str.lower), 14)
-        if adx_s is None:
+        # ADX(14) — ta 라이브러리 직접 호출 (대문자 컬럼)
+        try:
+            import ta as _ta
+            _adx_ind = _ta.trend.ADXIndicator(high, low, close, window=14)
+            adx_s = _adx_ind.adx()
+        except Exception:
             adx_s = pd.Series([float("nan")] * len(df), index=df.index)
 
         # NaN 채우기 (addplot 타입 오류 방지)
