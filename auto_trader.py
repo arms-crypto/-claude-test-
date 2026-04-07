@@ -1020,6 +1020,12 @@ def auto_trade_loop():
                         logger.exception("매수신호 스캔 브로드캐스트 실패")
         except Exception:
             logger.exception("auto_trade_cycle 예외")
+
+        # 거래시간 외 + 10분 유휴 → PC 최대절전
+        if not is_trading_hours():
+            from llm_client import send_sleep
+            send_sleep(delay_min=10)
+
         import time
         time.sleep(30)
 

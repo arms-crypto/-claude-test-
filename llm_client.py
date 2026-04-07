@@ -59,6 +59,37 @@ def send_wol():
     return True
 
 
+import time as _time_mod
+_last_ollama_request = [_time_mod.time()]  # 마지막 Ollama 요청 시각 (시작 시각으로 초기화)
+
+
+def send_sleep(delay_min: int = 5):
+    """
+    PC에 최대절전(hibernate) 명령 전송.
+    delay_min: Ollama 마지막 요청 후 N분 유휴 상태일 때만 전송.
+    """
+    import subprocess, time
+    idle = time.time() - _last_ollama_request[0]
+    if idle < delay_min * 60:
+        logger.info("send_sleep 스킵 — 마지막 요청 %.0f초 전 (유휴 기준 %d분)", idle, delay_min)
+        return False
+    try:
+        result = subprocess.run(
+            ["ssh", "-o", "ConnectTimeout=5", "-o", "StrictHostKeyChecking=no",
+             "-p", "2224", "-i", "/home/ubuntu/.ssh/id_rsa",
+             "ultimate@221.144.111.116",
+             "shutdown /h /t 0"],
+            capture_output=True, timeout=10
+        )
+        if result.returncode == 0:
+            logger.info("PC 최대절전 명령 전송 완료")
+            return True
+        logger.warning("최대절전 명령 실패: %s", result.stderr.decode()[:100])
+    except Exception as e:
+        logger.warning("send_sleep 실패: %s", e)
+    return False
+
+
 def wait_for_ollama(timeout: int = 120, interval: int = 10) -> bool:
     """Ollama가 응답할 때까지 대기. timeout초 내에 응답하면 True."""
     deadline = time.time() + timeout
@@ -775,6 +806,8 @@ def call_mistral_only(prompt: str, system: str = _TOOL_SYSTEM, use_tools: bool =
     - history_messages: [{"role": "user", "content": ...}, {"role": "assistant", ...}] 형식
     - 3회 재시도 후 최종 실패 시 안내 메시지 반환.
     """
+    import time as _time
+    _last_ollama_request[0] = _time.time()  # 마지막 요청 시각 갱신
     send_wol()                # 무조건 WoL 전송 (UDP, PC 켜져있어도 무해)
     _wol_waited = False       # 이번 호출에서 wait_for_ollama 대기 여부
     # 날짜를 유저 메시지 앞에 붙임 → 시스템 프롬프트 고정 → KV 캐시 재사용
