@@ -931,6 +931,25 @@ def call_mistral_only(prompt: str, system: str = _TOOL_SYSTEM, use_tools: bool =
 
             result = msg.get("content", "") or _parse_ollama_response(r)
             if result:
+                # Python 함수 호출 형식 폴백 (1라운드)
+                import re as _re2
+                _fn_m2 = _re2.match(r'^(\w+)\(([^)]*)\)\s*$', result.strip())
+                if _fn_m2:
+                    _fn_name2 = _fn_m2.group(1)
+                    _fn_args2 = {}
+                    for _kv2 in _fn_m2.group(2).split(','):
+                        _kv2 = _kv2.strip()
+                        if '=' in _kv2:
+                            _k2, _v2 = _kv2.split('=', 1)
+                            try:
+                                _fn_args2[_k2.strip()] = int(_v2.strip())
+                            except ValueError:
+                                _fn_args2[_k2.strip()] = _v2.strip().strip("'\"")
+                    _known2 = {"scan_buy_signals","get_watchlist","analyze_chart","get_stock_price",
+                               "get_news","web_search","query_portfolio","query_trade_history","get_foreign_net_buy"}
+                    if _fn_name2 in _known2:
+                        logger.info("Python 함수 호출 형식 감지(1라운드): %s(%s)", _fn_name2, _fn_args2)
+                        return _execute_tool_call(_fn_name2, _fn_args2)
                 return result
         except Exception as e:
             last_exc = e
