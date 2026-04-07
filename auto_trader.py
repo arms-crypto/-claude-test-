@@ -1256,19 +1256,15 @@ def generate_chart_png(code: str, name: str, df_daily=None) -> str | None:
         tenkan = (high.rolling(9).max()  + low.rolling(9).min())  / 2
         kijun  = (high.rolling(26).max() + low.rolling(26).min()) / 2
 
-        delta  = close.diff()
-        gain   = delta.clip(lower=0).rolling(14).mean()
-        loss   = (-delta.clip(upper=0)).rolling(14).mean()
-        rsi    = 100 - (100 / (1 + gain / loss.replace(0, 1e-9)))
-
-        ema12     = close.ewm(span=12, adjust=False).mean()
-        ema26     = close.ewm(span=26, adjust=False).mean()
-        macd_line = ema12 - ema26
-        sig_line  = macd_line.ewm(span=9, adjust=False).mean()
-        macd_hist = macd_line - sig_line
-
-        adx_ind = _ta.trend.ADXIndicator(high, low, close, window=14)
-        adx     = adx_ind.adx()
+        # 신호계산과 동일한 파라미터 사용
+        # 신호계산과 동일한 파라미터 — RSI(6), MACD(5,13,6), ADX(3)
+        rsi       = ta.momentum.rsi(close, window=6)
+        _macd_obj = ta.trend.MACD(close, window_fast=5, window_slow=13, window_sign=6)
+        macd_line = _macd_obj.macd()
+        sig_line  = _macd_obj.macd_signal()
+        macd_hist = _macd_obj.macd_diff()
+        adx_ind   = _ta.trend.ADXIndicator(high, low, close, window=3)
+        adx       = adx_ind.adx()
 
         # 그리기
         fig = plt.figure(figsize=(14, 12), facecolor='white')
