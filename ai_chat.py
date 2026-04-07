@@ -240,8 +240,9 @@ def ask_ai(session_id, user_input):
 
     # 3-2) 순매수 스캔 — Ollama 도구 호출 없이 직접 실행 후 반환
     _SCAN_SIGNAL_KEYS = ["매도신호", "매수신호", "관망종목", "스캔", "워치리스트스캔",
-                         "신호종목", "매도종목", "매수종목", "살만한종목", "추천종목"]
-    if "순매수" in _u and any(k in _u for k in _SCAN_SIGNAL_KEYS):
+                         "신호종목", "매도종목", "매수종목", "살만한종목", "추천종목",
+                         "워치리스트분석", "워치리스트", "신호분석", "분석시작"]
+    if any(k in _u for k in _SCAN_SIGNAL_KEYS) or ("순매수" in _u and any(k in _u for k in ["스캔", "신호"])):
         from auto_trader import scan_buy_signals_for_chat
         # 기간 추출: 명시적 숫자만 인식, 기본값은 항상 3개월
         _days = None
