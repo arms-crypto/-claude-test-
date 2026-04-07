@@ -1205,27 +1205,28 @@ def get_smart_recommendations():
 
 def generate_chart_png(code: str, name: str, df_daily=None) -> str | None:
     """
-    일봉 DataFrame으로 캔들차트 PNG 생성 (mplfinance).
-    df_daily: calculate_chart_signals()의 df_daily 재사용 (없으면 pykrx 직접 조회)
-    반환: 저장된 파일 경로 or None
+    일봉 데이터로 차트 PNG 생성 (matplotlib 직접 사용).
+    메인: 종가+MA5/20+일목(전환/기준) | RSI | MACD | ADX
     """
     try:
-        import mplfinance as mpf
         import pandas as pd
         import matplotlib
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
         import matplotlib.font_manager as fm
+        import matplotlib.gridspec as gridspec
+        import ta as _ta
+
         _font_path = "/usr/share/fonts/truetype/nanum/NanumBarunGothic.ttf"
-        _font_prop = fm.FontProperties(fname=_font_path) if os.path.exists(_font_path) else None
+        _fp = fm.FontProperties(fname=_font_path) if os.path.exists(_font_path) else None
         plt.rcParams['axes.unicode_minus'] = False
 
+        # 데이터 준비
         if df_daily is not None and len(df_daily) >= 10:
             df = df_daily.copy()
             df.columns = [c.capitalize() for c in df.columns]
             if not isinstance(df.index, pd.DatetimeIndex):
                 df.index = pd.to_datetime(df.index)
-            df.index.name = "Date"
         else:
             import datetime
             today_str = datetime.date.today().strftime("%Y%m%d")
@@ -1235,69 +1236,98 @@ def generate_chart_png(code: str, name: str, df_daily=None) -> str | None:
                 return None
             df = df.rename(columns={"시가":"Open","고가":"High","저가":"Low","종가":"Close","거래량":"Volume"})
             df = df[["Open","High","Low","Close","Volume"]].copy()
-            df.index.name = "Date"
+            if not isinstance(df.index, pd.DatetimeIndex):
+                df.index = pd.to_datetime(df.index)
         df = df.dropna()
-        close = df["Close"]
-        high  = df["High"]
-        low   = df["Low"]
 
-        # 일목균형표 (전환선/기준선)
+        close  = df["Close"]
+        high   = df["High"]
+        low    = df["Low"]
+        volume = df["Volume"]
+        x      = range(len(df))
+        dates  = [d.strftime("%m/%d") for d in df.index]
+        tick_step = max(1, len(df) // 8)
+        xticks = list(x)[::tick_step]
+        xlabels = dates[::tick_step]
+
+        # 지표 계산
+        ma5    = close.rolling(5).mean()
+        ma20   = close.rolling(20).mean()
         tenkan = (high.rolling(9).max()  + low.rolling(9).min())  / 2
         kijun  = (high.rolling(26).max() + low.rolling(26).min()) / 2
 
-        # RSI(14)
-        delta = close.diff()
-        gain  = delta.clip(lower=0).rolling(14).mean()
-        loss  = (-delta.clip(upper=0)).rolling(14).mean()
-        rsi_s = 100 - (100 / (1 + gain / loss.replace(0, 1e-9)))
+        delta  = close.diff()
+        gain   = delta.clip(lower=0).rolling(14).mean()
+        loss   = (-delta.clip(upper=0)).rolling(14).mean()
+        rsi    = 100 - (100 / (1 + gain / loss.replace(0, 1e-9)))
 
-        # MACD(12,26,9)
         ema12     = close.ewm(span=12, adjust=False).mean()
         ema26     = close.ewm(span=26, adjust=False).mean()
         macd_line = ema12 - ema26
         sig_line  = macd_line.ewm(span=9, adjust=False).mean()
         macd_hist = macd_line - sig_line
 
-        # ADX(14) — ta 라이브러리 직접 호출 (대문자 컬럼)
-        try:
-            import ta as _ta
-            _adx_ind = _ta.trend.ADXIndicator(high, low, close, window=14)
-            adx_s = _adx_ind.adx()
-        except Exception:
-            adx_s = pd.Series([float("nan")] * len(df), index=df.index)
+        adx_ind = _ta.trend.ADXIndicator(high, low, close, window=14)
+        adx     = adx_ind.adx()
 
-        # NaN → ffill/bfill (고정값 채우기 금지 — 스케일 오염)
-        def _s(series):
-            if not isinstance(series, pd.Series):
-                series = pd.Series(series, index=df.index)
-            return series.ffill().bfill()
+        # 그리기
+        fig = plt.figure(figsize=(14, 12), facecolor='white')
+        gs  = gridspec.GridSpec(5, 1, height_ratios=[4, 1, 1.5, 1.5, 1.5], hspace=0.04)
 
-        apds = [
-            # 메인 패널 — 일목 전환선(빨강점선)/기준선(보라점선)
-            mpf.make_addplot(_s(tenkan), panel=0, color='red',    width=1.0, linestyle='--'),
-            mpf.make_addplot(_s(kijun),  panel=0, color='purple', width=1.0, linestyle='--'),
-            # RSI 패널
-            mpf.make_addplot(_s(rsi_s),  panel=2, color='purple', width=1.1, ylabel='RSI'),
-            mpf.make_addplot(pd.Series(70.0, index=df.index), panel=2, color='red',  width=0.6, linestyle='--'),
-            mpf.make_addplot(pd.Series(30.0, index=df.index), panel=2, color='blue', width=0.6, linestyle='--'),
-            # MACD 패널
-            mpf.make_addplot(_s(macd_line), panel=3, color='blue',   width=1.1, ylabel='MACD'),
-            mpf.make_addplot(_s(sig_line),  panel=3, color='red',    width=0.9),
-            mpf.make_addplot(_s(macd_hist), panel=3, type='bar', color='dimgray', alpha=0.4),
-            # ADX 패널
-            mpf.make_addplot(_s(adx_s),     panel=4, color='green',  width=1.1, ylabel='ADX'),
-            mpf.make_addplot(pd.Series(25.0, index=df.index), panel=4, color='red', width=0.6, linestyle='--'),
-        ]
+        # ── 메인 패널 (종가 + MA + 일목) ──
+        ax1 = fig.add_subplot(gs[0])
+        ax1.plot(x, close,   color='black',  linewidth=1.2, label='종가')
+        ax1.plot(x, ma5,     color='blue',   linewidth=0.9, label='MA5')
+        ax1.plot(x, ma20,    color='orange', linewidth=0.9, label='MA20')
+        ax1.plot(x, tenkan,  color='red',    linewidth=0.9, linestyle='--', label='전환선')
+        ax1.plot(x, kijun,   color='purple', linewidth=0.9, linestyle='--', label='기준선')
+        ax1.legend(loc='upper left', fontsize=7, prop=_fp)
+        ax1.set_ylabel('가격', fontproperties=_fp, fontsize=9)
+        ax1.set_xticks(xticks); ax1.set_xticklabels([])
+        ax1.grid(True, alpha=0.3)
+        _tk = {"fontproperties": _fp, "fontsize": 12} if _fp else {"fontsize": 12}
+        ax1.set_title(f"{name}({code})", **_tk)
+
+        # ── 거래량 ──
+        ax2 = fig.add_subplot(gs[1], sharex=ax1)
+        colors = ['red' if c >= o else 'blue' for c, o in zip(df['Close'], df['Open'])]
+        ax2.bar(x, volume, color=colors, alpha=0.6, width=0.8)
+        ax2.set_ylabel('거래량', fontproperties=_fp, fontsize=8)
+        ax2.set_xticks(xticks); ax2.set_xticklabels([])
+        ax2.grid(True, alpha=0.3)
+
+        # ── RSI ──
+        ax3 = fig.add_subplot(gs[2], sharex=ax1)
+        ax3.plot(x, rsi, color='purple', linewidth=1.0)
+        ax3.axhline(70, color='red',  linewidth=0.6, linestyle='--')
+        ax3.axhline(30, color='blue', linewidth=0.6, linestyle='--')
+        ax3.set_ylim(0, 100)
+        ax3.set_ylabel('RSI', fontsize=8)
+        ax3.set_xticks(xticks); ax3.set_xticklabels([])
+        ax3.grid(True, alpha=0.3)
+
+        # ── MACD ──
+        ax4 = fig.add_subplot(gs[3], sharex=ax1)
+        ax4.plot(x, macd_line, color='blue', linewidth=1.0, label='MACD')
+        ax4.plot(x, sig_line,  color='red',  linewidth=0.8, label='Signal')
+        hist_colors = ['red' if v >= 0 else 'blue' for v in macd_hist]
+        ax4.bar(x, macd_hist, color=hist_colors, alpha=0.4, width=0.8)
+        ax4.axhline(0, color='gray', linewidth=0.5)
+        ax4.legend(loc='upper left', fontsize=7)
+        ax4.set_ylabel('MACD', fontsize=8)
+        ax4.set_xticks(xticks); ax4.set_xticklabels([])
+        ax4.grid(True, alpha=0.3)
+
+        # ── ADX ──
+        ax5 = fig.add_subplot(gs[4], sharex=ax1)
+        ax5.plot(x, adx, color='green', linewidth=1.0, label='ADX')
+        ax5.axhline(25, color='red', linewidth=0.6, linestyle='--')
+        ax5.legend(loc='upper left', fontsize=7)
+        ax5.set_ylabel('ADX', fontsize=8)
+        ax5.set_xticks(xticks); ax5.set_xticklabels(xlabels, fontsize=7)
+        ax5.grid(True, alpha=0.3)
 
         chart_path = os.path.join(os.path.dirname(__file__), f"chart_{code}.png")
-        fig, axes = mpf.plot(
-            df, type='line', mav=(5, 20),
-            volume=True, style='yahoo', figsize=(12, 14),
-            addplot=apds, returnfig=True,
-            panel_ratios=(4, 1, 1.5, 1.5, 1.5),
-        )
-        _title_kwargs = {"fontproperties": _font_prop, "fontsize": 13} if _font_prop else {"fontsize": 13}
-        fig.suptitle(f"{name}({code})", **_title_kwargs)
         fig.savefig(chart_path, bbox_inches='tight', dpi=100)
         plt.close(fig)
         return chart_path
