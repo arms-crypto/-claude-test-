@@ -89,6 +89,9 @@ auto_trade_cycle()  ← 30초 루프, risk_gate → select_volume → buy/sell
 ### 병렬 스캔
 - `scan_buy_signals_for_chat()` — `ThreadPoolExecutor(max_workers=6)` 병렬 처리
 - 결과 신호 수 내림차순 정렬 후 반환
+- **출력 포맷**: 종목당 1줄 요약 (Telegram 4096자 제한 대응)
+  - `⭐종목명(코드) N/12 단타M/4 [스윙] 누적X일 — 판단요약`
+- **개별 종목 차트 분석** (`analyze_chart_for_chat`)만 상세 6줄 포맷 유지
 
 ### Ollama 직접 반환 도구 (llm_client.py)
 - `_DIRECT_RETURN_TOOLS = {"scan_buy_signals", "get_watchlist", "analyze_chart"}`
@@ -130,6 +133,30 @@ auto_trade_cycle()  ← 30초 루프, risk_gate → select_volume → buy/sell
 ### 가상 포트폴리오
 - 초기 잔고: **1억원**
 - DB 초기화: 2026-04-07 (백업: `mock_trading/portfolio_backup_20260407.db`)
+
+## 야간 보고서 파이프라인 (2026-04-07 확정)
+
+### night_analysis.sh — 평일 20:35 자동 실행
+1. Python → `scan_buy_signals_for_chat(months=3)` 직접 계산 (Ollama 불필요)
+2. 텔레그램 전송 (1줄 요약 포맷)
+3. `store_scan_result()` → RAG scan_memory 저장
+4. Ollama → 스캔 결과 분석 요약 → 텔레그램 전송
+
+### 크론 스케줄 (KST 기준, TZ=Asia/Seoul)
+| 시각 | 작업 |
+|------|------|
+| 15:10 평일 | `collect_smart` — 기관/외국인 순매수 1차 수집 |
+| 18:40 평일 | `collect_smart` — 2차 수집 |
+| 20:30 평일 | `collect_smart` — 장 마감 최종 수집 |
+| 20:35 평일 | `night_analysis.sh` — 워치리스트 스캔 + 텔레그램 + RAG |
+
+### RAG 스캔 결과 pre-injection (ai_chat.py)
+- **21:00 이후** + 스캔 관련 키워드 → `search_scan()` RAG 직접 주입 (도구 호출 없음)
+- **장중(~20:00)** → 실시간 `scan_buy_signals` 도구 호출
+
+### KIS 토큰 관리 (kis_client.py)
+- `threading.Lock()` — 병렬 스캔 시 동시 발급 방지 (403 오류 해결)
+- 유효기간 24시간 캐시, 만료 60초 전 자동 갱신
 
 ## 현재 진행 이슈
 - **가상주문 실전API** — 실시간 시세로 가상매매 중, `REAL_TRADE=True` 전환 시 실제 체결
