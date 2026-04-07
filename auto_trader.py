@@ -1202,10 +1202,60 @@ def get_smart_recommendations():
 
 # ── 채팅용 차트 분석 ───────────────────────────────────────────────────────────
 
+def generate_chart_png(code: str, name: str) -> str | None:
+    """
+    KIS 일봉 데이터로 캔들차트 PNG 생성 (mplfinance).
+    반환: 저장된 파일 경로 or None
+    """
+    try:
+        import mplfinance as mpf
+        import pandas as pd
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        import matplotlib.font_manager as fm
+        _font_path = "/usr/share/fonts/truetype/nanum/NanumBarunGothic.ttf"
+        _font_prop = fm.FontProperties(fname=_font_path) if os.path.exists(_font_path) else None
+        plt.rcParams['axes.unicode_minus'] = False
+        import datetime
+        from mock_trading.kis_client import get_ohlcv
+
+        rows = get_ohlcv(code, "D", 90)
+        if not rows or len(rows) < 10:
+            return None
+
+        df = pd.DataFrame(rows)
+        df["date"] = pd.to_datetime(df["date"])
+        df = df.set_index("date")
+        for col in ("open", "high", "low", "close", "volume"):
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+        df = df.dropna()
+        df.columns = [c.capitalize() for c in df.columns]
+        df.index.name = "Date"
+
+        chart_path = os.path.join(os.path.dirname(__file__), f"chart_{code}.png")
+        mc = mpf.make_marketcolors(up='red', down='blue', inherit=True)
+        s  = mpf.make_mpf_style(marketcolors=mc, gridstyle='--', gridcolor='#e0e0e0')
+        fig, axes = mpf.plot(
+            df, type='candle', mav=(5, 20, 60),
+            volume=True, style=s, figsize=(10, 6),
+            returnfig=True,
+        )
+        _title_kwargs = {"fontproperties": _font_prop, "fontsize": 13} if _font_prop else {"fontsize": 13}
+        fig.suptitle(f"{name}({code})", **_title_kwargs)
+        fig.savefig(chart_path, bbox_inches='tight')
+        plt.close(fig)
+        return chart_path
+    except Exception as e:
+        logger.warning("차트 PNG 생성 실패 %s: %s", code, e)
+        return None
+
+
 def analyze_chart_for_chat(query: str) -> str:
     """
     채팅에서 종목명/코드로 차트 기술적 분석 요청 시 호출.
-    BUY / HOLD / SELL 판단 + 근거 반환.
+    차트 PNG 생성 → Ollama 비전 분석 → BUY/HOLD/SELL 판단 반환.
+    비전 실패 시 텍스트 신호 기반 폴백.
     """
     import re as _re, json as _json
     from stock_data import get_stock_code_from_db, naver_search_code
@@ -1242,6 +1292,30 @@ def analyze_chart_for_chat(query: str) -> str:
         f"ADX={sig.get('adx','?'):.1f} MACD히스트={sig.get('macd_hist','?')}\n\n"
     )
 
+    # 차트 PNG 생성 → Ollama 비전 분석
+    chart_path = generate_chart_png(code, name)
+    if chart_path:
+        try:
+            from llm_client import call_mistral_vision
+            vision_prompt = (
+                f"이 종목은 {name}({code})이야. 아래 기술적 신호 데이터도 참고해.\n\n"
+                f"{signal_summary}\n"
+                "차트 이미지를 보고 다음 형식으로 분석해줘:\n"
+                "1. 차트 패턴 — 캔들 패턴, 이평선 배열, 거래량 특이사항\n"
+                "2. 지지/저항 — 주요 가격대\n"
+                "3. 판단 — 매수/관망/매도 + 2줄 근거"
+            )
+            vision_result = call_mistral_vision(vision_prompt, chart_path)
+            if vision_result and len(vision_result) > 30:
+                return (
+                    f"📊 {name}({code}) 차트 분석 (비전)\n\n"
+                    f"{signal_summary}"
+                    f"{vision_result}"
+                )
+        except Exception as e:
+            logger.warning("비전 분석 실패 %s: %s", code, e)
+
+    # 폴백: 텍스트 신호 기반 Ollama 분석
     prompt = (
         signal_summary +
         "위 기술적 신호를 종합해서 현재 이 종목을 매수/관망/매도 중 어떻게 판단하는지 한국어로 답하세요.\n"

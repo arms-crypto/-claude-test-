@@ -801,6 +801,51 @@ def call_gemma3(prompt: str, use_tools: bool = True) -> str:
     return "⚠️ 서버 AI 응답 실패"
 
 
+def call_mistral_vision(prompt: str, image_path: str, system: str = "한국 주식 트레이딩 전문가. 차트 이미지를 보고 구체적이고 간결하게 한국어로 분석.") -> str:
+    """
+    mistral-small3.1:24b 비전 호출.
+    image_path: PNG 파일 경로 → base64 인코딩 후 전송
+    """
+    import base64 as _b64, time as _time
+    _last_ollama_request[0] = _time.time()
+    send_wol()
+    wait_for_ollama()
+
+    try:
+        with open(image_path, "rb") as f:
+            img_b64 = _b64.b64encode(f.read()).decode("utf-8")
+    except Exception as e:
+        logger.error("차트 이미지 읽기 실패: %s", e)
+        return ""
+
+    import datetime as _dt, pytz as _pytz
+    _now = _dt.datetime.now(_pytz.timezone("Asia/Seoul"))
+    _dated_prompt = f"[{_now.strftime('%Y-%m-%d %H:%M KST')}] {prompt}"
+
+    payload = {
+        "model": config.QWEN_MODEL,
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": _dated_prompt, "images": [img_b64]},
+        ],
+        "options": {"temperature": 0.5, "num_predict": 2000, "num_ctx": 8192},
+        "stream": False,
+    }
+    try:
+        r = requests.post(
+            f"{config.OLLAMA_URL}/api/chat",
+            json=payload,
+            timeout=120,
+            proxies={"http": None, "https": None},
+        )
+        r.raise_for_status()
+        data = r.json()
+        return (data.get("message") or {}).get("content", "").strip()
+    except Exception as e:
+        logger.error("call_mistral_vision 실패: %s", e)
+        return ""
+
+
 def call_mistral_only(prompt: str, system: str = _TOOL_SYSTEM, use_tools: bool = True, history_messages: list = None) -> str:
     """
     mistral-small:24b 단독 호출. tool calling 지원.
