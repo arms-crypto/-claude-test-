@@ -341,24 +341,21 @@ def chart_buy_signal(code: str) -> bool:
 # ── 장중 시간 체크 (KST) ────────────────────────────────────────────────────
 
 def is_trading_hours() -> bool:
-    """평일 정규장(KST 09:00~15:20) + NXT 야간(KST 20:00~익일 08:00) 허용."""
-    now = datetime.datetime.now(pytz.timezone("Asia/Seoul"))
-    weekday = now.weekday()  # 0=월 ~ 6=일
-    if weekday >= 5:
-        return False
-    m = now.hour * 60 + now.minute
-    krx = (9 * 60) <= m <= (15 * 60 + 20)          # 정규장
-    nxt = m >= (20 * 60) or m <= (8 * 60)           # NXT 야간 (20:00~08:00)
-    return krx or nxt
-
-
-def is_nxt_hours() -> bool:
-    """현재 NXT 야간 시간 여부 (KST 20:00~익일 08:00, 평일)."""
+    """평일 KST 08:00~20:00 허용 (NXT 08~20 + KRX 정규장 09~15:30 포함)."""
     now = datetime.datetime.now(pytz.timezone("Asia/Seoul"))
     if now.weekday() >= 5:
         return False
     m = now.hour * 60 + now.minute
-    return m >= (20 * 60) or m <= (8 * 60)
+    return (8 * 60) <= m <= (20 * 60)
+
+
+def is_nxt_hours() -> bool:
+    """NXT 시간 여부 — 정규장 제외 시간 (08:00~09:00, 15:30~20:00)."""
+    now = datetime.datetime.now(pytz.timezone("Asia/Seoul"))
+    if now.weekday() >= 5:
+        return False
+    m = now.hour * 60 + now.minute
+    return (8 * 60) <= m < (9 * 60) or (15 * 60 + 30) <= m <= (20 * 60)
 
 
 # ── 모의 매도/매수 래퍼 ─────────────────────────────────────────────────────
