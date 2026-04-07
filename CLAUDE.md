@@ -123,7 +123,9 @@ auto_trade_cycle()  ← 30초 루프, risk_gate → select_volume → buy/sell
 - `send_sleep(delay_min=10)`: 마지막 Ollama 요청 후 10분 유휴 → `shutdown /h` 전송
 - `_sleep_watcher` 스레드: 60초 주기, 거래시간 외 구간에서 자동 호출
 - `_last_ollama_request`: `call_mistral_only()` 호출마다 갱신
-- **PC 절전 타이머 끔** (`powercfg /change standby-timeout-ac 0`) — 서버가 직접 제어
+- **PC 절전 타이머 끔** AC/DC 모두 0 (`powercfg /change standby-timeout-ac 0` + `standby-timeout-dc 0`)
+- Windows 작업 스케줄러: `RemoteHibernate` (SYSTEM 권한 `shutdown /h`) — `schtasks /run /tn RemoteHibernate`으로 호출
+- `send_sleep()`: `shutdown /h` 직접 → `schtasks /run /tn RemoteHibernate` 변경 (권한 문제 해결)
 
 ### 가상 포트폴리오
 - 초기 잔고: **1억원**
