@@ -76,7 +76,7 @@ def send_sleep(delay_min: int = 5):
     try:
         result = subprocess.run(
             ["ssh", "-o", "ConnectTimeout=5", "-o", "StrictHostKeyChecking=no",
-             "-p", "2224", "-i", "/home/ubuntu/.ssh/id_rsa",
+             "-p", "2224", "-i", "/home/ubuntu/.ssh/id_ed25519",
              "ultimate@221.144.111.116",
              "schtasks /run /tn RemoteHibernate"],
             capture_output=True, timeout=10
