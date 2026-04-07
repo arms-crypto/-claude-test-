@@ -200,18 +200,6 @@ def ask_ai(session_id, user_input):
         _ls = _sp.run("ls /home/ubuntu/-claude-test-/*.py", shell=True, capture_output=True, text=True)
         if _ls.stdout.strip():
             _extra_ctx.append(f"[서버 .py 파일 목록]\n{_ls.stdout.strip()}")
-    # 21시 이후 + 스캔 관련 키워드 → RAG 결과 직접 반환 (날짜 포함, Ollama 우회)
-    _after_market = now.hour >= 21
-    _SCAN_RAG_KEYS = ["스캔결과", "스캔", "워치리스트", "매수신호", "신호종목", "내일참고",
-                      "어제분석", "어젯밤", "야간분석", "분석결과"]
-    if _after_market and any(k in _u for k in _SCAN_RAG_KEYS):
-        try:
-            from rag_store import search_scan
-            _scan = search_scan("매수 신호 워치리스트", n_results=1)
-            if _scan:
-                return _scan, None   # 갱신일시가 메시지 상단에 이미 포함됨
-        except Exception:
-            pass
     if _extra_ctx:
         fact_str = "[참고 데이터]\n" + "\n\n".join(_extra_ctx) + "\n\n" + fact_str
 
@@ -266,6 +254,19 @@ def ask_ai(session_id, user_input):
             _months = int(_mm.group(1))
         _scan_result = scan_buy_signals_for_chat(months=_months, days=_days)
         return _scan_result, None
+
+    # 3-2-1) 21시 이후 + 스캔 키워드 → RAG 직접 반환 (실시간 스캔 3-2 미해당 시만)
+    _after_market = now.hour >= 21
+    _SCAN_RAG_KEYS = ["스캔결과", "스캔", "워치리스트", "매수신호", "신호종목", "내일참고",
+                      "어제분석", "어젯밤", "야간분석", "분석결과"]
+    if _after_market and any(k in _u for k in _SCAN_RAG_KEYS):
+        try:
+            from rag_store import search_scan
+            _scan = search_scan("매수 신호 워치리스트", n_results=1)
+            if _scan:
+                return _scan, None
+        except Exception:
+            pass
 
     # 3-3) 차트 분석 — 신호 데이터를 미리 계산해 Ollama에 주입 (도구 호출 없음)
     _CHART_KEYS = ["차트분석", "차트봐", "매수인지", "매도인지", "관망인지",
