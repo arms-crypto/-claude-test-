@@ -200,6 +200,15 @@ def ask_ai(session_id, user_input):
         _ls = _sp.run("ls /home/ubuntu/-claude-test-/*.py", shell=True, capture_output=True, text=True)
         if _ls.stdout.strip():
             _extra_ctx.append(f"[서버 .py 파일 목록]\n{_ls.stdout.strip()}")
+    if any(k in _u for k in ["어제스캔", "어제분석", "어제워치리스트", "내일참고", "전날스캔",
+                              "스캔결과", "어젯밤", "어제신호", "야간분석"]):
+        try:
+            from rag_store import search_scan
+            _scan = search_scan("매수 신호 워치리스트", n_results=1)
+            if _scan:
+                _extra_ctx.append(f"[어제 워치리스트 스캔 결과]\n{_scan}")
+        except Exception:
+            pass
     if _extra_ctx:
         fact_str = "[참고 데이터]\n" + "\n\n".join(_extra_ctx) + "\n\n" + fact_str
 
