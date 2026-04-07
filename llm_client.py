@@ -906,7 +906,27 @@ def call_mistral_only(prompt: str, system: str = _TOOL_SYSTEM, use_tools: bool =
                 if result and ('[TOOL_CALLS]' in result or ('"name"' in result and '"arguments"' in result)):
                     msg = {"content": result, "tool_calls": None}
                     continue
+                # Python 함수 호출 형식 폴백: tool_name(key=val, ...)
                 if result:
+                    import re as _re
+                    _fn_m = _re.match(r'^(\w+)\(([^)]*)\)\s*$', result.strip())
+                    if _fn_m:
+                        _fn_name = _fn_m.group(1)
+                        _fn_args = {}
+                        for _kv in _fn_m.group(2).split(','):
+                            _kv = _kv.strip()
+                            if '=' in _kv:
+                                _k, _v = _kv.split('=', 1)
+                                try:
+                                    _fn_args[_k.strip()] = int(_v.strip())
+                                except ValueError:
+                                    _fn_args[_k.strip()] = _v.strip().strip("'\"")
+                        _known = {"scan_buy_signals","get_watchlist","analyze_chart","get_stock_price",
+                                  "get_news","web_search","query_portfolio","query_trade_history","get_foreign_net_buy"}
+                        if _fn_name in _known:
+                            logger.info("Python 함수 호출 형식 감지: %s(%s)", _fn_name, _fn_args)
+                            _fn_result = _execute_tool_call(_fn_name, _fn_args)
+                            return _fn_result
                     return result
 
             result = msg.get("content", "") or _parse_ollama_response(r)
