@@ -317,6 +317,7 @@ def calculate_chart_signals(code: str) -> dict | None:
         "signals":        signals,
         "buy_count":      buy_count,       # 스윙 판단 /12
         "minute_count":   minute_count,    # 단타 타이밍 참고 /4
+        "df_daily":       df_d if 'df_d' in dir() else None,  # 차트 PNG 생성용
         "sig_ichimoku":   signals.get("주봉_일목균형표", False),
         "sig_d_ichimoku": signals.get("일봉_일목균형표", False),
         "sig_macd":       signals.get("일봉_MACD", False),
@@ -1202,9 +1203,10 @@ def get_smart_recommendations():
 
 # ── 채팅용 차트 분석 ───────────────────────────────────────────────────────────
 
-def generate_chart_png(code: str, name: str) -> str | None:
+def generate_chart_png(code: str, name: str, df_daily=None) -> str | None:
     """
-    KIS 일봉 데이터로 캔들차트 PNG 생성 (mplfinance).
+    일봉 DataFrame으로 캔들차트 PNG 생성 (mplfinance).
+    df_daily: calculate_chart_signals()의 df_daily 재사용 (없으면 pykrx 직접 조회)
     반환: 저장된 파일 경로 or None
     """
     try:
@@ -1217,23 +1219,29 @@ def generate_chart_png(code: str, name: str) -> str | None:
         _font_path = "/usr/share/fonts/truetype/nanum/NanumBarunGothic.ttf"
         _font_prop = fm.FontProperties(fname=_font_path) if os.path.exists(_font_path) else None
         plt.rcParams['axes.unicode_minus'] = False
-        import datetime
-        today_str = datetime.date.today().strftime("%Y%m%d")
-        from_str  = (datetime.date.today() - datetime.timedelta(days=130)).strftime("%Y%m%d")
-        df = pykrx_stock.get_market_ohlcv(from_str, today_str, code)
-        if df is None or len(df) < 10:
-            return None
-        df = df.rename(columns={"시가":"Open","고가":"High","저가":"Low","종가":"Close","거래량":"Volume"})
-        df = df[["Open","High","Low","Close","Volume"]].copy()
-        df.index.name = "Date"
+
+        if df_daily is not None and len(df_daily) >= 10:
+            df = df_daily.copy()
+            df.columns = [c.capitalize() for c in df.columns]
+            if not isinstance(df.index, pd.DatetimeIndex):
+                df.index = pd.to_datetime(df.index)
+            df.index.name = "Date"
+        else:
+            import datetime
+            today_str = datetime.date.today().strftime("%Y%m%d")
+            from_str  = (datetime.date.today() - datetime.timedelta(days=130)).strftime("%Y%m%d")
+            df = pykrx_stock.get_market_ohlcv(from_str, today_str, code)
+            if df is None or len(df) < 10:
+                return None
+            df = df.rename(columns={"시가":"Open","고가":"High","저가":"Low","종가":"Close","거래량":"Volume"})
+            df = df[["Open","High","Low","Close","Volume"]].copy()
+            df.index.name = "Date"
         df = df.dropna()
 
         chart_path = os.path.join(os.path.dirname(__file__), f"chart_{code}.png")
-        mc = mpf.make_marketcolors(up='red', down='blue', inherit=True)
-        s  = mpf.make_mpf_style(marketcolors=mc, gridstyle='--', gridcolor='#e0e0e0')
         fig, axes = mpf.plot(
-            df, type='candle', mav=(5, 20, 60),
-            volume=True, style=s, figsize=(10, 6),
+            df, type='candle', mav=(5, 20),
+            volume=True, style='yahoo', figsize=(10, 7),
             returnfig=True,
         )
         _title_kwargs = {"fontproperties": _font_prop, "fontsize": 13} if _font_prop else {"fontsize": 13}
@@ -1288,7 +1296,7 @@ def analyze_chart_for_chat(query: str) -> str:
     )
 
     # 차트 PNG 생성 → Ollama 비전 분석
-    chart_path = generate_chart_png(code, name)
+    chart_path = generate_chart_png(code, name, df_daily=sig.get("df_daily"))
     if chart_path:
         try:
             from llm_client import call_mistral_vision
