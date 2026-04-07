@@ -477,7 +477,8 @@ def _rag_trade_history(code: str, sig: dict, limit: int = 5) -> str:
             [rsi - 10, rsi + 10, limit],
         ).fetchall()
         for r in similar:
-            rows.append(f"  [{r[4][:10]}] {r[0]} RSI={r[1]} 신호={r[2]}/16 → 손익 {r[3]:+.1f}%")
+            ts = (r[4] or "")[:10]
+            rows.append(f"  [{ts}] {r[0]} RSI={r[1]} 신호={r[2]}/16 → 손익 {r[3]:+.1f}%")
 
         con.close()
         if not rows:
