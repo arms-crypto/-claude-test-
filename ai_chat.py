@@ -255,14 +255,12 @@ def ask_ai(session_id, user_input):
                          "신호종목", "매도종목", "매수종목", "살만한종목", "추천종목"]
     if "순매수" in _u and any(k in _u for k in _SCAN_SIGNAL_KEYS):
         from auto_trader import scan_buy_signals_for_chat
-        # 기간 추출: N일 / N개월 / 오늘
+        # 기간 추출: 명시적 숫자만 인식, 기본값은 항상 3개월
         _days = None
         _months = 3
         _dm = re.search(r'(\d+)\s*일', user_input)
         _mm = re.search(r'(\d+)\s*개월', user_input)
-        if "오늘" in user_input:
-            _days = 1
-        elif _dm:
+        if _dm and int(_dm.group(1)) <= 30:   # 30일 이하만 days로 처리
             _days = int(_dm.group(1))
         elif _mm:
             _months = int(_mm.group(1))
