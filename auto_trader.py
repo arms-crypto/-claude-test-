@@ -565,21 +565,33 @@ def _ollama_buy_decision(code: str, name: str, sig: dict) -> dict:
 
 def select_volume_smart_chart() -> list:
     """
-    거래량TOP20 ∩ 스마트머니(외국인+기관) → Ollama 매수판단.
+    DB 3개월 워치리스트(외국인/기관 누적) ∩ 거래량TOP20 → Ollama 매수판단.
+    교집합 없으면 오늘 실시간 순매수 폴백.
     [(code, sig_dict), ...] 최대 7개 반환.
     """
-    vol_top   = get_volume_surge_top20()
-    smart_top = set(_get_smart_money_codes())
-    candidates = [c for c in vol_top if c in smart_top]
-    logger.info("후보 %d종목 (거래량%d ∩ 스마트%d)",
-                len(candidates), len(vol_top), len(smart_top))
+    # 3개월 DB 워치리스트 (⭐동시 포함 전체)
+    watchlist = get_watchlist_from_db(months=3)
+    watch_codes = {code for code, _, __, ___ in watchlist}
 
-    # 교집합 0 폴백: 외국인+기관 동시 순매수 종목
+    vol_top = get_volume_surge_top20()
+    vol_set = set(vol_top)
+
+    # 거래량 TOP20 교집합 우선
+    candidates = [c for c in watch_codes if c in vol_set]
+    logger.info("후보 %d종목 (DB워치리스트%d ∩ 거래량%d)",
+                len(candidates), len(watch_codes), len(vol_top))
+
+    # 교집합 0 폴백: 워치리스트 전체 (거래량 무관)
+    if not candidates:
+        candidates = list(watch_codes)[:20]
+        logger.info("교집합 0 → DB워치리스트 전체 폴백 %d종목", len(candidates))
+
+    # 2차 폴백: 오늘 실시간 순매수
     if not candidates:
         foreign = _scrape_naver_codes("9000", limit=20)
         inst_set = set(_scrape_naver_codes("1000", limit=20))
         candidates = [c for c in foreign if c in inst_set][:10]
-        logger.info("교집합 0 → 외국인+기관 동시순매수 폴백 %d종목", len(candidates))
+        logger.info("2차 폴백 → 오늘 실시간 순매수 %d종목", len(candidates))
     targets = []
     for code in candidates:
         sig = calculate_chart_signals(code)
