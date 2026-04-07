@@ -191,5 +191,17 @@ if __name__ == "__main__":
     # 4) 30초 포트폴리오 자동매매 스레드 실행
     threading.Thread(target=auto_trade_loop, daemon=True).start()
 
-    # 5) Flask 웹 서버 실행
+    # 5) PC 슬립 워처 — 거래시간 외 10분 유휴 시 자동 최대절전
+    def _sleep_watcher():
+        import time as _t
+        from llm_client import send_sleep
+        from auto_trader import is_trading_hours
+        while True:
+            _t.sleep(60)
+            if not is_trading_hours():
+                send_sleep(delay_min=10)
+
+    threading.Thread(target=_sleep_watcher, daemon=True).start()
+
+    # 6) Flask 웹 서버 실행
     app.run(host="0.0.0.0", port=11435)
