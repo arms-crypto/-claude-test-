@@ -10,14 +10,15 @@ import yfinance as yf
 
 logger = logging.getLogger(__name__)
 
-# KIS 모의투자 설정
-APP_KEY    = "PSY9gMy15uipajb9qM25Cj1Uhf74FVu1cDyF"
-APP_SECRET = ("A/vwnErWUmOrZFUoJQ5bBS78WdY1lS6T6GaD5Hx1dNE+J3TTxTi1QwBvdFZuoKHWJ2nKEz+"
-              "SaAmZmNikWH04Ge4Mm7up+/5JeAphHOXYld5nIbtehEmHMFcHVeB3EbNQem1pi2+0cVdyj6w7"
-              "UzGJA+HqVRNFlPapifykRfPmf4Qf0IaIJdU=")
-KIS_URL    = "https://openapivts.koreainvestment.com:29443"  # 모의투자
-ACCOUNT_NO = "50173188"   # 계좌번호
+# KIS 실전 설정 (데이터 조회용 — 실제 주문은 REAL_TRADE=True 시만 허용)
+APP_KEY    = "PSLX9xi6Y1FLm2QvO7aqnTKWQJfUtwgejebj"
+APP_SECRET = ("K2c8EHjkcW56qvDYzNHGAtnzGNsVcGCFurssgTKYSVJF6tN8yueG0kfDLOiwyTdcRZkoYTWtYk1"
+              "YeQ8PDehOL3JoJZdBg+95i6MS7lHvo8lDJjL2JIFPqFWpSQm8fbq1QZQddCmMsScaMzzLxHa3"
+              "jw3RaBeb5aG9T7yGKfhBNwzAvOA3ayY=")
+KIS_URL    = "https://openapi.koreainvestment.com:9443"  # 실전
+ACCOUNT_NO = "44197559"   # 실전 계좌번호
 ACCOUNT_CD = "01"         # 계좌상품코드 (주식)
+REAL_TRADE = False        # True로 바꿔야 실제 주문 전송 — 현재 주문 차단
 
 _token_cache = {"token": None, "expires_at": 0}
 
@@ -113,6 +114,42 @@ def get_price(code: str) -> int:
     return _price_kis(code) or _price_yahoo(code) or _price_naver(code)
 
 
+def get_nxt_price(code: str) -> int:
+    """
+    넥스트트레이드(NXT) 야간 시세 조회.
+    장 마감 후(15:30~) NXT 거래 중일 때 사용. 실패 시 None 반환.
+    """
+    token = get_token()
+    if not token:
+        return None
+    headers = {
+        "authorization": f"Bearer {token}",
+        "appkey": APP_KEY,
+        "appsecret": APP_SECRET,
+        "tr_id": "FHKST01010100",
+    }
+    try:
+        r = requests.get(
+            f"{KIS_URL}/uapi/domestic-stock/v1/quotations/inquire-price",
+            params={"FID_COND_MRKT_DIV_CODE": "NX", "FID_INPUT_ISCD": code},
+            headers=headers,
+            timeout=8,
+            proxies={"http": None, "https": None},
+        )
+        r.raise_for_status()
+        out = r.json().get("output", {})
+        if out and out.get("stck_prpr"):
+            return int(out["stck_prpr"])
+    except Exception:
+        logger.debug("NXT 가격 조회 실패: %s", code)
+    return None
+
+
+def get_best_price(code: str) -> int:
+    """KRX → NXT → Yahoo → Naver 순 폴백 (장중/야간 모두 대응)."""
+    return _price_kis(code) or get_nxt_price(code) or _price_yahoo(code) or _price_naver(code)
+
+
 def _order_headers(tr_id: str) -> dict:
     token = get_token()
     return {
@@ -126,46 +163,14 @@ def _order_headers(tr_id: str) -> dict:
 
 def buy_stock(code: str, qty: int, price: int = 0) -> dict:
     """
-    KIS 모의투자 매수 주문.
+    매수 주문 — REAL_TRADE=False 시 가상 주문(포트폴리오 DB만 업데이트).
     price=0 → 시장가, price>0 → 지정가
     반환: {"success": bool, "order_no": str, "msg": str}
     """
-    try:
-        body = {
-            "CANO":        ACCOUNT_NO,
-            "ACNT_PRDT_CD": ACCOUNT_CD,
-            "PDNO":        code,
-            "ORD_DVSN":    "01" if price == 0 else "00",  # 01=시장가, 00=지정가
-            "ORD_QTY":     str(qty),
-            "ORD_UNPR":    "0" if price == 0 else str(price),
-        }
-        r = requests.post(
-            f"{KIS_URL}/uapi/domestic-stock/v1/trading/order-cash",
-            json=body,
-            headers=_order_headers("VTTC0802U"),
-            timeout=10,
-            proxies={"http": None, "https": None},
-        )
-        r.raise_for_status()
-        data = r.json()
-        if data.get("rt_cd") == "0":
-            order_no = data.get("output", {}).get("ODNO", "")
-            logger.info("KIS 모의 매수 완료 %s %d주 주문번호:%s", code, qty, order_no)
-            return {"success": True, "order_no": order_no, "msg": data.get("msg1", "")}
-        else:
-            logger.error("KIS 모의 매수 실패 %s: %s", code, data.get("msg1", ""))
-            return {"success": False, "order_no": "", "msg": data.get("msg1", "")}
-    except Exception:
-        logger.exception("KIS 모의 매수 예외: %s", code)
-        return {"success": False, "order_no": "", "msg": "API 오류"}
-
-
-def sell_stock(code: str, qty: int, price: int = 0) -> dict:
-    """
-    KIS 모의투자 매도 주문.
-    price=0 → 시장가, price>0 → 지정가
-    반환: {"success": bool, "order_no": str, "msg": str}
-    """
+    if not REAL_TRADE:
+        cur = _price_kis(code) or _price_yahoo(code) or _price_naver(code) or price
+        logger.info("가상 매수 %s %d주 @%d (REAL_TRADE=False)", code, qty, cur)
+        return {"success": True, "order_no": "VIRTUAL", "msg": f"가상매수 {qty}주 @{cur:,}"}
     try:
         body = {
             "CANO":        ACCOUNT_NO,
@@ -178,7 +183,7 @@ def sell_stock(code: str, qty: int, price: int = 0) -> dict:
         r = requests.post(
             f"{KIS_URL}/uapi/domestic-stock/v1/trading/order-cash",
             json=body,
-            headers=_order_headers("VTTC0801U"),
+            headers=_order_headers("TTTC0802U"),
             timeout=10,
             proxies={"http": None, "https": None},
         )
@@ -186,13 +191,53 @@ def sell_stock(code: str, qty: int, price: int = 0) -> dict:
         data = r.json()
         if data.get("rt_cd") == "0":
             order_no = data.get("output", {}).get("ODNO", "")
-            logger.info("KIS 모의 매도 완료 %s %d주 주문번호:%s", code, qty, order_no)
+            logger.info("KIS 실전 매수 완료 %s %d주 주문번호:%s", code, qty, order_no)
             return {"success": True, "order_no": order_no, "msg": data.get("msg1", "")}
         else:
-            logger.error("KIS 모의 매도 실패 %s: %s", code, data.get("msg1", ""))
+            logger.error("KIS 실전 매수 실패 %s: %s", code, data.get("msg1", ""))
             return {"success": False, "order_no": "", "msg": data.get("msg1", "")}
     except Exception:
-        logger.exception("KIS 모의 매도 예외: %s", code)
+        logger.exception("KIS 실전 매수 예외: %s", code)
+        return {"success": False, "order_no": "", "msg": "API 오류"}
+
+
+def sell_stock(code: str, qty: int, price: int = 0) -> dict:
+    """
+    매도 주문 — REAL_TRADE=False 시 가상 주문(포트폴리오 DB만 업데이트).
+    price=0 → 시장가, price>0 → 지정가
+    반환: {"success": bool, "order_no": str, "msg": str}
+    """
+    if not REAL_TRADE:
+        cur = _price_kis(code) or _price_yahoo(code) or _price_naver(code) or price
+        logger.info("가상 매도 %s %d주 @%d (REAL_TRADE=False)", code, qty, cur)
+        return {"success": True, "order_no": "VIRTUAL", "msg": f"가상매도 {qty}주 @{cur:,}"}
+    try:
+        body = {
+            "CANO":        ACCOUNT_NO,
+            "ACNT_PRDT_CD": ACCOUNT_CD,
+            "PDNO":        code,
+            "ORD_DVSN":    "01" if price == 0 else "00",
+            "ORD_QTY":     str(qty),
+            "ORD_UNPR":    "0" if price == 0 else str(price),
+        }
+        r = requests.post(
+            f"{KIS_URL}/uapi/domestic-stock/v1/trading/order-cash",
+            json=body,
+            headers=_order_headers("TTTC0801U"),
+            timeout=10,
+            proxies={"http": None, "https": None},
+        )
+        r.raise_for_status()
+        data = r.json()
+        if data.get("rt_cd") == "0":
+            order_no = data.get("output", {}).get("ODNO", "")
+            logger.info("KIS 실전 매도 완료 %s %d주 주문번호:%s", code, qty, order_no)
+            return {"success": True, "order_no": order_no, "msg": data.get("msg1", "")}
+        else:
+            logger.error("KIS 실전 매도 실패 %s: %s", code, data.get("msg1", ""))
+            return {"success": False, "order_no": "", "msg": data.get("msg1", "")}
+    except Exception:
+        logger.exception("KIS 실전 매도 예외: %s", code)
         return {"success": False, "order_no": "", "msg": "API 오류"}
 
 
@@ -220,7 +265,7 @@ def get_balance() -> dict:
                 "CTX_AREA_FK100": "",
                 "CTX_AREA_NK100": "",
             },
-            headers=_order_headers("VTTC8434R"),
+            headers=_order_headers("TTTC8434R"),
             timeout=10,
             proxies={"http": None, "https": None},
         )
