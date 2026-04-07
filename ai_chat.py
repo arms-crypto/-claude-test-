@@ -255,19 +255,6 @@ def ask_ai(session_id, user_input):
         _scan_result = scan_buy_signals_for_chat(months=_months, days=_days)
         return _scan_result, None
 
-    # 3-2-1) 21시 이후 + 스캔 키워드 → RAG 직접 반환 (실시간 스캔 3-2 미해당 시만)
-    _after_market = now.hour >= 21
-    _SCAN_RAG_KEYS = ["스캔결과", "스캔", "워치리스트", "매수신호", "신호종목", "내일참고",
-                      "어제분석", "어젯밤", "야간분석", "분석결과"]
-    if _after_market and any(k in _u for k in _SCAN_RAG_KEYS):
-        try:
-            from rag_store import search_scan
-            _scan = search_scan("매수 신호 워치리스트", n_results=1)
-            if _scan:
-                return _scan, None
-        except Exception:
-            pass
-
     # 3-3) 차트 분석 — 신호 데이터를 미리 계산해 Ollama에 주입 (도구 호출 없음)
     _CHART_KEYS = ["차트분석", "차트봐", "매수인지", "매도인지", "관망인지",
                    "매수해도", "매도해도", "사도될까", "팔아도될까", "지금살까", "지금팔까"]
