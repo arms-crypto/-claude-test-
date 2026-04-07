@@ -1266,27 +1266,27 @@ def generate_chart_png(code: str, name: str, df_daily=None) -> str | None:
         except Exception:
             adx_s = pd.Series([float("nan")] * len(df), index=df.index)
 
-        # NaN 채우기 (addplot 타입 오류 방지)
+        # NaN → ffill/bfill (고정값 채우기 금지 — 스케일 오염)
         def _s(series):
             if not isinstance(series, pd.Series):
                 series = pd.Series(series, index=df.index)
-            return series.ffill().fillna(50)
+            return series.ffill().bfill()
 
         apds = [
-            # 메인 패널 — 일목 전환선/기준선
-            mpf.make_addplot(tenkan,        panel=0, color='blue',   width=0.9, linestyle='--'),
-            mpf.make_addplot(kijun,         panel=0, color='orange', width=0.9, linestyle='--'),
+            # 메인 패널 — 일목 전환선(빨강점선)/기준선(보라점선)
+            mpf.make_addplot(_s(tenkan), panel=0, color='red',    width=1.0, linestyle='--'),
+            mpf.make_addplot(_s(kijun),  panel=0, color='purple', width=1.0, linestyle='--'),
             # RSI 패널
-            mpf.make_addplot(_s(rsi_s),     panel=2, color='purple', width=1.1, ylabel='RSI'),
-            mpf.make_addplot(pd.Series(70, index=df.index, dtype=float), panel=2, color='red',  width=0.5, linestyle='--'),
-            mpf.make_addplot(pd.Series(30, index=df.index, dtype=float), panel=2, color='blue', width=0.5, linestyle='--'),
+            mpf.make_addplot(_s(rsi_s),  panel=2, color='purple', width=1.1, ylabel='RSI'),
+            mpf.make_addplot(pd.Series(70.0, index=df.index), panel=2, color='red',  width=0.6, linestyle='--'),
+            mpf.make_addplot(pd.Series(30.0, index=df.index), panel=2, color='blue', width=0.6, linestyle='--'),
             # MACD 패널
             mpf.make_addplot(_s(macd_line), panel=3, color='blue',   width=1.1, ylabel='MACD'),
             mpf.make_addplot(_s(sig_line),  panel=3, color='red',    width=0.9),
             mpf.make_addplot(_s(macd_hist), panel=3, type='bar', color='dimgray', alpha=0.4),
             # ADX 패널
             mpf.make_addplot(_s(adx_s),     panel=4, color='green',  width=1.1, ylabel='ADX'),
-            mpf.make_addplot(pd.Series(25, index=df.index, dtype=float), panel=4, color='red', width=0.5, linestyle='--'),
+            mpf.make_addplot(pd.Series(25.0, index=df.index), panel=4, color='red', width=0.6, linestyle='--'),
         ]
 
         chart_path = os.path.join(os.path.dirname(__file__), f"chart_{code}.png")
