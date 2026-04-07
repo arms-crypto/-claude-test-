@@ -200,13 +200,16 @@ def ask_ai(session_id, user_input):
         _ls = _sp.run("ls /home/ubuntu/-claude-test-/*.py", shell=True, capture_output=True, text=True)
         if _ls.stdout.strip():
             _extra_ctx.append(f"[서버 .py 파일 목록]\n{_ls.stdout.strip()}")
-    if any(k in _u for k in ["어제스캔", "어제분석", "어제워치리스트", "내일참고", "전날스캔",
-                              "스캔결과", "어젯밤", "어제신호", "야간분석"]):
+    # 장 마감 이후(15:30~) + 스캔 관련 키워드 → RAG에서 직접 주입 (도구 호출 없음)
+    _after_market = now.hour > 15 or (now.hour == 15 and now.minute >= 30)
+    _SCAN_RAG_KEYS = ["스캔결과", "스캔", "워치리스트", "매수신호", "신호종목", "내일참고",
+                      "어제분석", "어젯밤", "야간분석", "분석결과"]
+    if _after_market and any(k in _u for k in _SCAN_RAG_KEYS):
         try:
             from rag_store import search_scan
             _scan = search_scan("매수 신호 워치리스트", n_results=1)
             if _scan:
-                _extra_ctx.append(f"[어제 워치리스트 스캔 결과]\n{_scan}")
+                _extra_ctx.append(f"[장 마감 후 워치리스트 스캔 결과]\n{_scan}")
         except Exception:
             pass
     if _extra_ctx:
