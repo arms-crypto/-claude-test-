@@ -102,10 +102,38 @@ auto_trade_cycle()  ← 30초 루프, risk_gate → select_volume → buy/sell
 - `_naver_net_buy_list(date_str='YYYYMMDD')` — `&ntp=` 파라미터로 과거 날짜 조회 가능
 - `collect_smart_flows` — Oracle DB `mock_smart_flows` 테이블에 6개월 보관
 
+## KIS 실전 API + 가상주문 (2026-04-07 전환)
+
+### 접속 설정 (mock_trading/kis_client.py)
+- **실전 API** — `https://openapi.koreainvestment.com:9443`, 계좌 44197559-01
+- **REAL_TRADE = False** — 주문은 가상(portfolio.db만 업데이트), True로 바꿔야 실제 체결
+- **KRX + NXT** — `get_price()` KRX 시세, `get_nxt_price()` NXT 야간 시세, `get_best_price()` 자동 폴백
+- tr_id: 조회 FHKST*, 잔고 TTTC8434R, 매수 TTTC0802U, 매도 TTTC0801U
+
+### 거래시간
+- `is_trading_hours()`: **KST 08:00~20:00 평일** (NXT 포함)
+- `is_nxt_hours()`: 08:00~09:00, 15:30~20:00 (NXT 단독 구간)
+
+### 자동매매 워치리스트
+- `select_volume_smart_chart()`: **DB 3개월 워치리스트 ∩ 거래량TOP20** 우선
+- 교집합 없으면 워치리스트 전체 → 오늘 실시간 순매수 2차 폴백
+
+### PC 자동 최대절전 (2026-04-07 추가)
+- PC SSH: `ultimate@221.144.111.116:2224` (공유기 포트포워딩)
+- `send_sleep(delay_min=10)`: 마지막 Ollama 요청 후 10분 유휴 → `shutdown /h` 전송
+- `_sleep_watcher` 스레드: 60초 주기, 거래시간 외 구간에서 자동 호출
+- `_last_ollama_request`: `call_mistral_only()` 호출마다 갱신
+- **PC 절전 타이머 끔** (`powercfg /change standby-timeout-ac 0`) — 서버가 직접 제어
+
+### 가상 포트폴리오
+- 초기 잔고: **1억원**
+- DB 초기화: 2026-04-07 (백업: `mock_trading/portfolio_backup_20260407.db`)
+
 ## 현재 진행 이슈
-- **모의투자 중** — KIS 실전 키 보관 중, 1개월 검증 후 전환 예정 (2026-05)
+- **가상주문 실전API** — 실시간 시세로 가상매매 중, `REAL_TRADE=True` 전환 시 실제 체결
 - **모듈화 예정** — proxy_v54.py → 16개 파일 분리 (안정화 후 진행)
 - **장중 자동점검** — 스케줄 에이전트 trig_01NTvrDUFKtYzoNoHfGPMrTF (3/31 09/11/13/15시 KST)
+- **모닝 보수 에이전트** — trig_01Wgb24aru4pDzfzMKY52nx4 (평일 09:00 KST)
 
 ## 절대 하지 말 것
 - pre-injection 블록(ai_chat.py 3-1, 3-2, 3-3) 제거 금지 — 환각 방지 핵심
