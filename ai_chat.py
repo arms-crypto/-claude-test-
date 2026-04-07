@@ -291,9 +291,15 @@ def ask_ai(session_id, user_input):
             return _cached, None
     if any(k in _u for k in _CHART_KEYS):
         from auto_trader import analyze_chart_for_chat
-        # 종목명/코드 추출 (6자리 숫자 우선, 없으면 앞 단어)
+        # 종목명/코드 추출 (6자리 숫자 우선, 없으면 차트 키워드 제거 후 남은 단어)
         _code_m = re.search(r'\b(\d{6})\b', user_input)
-        _query = _code_m.group(1) if _code_m else user_input.strip()
+        if _code_m:
+            _query = _code_m.group(1)
+        else:
+            _clean = user_input.strip()
+            for _kw in _CHART_KEYS:
+                _clean = _clean.replace(_kw, "")
+            _query = _clean.strip()
         _chart_result, _chart_path = analyze_chart_for_chat(_query)
         # 세션별 마지막 차트 분석 결과 캐시
         config.store[f"__last_chart_{session_id}"] = (_chart_result, _chart_path)
