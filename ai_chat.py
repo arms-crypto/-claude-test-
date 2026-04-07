@@ -201,7 +201,7 @@ def ask_ai(session_id, user_input):
         if _ls.stdout.strip():
             _extra_ctx.append(f"[서버 .py 파일 목록]\n{_ls.stdout.strip()}")
     # 장 마감 이후(15:30~) + 스캔 관련 키워드 → RAG에서 직접 주입 (도구 호출 없음)
-    _after_market = now.hour > 15 or (now.hour == 15 and now.minute >= 30)
+    _after_market = now.hour >= 20
     _SCAN_RAG_KEYS = ["스캔결과", "스캔", "워치리스트", "매수신호", "신호종목", "내일참고",
                       "어제분석", "어젯밤", "야간분석", "분석결과"]
     if _after_market and any(k in _u for k in _SCAN_RAG_KEYS):
