@@ -1,5 +1,5 @@
 #!/bin/bash
-# 평일 21:00 — 워치리스트 차트 분석 후 내일 참고용 텔레그램 전송
+# 평일 20:35 — 장 마감 후 워치리스트 차트 분석 → 텔레그램 전송 + RAG 저장 + Ollama 분석
 
 WORKDIR="/home/ubuntu/-claude-test-"
 TOKEN="8707168013:AAH5yIsoaLoxcA0Lthiw7RaIzD1YcJx8cc8"
