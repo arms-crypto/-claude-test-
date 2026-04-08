@@ -341,7 +341,7 @@ def calculate_chart_signals(code: str, scan_mode: bool = False) -> dict | None:
         "signals":        signals,
         "buy_count":      buy_count,       # 스윙 판단 /12
         "minute_count":   minute_count,    # 단타 타이밍 참고 /4
-        "df_daily":       df_d if 'df_d' in dir() else None,  # 차트 PNG 생성용
+        "df_daily":       df_d if 'df_d' in locals() else None,  # 차트 PNG 생성용
         "sig_ichimoku":   signals.get("주봉_일목균형표", False),
         "sig_d_ichimoku": signals.get("일봉_일목균형표", False),
         "sig_macd":       signals.get("일봉_MACD", False),
@@ -1675,7 +1675,7 @@ def scan_buy_signals_for_chat(months: int = 3, days: int = None) -> str:
 
     from concurrent.futures import ThreadPoolExecutor, as_completed
     results_buy, results_hold, results_sell = [], [], []
-    with ThreadPoolExecutor(max_workers=15) as ex:
+    with ThreadPoolExecutor(max_workers=10) as ex:
         futures = {ex.submit(_scan_one, item): item for item in candidates}
         for fut in as_completed(futures):
             entry = fut.result()

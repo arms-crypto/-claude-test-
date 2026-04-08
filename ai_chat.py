@@ -279,8 +279,9 @@ def ask_ai(session_id, user_input):
         return _scan_result, None
 
     # 3-3) 차트 분석 — 신호 데이터를 미리 계산해 Ollama에 주입 (도구 호출 없음)
+    # _u는 공백 제거된 소문자 — 공백 없는 버전만 검사
     _CHART_KEYS = [
-        "차트분석", "차트 분석", "차트봐", "차트 봐", "차트보여", "차트 보여",
+        "차트분석", "차트봐", "차트보여",
         "매수인지", "매도인지", "관망인지",
         "매수해도", "매도해도", "사도될까", "팔아도될까", "지금살까", "지금팔까",
     ]
@@ -289,6 +290,8 @@ def ask_ai(session_id, user_input):
         "차트분석", "차트 분석", "차트봐", "차트 봐", "차트보여", "차트 보여",
         "차트", "분석", "해줘", "해줄래", "부탁해", "부탁", "봐줘", "봐줄래",
         "해봐", "좀", "있어", "인지", "될까", "살까", "팔까", "해도",
+        "워치리스트", "종목", "중에서", "중에", "에서", "에 대해", "에대해",
+        "알려줘", "알려", "보내줘", "보내",
     ]
     _REPLAY_KEYS = ["다시보여", "다시봐", "방금분석", "아까분석", "이전분석", "다시줘"]
     # "다시 보여줄래" — 마지막 차트 분석 결과 캐시에서 반환
@@ -308,6 +311,7 @@ def ask_ai(session_id, user_input):
             _clean = user_input.strip()
             for _kw in _NOISE_WORDS:
                 _clean = _clean.replace(_kw, " ")
+            _clean = re.sub(r'\d+\s*종목', ' ', _clean)  # "64종목" 같은 패턴 제거
             _query = " ".join(_clean.split()).strip()  # 연속 공백 제거
         _chart_result, _chart_path = analyze_chart_for_chat(_query)
         # 세션별 마지막 차트 분석 결과 캐시
