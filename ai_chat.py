@@ -242,7 +242,9 @@ def ask_ai(session_id, user_input):
     _SCAN_SIGNAL_KEYS = ["매도신호", "매수신호", "관망종목", "스캔", "워치리스트스캔",
                          "신호종목", "매도종목", "매수종목", "살만한종목", "추천종목",
                          "워치리스트분석", "워치리스트", "신호분석", "분석시작"]
-    if any(k in _u for k in _SCAN_SIGNAL_KEYS) or ("순매수" in _u and any(k in _u for k in ["스캔", "신호"])):
+    # 차트 분석 키워드가 함께 있으면 스캔 스킵 (3-3에서 처리)
+    _has_chart_key = any(k in _u for k in ["차트분석", "차트봐", "차트보여", "매수인지", "매도인지", "관망인지"])
+    if not _has_chart_key and (any(k in _u for k in _SCAN_SIGNAL_KEYS) or ("순매수" in _u and any(k in _u for k in ["스캔", "신호"]))):
         from auto_trader import scan_buy_signals_for_chat
         # 기간 추출: 명시적 숫자만 인식, 기본값은 항상 3개월
         _days = None
@@ -309,9 +311,10 @@ def ask_ai(session_id, user_input):
             _query = _code_m.group(1)
         else:
             _clean = user_input.strip()
+            _clean = re.sub(r'\d+\s*종목', ' ', _clean)  # "64종목" 패턴 먼저 제거
+            _clean = re.sub(r'\b중\b', ' ', _clean)       # 단독 "중" 제거
             for _kw in _NOISE_WORDS:
                 _clean = _clean.replace(_kw, " ")
-            _clean = re.sub(r'\d+\s*종목', ' ', _clean)  # "64종목" 같은 패턴 제거
             _query = " ".join(_clean.split()).strip()  # 연속 공백 제거
         _chart_result, _chart_path = analyze_chart_for_chat(_query)
         # 세션별 마지막 차트 분석 결과 캐시
