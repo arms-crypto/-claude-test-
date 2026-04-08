@@ -123,7 +123,7 @@ def get_latest_db_news(query: str = "") -> str:
 # -------------------------
 # ask_ai 핵심 로직 (mistral-small:24b 기반)
 def ask_ai(session_id, user_input):
-    logger.info("ask_ai 진입: %s", user_input[:50])
+    logger.info("[대화] 질문: %s", user_input[:200])
     history = get_session_history(session_id)
 
     # 0) Ollama 상태 선확인 — 꺼져있으면 즉시 WoL 후 대기
@@ -279,8 +279,17 @@ def ask_ai(session_id, user_input):
         return _scan_result, None
 
     # 3-3) 차트 분석 — 신호 데이터를 미리 계산해 Ollama에 주입 (도구 호출 없음)
-    _CHART_KEYS = ["차트분석", "차트봐", "매수인지", "매도인지", "관망인지",
-                   "매수해도", "매도해도", "사도될까", "팔아도될까", "지금살까", "지금팔까"]
+    _CHART_KEYS = [
+        "차트분석", "차트 분석", "차트봐", "차트 봐", "차트보여", "차트 보여",
+        "매수인지", "매도인지", "관망인지",
+        "매수해도", "매도해도", "사도될까", "팔아도될까", "지금살까", "지금팔까",
+    ]
+    # 종목명 추출 시 제거할 불필요 단어
+    _NOISE_WORDS = [
+        "차트분석", "차트 분석", "차트봐", "차트 봐", "차트보여", "차트 보여",
+        "차트", "분석", "해줘", "해줄래", "부탁해", "부탁", "봐줘", "봐줄래",
+        "해봐", "좀", "있어", "인지", "될까", "살까", "팔까", "해도",
+    ]
     _REPLAY_KEYS = ["다시보여", "다시봐", "방금분석", "아까분석", "이전분석", "다시줘"]
     # "다시 보여줄래" — 마지막 차트 분석 결과 캐시에서 반환
     if any(k in _u for k in _REPLAY_KEYS):
@@ -291,15 +300,15 @@ def ask_ai(session_id, user_input):
             return _cached, None
     if any(k in _u for k in _CHART_KEYS):
         from auto_trader import analyze_chart_for_chat
-        # 종목명/코드 추출 (6자리 숫자 우선, 없으면 차트 키워드 제거 후 남은 단어)
+        # 종목명/코드 추출 (6자리 숫자 우선, 없으면 노이즈 제거 후 남은 단어)
         _code_m = re.search(r'\b(\d{6})\b', user_input)
         if _code_m:
             _query = _code_m.group(1)
         else:
             _clean = user_input.strip()
-            for _kw in _CHART_KEYS:
-                _clean = _clean.replace(_kw, "")
-            _query = _clean.strip()
+            for _kw in _NOISE_WORDS:
+                _clean = _clean.replace(_kw, " ")
+            _query = " ".join(_clean.split()).strip()  # 연속 공백 제거
         _chart_result, _chart_path = analyze_chart_for_chat(_query)
         # 세션별 마지막 차트 분석 결과 캐시
         config.store[f"__last_chart_{session_id}"] = (_chart_result, _chart_path)
@@ -344,6 +353,7 @@ def ask_ai(session_id, user_input):
         answer = "시스템 오류가 발생했습니다. 잠시 후 다시 시도해주세요."
 
     # 7) 채팅 기록 및 팩트 저장
+    logger.info("[대화] 응답: %s", (answer or "")[:300])
     history.append(f"Human: {user_input}")
     history.append(f"AI: {answer}")
 
