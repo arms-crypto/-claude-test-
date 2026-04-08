@@ -248,11 +248,11 @@ def _tf_four_signals(df, label: str, signals: dict):
         signals[f"{label}_MACD"] = False; signals[f"{label}_macd_val"] = None
 
 
-def calculate_chart_signals(code: str) -> dict | None:
+def calculate_chart_signals(code: str, scan_mode: bool = False) -> dict | None:
     """
     멀티타임프레임 신호 (KIS API) — 월/주/일/분봉 각각 4개 지표:
-      일목균형표(9/26/52) | ADX(3) | RSI(6) | MACD(5,13,6)
-    총 16신호 → Ollama가 종합 판단
+      일목균형표(HTS) | ADX(3) | RSI(6) | MACD(5,13,6)
+    scan_mode=True: 분봉 스킵 (월/주/일 3 API 호출만) — 스캔 속도 최적화
     """
     from mock_trading.kis_client import get_ohlcv, get_minute_ohlcv
     signals = {}
@@ -281,29 +281,34 @@ def calculate_chart_signals(code: str) -> dict | None:
         for k in ["일목균형표","ADX","RSI","MACD"]: signals[f"일봉_{k}"] = False
         for k in ["정배열","가격위치","ma5","ma20","ma60","ma120"]: signals[f"일봉_{k}"] = None
 
-    # 3분봉 — 단타 판단용
-    try:
-        _tf_four_signals(_ohlcv_to_df(get_minute_ohlcv(code, interval=3, count=80)), "분봉_3분", signals)
-    except Exception:
-        for k in ["일목균형표","ADX","RSI","MACD"]: signals[f"분봉_3분_{k}"] = False
-
-    # 15/30/60분봉 — 스윙 진입 타이밍용
-    swing_scores = {k: 0 for k in ["일목균형표","ADX","RSI","MACD"]}
-    for interval, label in [(15,"분봉_15분"), (30,"분봉_30분"), (60,"분봉_60분")]:
-        tmp = {}
+    if not scan_mode:
+        # 3분봉 — 단타 판단용
         try:
-            _tf_four_signals(_ohlcv_to_df(get_minute_ohlcv(code, interval=interval, count=80)), label, tmp)
+            _tf_four_signals(_ohlcv_to_df(get_minute_ohlcv(code, interval=3, count=80)), "분봉_3분", signals)
         except Exception:
-            for k in ["일목균형표","ADX","RSI","MACD"]: tmp[f"{label}_{k}"] = False
-        signals.update(tmp)
-        for k in ["일목균형표","ADX","RSI","MACD"]:
-            if tmp.get(f"{label}_{k}"): swing_scores[k] += 1
+            for k in ["일목균형표","ADX","RSI","MACD"]: signals[f"분봉_3분_{k}"] = False
 
-    # 스윙 분봉 합의 (15/30/60 중 2개 이상)
-    signals["분봉_일목균형표"] = swing_scores["일목균형표"] >= 2
-    signals["분봉_ADX"]       = swing_scores["ADX"]       >= 2
-    signals["분봉_RSI"]       = swing_scores["RSI"]       >= 2
-    signals["분봉_MACD"]      = swing_scores["MACD"]      >= 2
+        # 15/30/60분봉 — 스윙 진입 타이밍용
+        swing_scores = {k: 0 for k in ["일목균형표","ADX","RSI","MACD"]}
+        for interval, label in [(15,"분봉_15분"), (30,"분봉_30분"), (60,"분봉_60분")]:
+            tmp = {}
+            try:
+                _tf_four_signals(_ohlcv_to_df(get_minute_ohlcv(code, interval=interval, count=80)), label, tmp)
+            except Exception:
+                for k in ["일목균형표","ADX","RSI","MACD"]: tmp[f"{label}_{k}"] = False
+            signals.update(tmp)
+            for k in ["일목균형표","ADX","RSI","MACD"]:
+                if tmp.get(f"{label}_{k}"): swing_scores[k] += 1
+
+        signals["분봉_일목균형표"] = swing_scores["일목균형표"] >= 2
+        signals["분봉_ADX"]       = swing_scores["ADX"]       >= 2
+        signals["분봉_RSI"]       = swing_scores["RSI"]       >= 2
+        signals["분봉_MACD"]      = swing_scores["MACD"]      >= 2
+    else:
+        # scan_mode: 분봉 스킵 — 0으로 채움
+        for k in ["일목균형표","ADX","RSI","MACD"]:
+            signals[f"분봉_3분_{k}"] = False
+            signals[f"분봉_{k}"]     = False
 
     # 스윙 판단용 12신호 (월봉/주봉/일봉) — 분봉은 단타 타이밍용으로 별도
     swing_keys = [
@@ -1598,6 +1603,31 @@ def get_watchlist_from_db(months: int = 3, days: int = None) -> list:
         return []
 
 
+def _make_scan_reason(sig: dict) -> str:
+    """신호수 기반 간결한 판단 근거 생성 (Ollama 없이)."""
+    s = sig.get("signals", {})
+    parts = []
+    monthly = all(s.get(f"월봉_{k}") for k in ["일목균형표","ADX","RSI","MACD"])
+    weekly  = all(s.get(f"주봉_{k}") for k in ["일목균형표","ADX","RSI","MACD"])
+    daily   = all(s.get(f"일봉_{k}") for k in ["일목균형표","ADX","RSI","MACD"])
+    if monthly and weekly and daily:
+        parts.append("월/주/일봉 전봉 신호 일치")
+    elif monthly and weekly:
+        parts.append("월봉·주봉 신호 일치")
+    elif weekly and daily:
+        parts.append("주봉·일봉 신호 일치")
+    elif daily:
+        parts.append("일봉 신호 강함")
+    if s.get("일봉_정배열"):
+        parts.append("이평 정배열")
+    if s.get("일봉_가격위치"):
+        parts.append("가격>MA20")
+    rsi = sig.get("rsi", 0)
+    if rsi and rsi > 50:
+        parts.append(f"RSI{rsi:.0f}")
+    return " · ".join(parts) if parts else f"신호 {sig['buy_count']}/12"
+
+
 def scan_buy_signals_for_chat(months: int = 3, days: int = None) -> str:
     """
     채팅용 — DB 누적 N개월(또는 N일)간 외국인+기관 동시 순매수 종목 워치리스트 기반 매수 신호 스캔.
@@ -1623,15 +1653,29 @@ def scan_buy_signals_for_chat(months: int = 3, days: int = None) -> str:
 
     def _scan_one(item):
         code, name, day_cnt, both = item
-        sig = calculate_chart_signals(code)
+        sig = calculate_chart_signals(code, scan_mode=True)  # 분봉 스킵
         if not sig:
             return None
-        decision = _ollama_buy_decision(code, name, sig)
+        # 신호수 룰 기반 판단 (Ollama 호출 없음)
+        cnt = sig["buy_count"]
+        if cnt >= 6:
+            action = "BUY"
+            trade_type = "스윙"
+            reason = _make_scan_reason(sig)
+        elif cnt >= 4:
+            action = "HOLD"
+            trade_type = "스윙"
+            reason = _make_scan_reason(sig)
+        else:
+            action = "SELL"
+            trade_type = "스윙"
+            reason = "신호 부족"
+        decision = {"action": action, "trade_type": trade_type, "reason": reason}
         return (code, name, day_cnt, both, sig, decision)
 
     from concurrent.futures import ThreadPoolExecutor, as_completed
     results_buy, results_hold, results_sell = [], [], []
-    with ThreadPoolExecutor(max_workers=6) as ex:
+    with ThreadPoolExecutor(max_workers=15) as ex:
         futures = {ex.submit(_scan_one, item): item for item in candidates}
         for fut in as_completed(futures):
             entry = fut.result()
