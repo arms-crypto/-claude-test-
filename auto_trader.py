@@ -103,19 +103,28 @@ def _scrape_naver_codes(investor_gubun: str, limit: int = 20) -> list:
 
 
 def _get_name_by_code(code: str) -> str:
-    """종목코드 → 종목명 조회 (DB → naver ETF/stock 순 fallback)"""
+    """종목코드 → 종목명 조회 (DB → pykrx ETF → pykrx 주식 → naver 순 fallback)"""
     # 1) DB 캐시
     name = get_stock_code_from_db(code)
     if name:
         return name
-    # 2) pykrx (개별주)
+    # 2) pykrx ETF 먼저 (KODEX 등 ETF 코드 오류 방지)
+    try:
+        etf_tickers = pykrx_stock.get_etf_ticker_list()
+        if code in etf_tickers:
+            result = pykrx_stock.get_etf_ticker_name(code)
+            if isinstance(result, str) and result:
+                return result
+    except Exception:
+        pass
+    # 3) pykrx 개별주
     try:
         result = pykrx_stock.get_market_ticker_name(code)
         if isinstance(result, str) and result:
             return result
     except Exception:
         pass
-    # 3) naver ETF 페이지 fallback
+    # 4) naver fallback
     try:
         r = requests.get(f"https://finance.naver.com/item/main.naver?code={code}",
                          headers={"User-Agent": "Mozilla/5.0"}, timeout=5,
@@ -550,12 +559,16 @@ def _ollama_buy_decision(code: str, name: str, sig: dict) -> dict:
         '{"action":"BUY"|"SKIP","reason":"한줄설명"}'
     )
     try:
-        resp = call_mistral_only(prompt)
+        resp = call_mistral_only(
+            prompt,
+            system="당신은 주식 매매 판단 AI입니다. JSON만 반환하고 다른 텍스트는 쓰지 마세요.",
+            use_tools=False,
+        )
         m = _re.search(r'\{[^{}]*"action"[^{}]*\}', resp, _re.DOTALL)
         if m:
             d = _json.loads(m.group())
             if d.get("action") in ("BUY", "SKIP"):
-                d["trade_type"] = trade_type  # trade_type은 항상 코드 기준
+                d["trade_type"] = trade_type
                 logger.info("Ollama 매수판단 %s: %s [%s] — %s",
                             code, d["action"], d["trade_type"], d.get("reason",""))
                 return d
@@ -997,8 +1010,6 @@ def auto_trade_loop():
     _restore_today_trades()
     logger.info("자동매매 루프 시작 (30초 간격, 장중 KST만 실행)")
     last_hourly_log = None
-    last_scan_time  = None   # 매수신호 스캔 마지막 실행 시각 (HH:MM)
-    _SCAN_MINUTES   = {30}   # 매 시 30분에 스캔 (09:30, 10:30, 11:30, 13:30, 14:30)
     while True:
         try:
             auto_trade_cycle()
@@ -1008,22 +1019,83 @@ def auto_trade_loop():
                 if kst_now.minute == 0 and last_hourly_log != kst_now.hour:
                     _log_holdings_status()
                     last_hourly_log = kst_now.hour
-
-                # 30분마다 매수신호 스캔 → 텔레그램 브로드캐스트
-                tick = f"{kst_now.hour}:{kst_now.minute:02d}"
-                if kst_now.minute in _SCAN_MINUTES and last_scan_time != tick:
-                    last_scan_time = tick
-                    try:
-                        result = scan_buy_signals_for_chat()
-                        _tg_notify(f"🔍 [{tick} KST] 매수신호 스캔\n\n{result}")
-                        logger.info("매수신호 스캔 브로드캐스트 완료")
-                    except Exception:
-                        logger.exception("매수신호 스캔 브로드캐스트 실패")
         except Exception:
             logger.exception("auto_trade_cycle 예외")
 
         import time
         time.sleep(30)
+
+
+def smart_wakeup_monitor():
+    """
+    Ollama 없이 Python만으로 순매수·차트 신호 변화 감지 → PC 자동 웨이크업.
+    - 30초: 순매수 신규진입 체크 (DB 쿼리, 가벼움)
+    - 5분:  차트 신호 변화 체크 (pykrx 호출, 무거워서 간격 유지)
+    트리거:
+      1) 순매수 워치리스트에 신규 종목 진입
+      2) 상위 종목 buy_count 2 이상 급증 또는 BUY 임계(≥6) 신규 진입
+    """
+    import time as _t
+    from llm_client import send_wol
+
+    logger.info("스마트 웨이크업 모니터 시작 (순매수 30초 / 차트신호 5분)")
+    # 시작 시 현재 워치리스트로 초기화 — 재시작 시 전체 신규 오탐 방지
+    try:
+        _prev_codes: set = {c for c, *_ in get_watchlist_from_db(months=3)}
+        logger.info("스마트 웨이크업 초기 워치리스트: %d종목", len(_prev_codes))
+    except Exception:
+        _prev_codes: set = set()
+    _prev_signals: dict = {}   # code → buy_count
+    _last_chart_check = 0      # 마지막 차트 신호 체크 시각
+
+    while True:
+        _t.sleep(30)
+
+        if not is_trading_hours():
+            continue
+
+        try:
+            watchlist = get_watchlist_from_db(months=3)
+            cur_codes = {c for c, *_ in watchlist}
+            triggers = []
+
+            # ── 1. 순매수 신규진입 (매 30초) ───────────────────
+            new_entries = cur_codes - _prev_codes
+            if new_entries:
+                names = []
+                for code, name, day_cnt, both in watchlist:
+                    if code in new_entries:
+                        tag = "⭐" if both else ""
+                        names.append(f"{tag}{name}({code})")
+                triggers.append(f"순매수 신규진입 {len(new_entries)}종목: {', '.join(names[:5])}")
+            _prev_codes = cur_codes
+
+            # ── 2. 차트 신호 변화 (5분 간격) ───────────────────
+            now_ts = _t.time()
+            if now_ts - _last_chart_check >= 300:
+                _last_chart_check = now_ts
+                top_candidates = [(c, n) for c, n, d, _ in sorted(watchlist, key=lambda x: -x[2])[:8]]
+                for code, name in top_candidates:
+                    try:
+                        sig = calculate_chart_signals(code, name)
+                        bc = sig.get("buy_count", 0)
+                        prev_bc = _prev_signals.get(code, bc)
+                        delta = bc - prev_bc
+                        if delta >= 2 or (bc >= 6 and prev_bc < 6):
+                            tag = "🆙" if delta >= 2 else "🔔"
+                            triggers.append(f"{tag}{name}({code}) 신호 {prev_bc}→{bc}/12")
+                        _prev_signals[code] = bc
+                    except Exception:
+                        pass
+
+            if triggers:
+                reason = "\n".join(triggers)
+                logger.info("스마트 웨이크업 트리거: %s", reason)
+                send_wol()
+                _tg_notify(f"🌟 [스마트 웨이크업]\n{reason}\n→ PC 깨우는 중...")
+
+        except Exception:
+            logger.exception("smart_wakeup_monitor 오류")
 
 
 # ── /mock 자동매매 명령어 처리 ───────────────────────────────────────────────
@@ -1205,8 +1277,8 @@ def get_smart_recommendations():
 
 def generate_chart_png(code: str, name: str, df_daily=None) -> str | None:
     """
-    일봉 데이터로 차트 PNG 생성 (matplotlib 직접 사용).
-    메인: 종가+MA5/20+일목(전환/기준) | RSI | MACD | ADX
+    차트 PNG 생성 — 실제 HTS 설정 기반
+    패널: 메인(종가+후행스팬+선행스팬1/2+MAC채널) | ADX(+PDI+MDI) | RSI(+Signal) | MACD(+Signal)
     """
     try:
         import pandas as pd
@@ -1221,7 +1293,7 @@ def generate_chart_png(code: str, name: str, df_daily=None) -> str | None:
         _fp = fm.FontProperties(fname=_font_path) if os.path.exists(_font_path) else None
         plt.rcParams['axes.unicode_minus'] = False
 
-        # 데이터 준비
+        # ── 데이터 준비 ─────────────────────────────────────────────
         if df_daily is not None and len(df_daily) >= 10:
             df = df_daily.copy()
             df.columns = [c.capitalize() for c in df.columns]
@@ -1240,88 +1312,114 @@ def generate_chart_png(code: str, name: str, df_daily=None) -> str | None:
                 df.index = pd.to_datetime(df.index)
         df = df.dropna()
 
-        close  = df["Close"]
-        high   = df["High"]
-        low    = df["Low"]
-        volume = df["Volume"]
-        x      = range(len(df))
-        dates  = [d.strftime("%m/%d") for d in df.index]
+        close = df["Close"]
+        high  = df["High"]
+        low   = df["Low"]
+        x     = range(len(df))
+        dates = [d.strftime("%m/%d") for d in df.index]
         tick_step = max(1, len(df) // 8)
-        xticks = list(x)[::tick_step]
+        xticks  = list(x)[::tick_step]
         xlabels = dates[::tick_step]
 
-        # 지표 계산
-        ma5    = close.rolling(5).mean()
-        ma20   = close.rolling(20).mean()
-        tenkan = (high.rolling(9).max()  + low.rolling(9).min())  / 2
-        kijun  = (high.rolling(26).max() + low.rolling(26).min()) / 2
+        # ── 지표 계산 ────────────────────────────────────────────────
+        # 일목균형표 (HTS 설정: 전환1 기준1 선행1=1 선행2=2 후행1)
+        tenkan   = (high.rolling(1).max()  + low.rolling(1).min())  / 2   # 전환선(1)
+        kijun    = (high.rolling(1).max()  + low.rolling(1).min())  / 2   # 기준선(1)
+        senkou_a = ((tenkan + kijun) / 2).shift(1)                         # 선행스팬1
+        senkou_b = ((high.rolling(2).max() + low.rolling(2).min()) / 2).shift(1)  # 선행스팬2
 
-        # 신호계산과 동일한 파라미터 사용
-        # 신호계산과 동일한 파라미터 — RSI(6), MACD(5,13,6), ADX(3)
-        rsi       = ta.momentum.rsi(close, window=6)
+        # MAC 채널 (기간5, ±10%)
+        mac_ma   = close.rolling(5).mean()
+        mac_high = high.rolling(5).mean()
+        mac_low  = low.rolling(5).mean()
+        mac_upper = mac_ma * 1.10
+        mac_lower = mac_ma * 0.90
+
+        # RSI(6) + Signal(6)
+        rsi        = ta.momentum.rsi(close, window=6)
+        rsi_signal = rsi.rolling(6).mean()
+
+        # MACD(5,13,6)
         _macd_obj = ta.trend.MACD(close, window_fast=5, window_slow=13, window_sign=6)
         macd_line = _macd_obj.macd()
-        sig_line  = _macd_obj.macd_signal()
-        macd_hist = _macd_obj.macd_diff()
-        adx_ind   = _ta.trend.ADXIndicator(high, low, close, window=3)
-        adx       = adx_ind.adx()
+        macd_sig  = _macd_obj.macd_signal()
 
-        # 그리기
-        fig = plt.figure(figsize=(14, 12), facecolor='white')
-        gs  = gridspec.GridSpec(5, 1, height_ratios=[4, 1, 1.5, 1.5, 1.5], hspace=0.04)
+        # ADX(3) + PDI + MDI
+        adx_ind = _ta.trend.ADXIndicator(high, low, close, window=3)
+        adx     = adx_ind.adx()
+        pdi     = adx_ind.adx_pos()
+        mdi     = adx_ind.adx_neg()
 
-        # ── 메인 패널 (종가 + MA + 일목) ──
+        # ── 레이아웃 ─────────────────────────────────────────────────
+        fig = plt.figure(figsize=(14, 14), facecolor='white')
+        gs  = gridspec.GridSpec(5, 1, height_ratios=[4, 0.8, 1.5, 1.5, 1.5], hspace=0.04)
+
+        _lw = {"lw": 1.0}
+
+        # ── 1. 메인 패널 ─────────────────────────────────────────────
         ax1 = fig.add_subplot(gs[0])
-        ax1.plot(x, close,   color='black',  linewidth=1.2, label='종가')
-        ax1.plot(x, ma5,     color='blue',   linewidth=0.9, label='MA5')
-        ax1.plot(x, ma20,    color='orange', linewidth=0.9, label='MA20')
-        ax1.plot(x, tenkan,  color='red',    linewidth=0.9, linestyle='--', label='전환선')
-        ax1.plot(x, kijun,   color='purple', linewidth=0.9, linestyle='--', label='기준선')
-        ax1.legend(loc='upper left', fontsize=7, prop=_fp)
-        ax1.set_ylabel('가격', fontproperties=_fp, fontsize=9)
-        ax1.set_xticks(xticks); ax1.set_xticklabels([])
-        ax1.grid(True, alpha=0.3)
+        # MAC 채널
+        ax1.plot(x, mac_upper, color='skyblue',  linewidth=0.8, label='MAC Upper', alpha=0.9)
+        ax1.plot(x, mac_lower, color='skyblue',  linewidth=0.8, label='MAC Lower', alpha=0.9)
+        ax1.plot(x, mac_high,  color='orange',   linewidth=0.8, label='High MA',   alpha=0.8)
+        ax1.plot(x, mac_low,   color='orange',   linewidth=0.8, label='Low MA',    alpha=0.8)
+        ax1.fill_between(x, mac_upper, mac_lower, color='skyblue', alpha=0.07)
+        # 기준선 (검정)
+        ax1.plot(x, kijun,    color='black', linewidth=1.0, label='기준선', alpha=0.9)
+        # 선행스팬1 녹색, 선행스팬2 파란색
+        ax1.plot(x, senkou_a, color='green', linewidth=0.9, label='선행1',  alpha=0.9)
+        ax1.plot(x, senkou_b, color='blue',  linewidth=0.9, label='선행2',  alpha=0.9)
+        # 종가 라인
+        ax1.plot(x, close, color='red', linewidth=1.2, label='종가')
         _tk = {"fontproperties": _fp, "fontsize": 12} if _fp else {"fontsize": 12}
         ax1.set_title(f"{name}({code})", **_tk)
+        ax1.legend(loc='upper left', fontsize=6, prop=_fp, ncol=4)
+        ax1.set_xticks(xticks); ax1.set_xticklabels([])
+        ax1.grid(True, alpha=0.2)
 
-        # ── 거래량 ──
+        # ── 2. 거래량 패널 ───────────────────────────────────────────
         ax2 = fig.add_subplot(gs[1], sharex=ax1)
-        colors = ['red' if c >= o else 'blue' for c, o in zip(df['Close'], df['Open'])]
-        ax2.bar(x, volume, color=colors, alpha=0.6, width=0.8)
-        ax2.set_ylabel('거래량', fontproperties=_fp, fontsize=8)
+        vol_colors = ['red' if c >= o else 'blue'
+                      for c, o in zip(df['Close'], df['Open'])]
+        ax2.bar(x, df['Volume'], color=vol_colors, alpha=0.6, width=0.8)
+        ax2.set_ylabel('Vol', fontsize=7)
         ax2.set_xticks(xticks); ax2.set_xticklabels([])
-        ax2.grid(True, alpha=0.3)
+        ax2.yaxis.set_major_formatter(
+            plt.FuncFormatter(lambda v, _: f"{int(v/1000)}K" if v >= 1000 else str(int(v))))
+        ax2.grid(True, alpha=0.15)
 
-        # ── RSI ──
+        # ── 3. ADX 패널 ──────────────────────────────────────────────
         ax3 = fig.add_subplot(gs[2], sharex=ax1)
-        ax3.plot(x, rsi, color='purple', linewidth=1.0)
-        ax3.axhline(70, color='red',  linewidth=0.6, linestyle='--')
-        ax3.axhline(30, color='blue', linewidth=0.6, linestyle='--')
-        ax3.set_ylim(0, 100)
-        ax3.set_ylabel('RSI', fontsize=8)
+        ax3.plot(x, adx, color='green', **_lw, label='ADX')
+        ax3.plot(x, pdi, color='red',   **_lw, label='PDI')
+        ax3.plot(x, mdi, color='blue',  **_lw, label='MDI')
+        ax3.axhline(7, color='red', linewidth=0.6, linestyle='--')
+        ax3.legend(loc='upper left', fontsize=6, ncol=3)
+        ax3.set_ylabel('ADX', fontsize=8)
         ax3.set_xticks(xticks); ax3.set_xticklabels([])
-        ax3.grid(True, alpha=0.3)
+        ax3.grid(True, alpha=0.2)
 
-        # ── MACD ──
+        # ── 4. RSI 패널 ──────────────────────────────────────────────
         ax4 = fig.add_subplot(gs[3], sharex=ax1)
-        ax4.plot(x, macd_line, color='blue', linewidth=1.0, label='MACD')
-        ax4.plot(x, sig_line,  color='red',  linewidth=0.8, label='Signal')
-        hist_colors = ['red' if v >= 0 else 'blue' for v in macd_hist]
-        ax4.bar(x, macd_hist, color=hist_colors, alpha=0.4, width=0.8)
-        ax4.axhline(0, color='gray', linewidth=0.5)
-        ax4.legend(loc='upper left', fontsize=7)
-        ax4.set_ylabel('MACD', fontsize=8)
+        ax4.plot(x, rsi,        color='red',   **_lw, label='RSI(6)')
+        ax4.plot(x, rsi_signal, color='green', **_lw, label='Signal(6)')
+        ax4.axhline(70, color='gray', linewidth=0.5, linestyle='--')
+        ax4.axhline(30, color='gray', linewidth=0.5, linestyle='--')
+        ax4.set_ylim(0, 100)
+        ax4.legend(loc='upper left', fontsize=6, ncol=2)
+        ax4.set_ylabel('RSI', fontsize=8)
         ax4.set_xticks(xticks); ax4.set_xticklabels([])
-        ax4.grid(True, alpha=0.3)
+        ax4.grid(True, alpha=0.2)
 
-        # ── ADX ──
+        # ── 5. MACD 패널 ─────────────────────────────────────────────
         ax5 = fig.add_subplot(gs[4], sharex=ax1)
-        ax5.plot(x, adx, color='green', linewidth=1.0, label='ADX')
-        ax5.axhline(25, color='red', linewidth=0.6, linestyle='--')
-        ax5.legend(loc='upper left', fontsize=7)
-        ax5.set_ylabel('ADX', fontsize=8)
+        ax5.plot(x, macd_line, color='red',   **_lw, label='MACD(5,13)')
+        ax5.plot(x, macd_sig,  color='green', **_lw, label='Signal(6)')
+        ax5.axhline(0, color='gray', linewidth=0.5)
+        ax5.legend(loc='upper left', fontsize=6, ncol=2)
+        ax5.set_ylabel('MACD', fontsize=8)
         ax5.set_xticks(xticks); ax5.set_xticklabels(xlabels, fontsize=7)
-        ax5.grid(True, alpha=0.3)
+        ax5.grid(True, alpha=0.2)
 
         chart_path = os.path.join(os.path.dirname(__file__), f"chart_{code}.png")
         fig.savefig(chart_path, bbox_inches='tight', dpi=100)
@@ -1534,7 +1632,7 @@ def scan_buy_signals_for_chat(months: int = 3, days: int = None) -> str:
     def _one_line(code, name, day_cnt, both, sig, decision):
         star   = "⭐" if both else "  "
         tt     = decision.get("trade_type", "스윙")
-        reason = (decision.get("reason") or "")[:20]
+        reason = (decision.get("reason") or "")[:80]
         bc     = sig["buy_count"]
         mc     = sig.get("minute_count", 0)
         return f"{star}{name}({code}) {bc}/12 단타{mc}/4 [{tt}] 누적{day_cnt}일 — {reason}"
