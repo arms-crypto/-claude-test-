@@ -1453,9 +1453,13 @@ def analyze_chart_for_chat(query: str) -> tuple:
             return f"❌ '{query}' 종목을 찾을 수 없어요. 6자리 코드로 다시 시도해보세요.", None
         name = query
 
-    sig = calculate_chart_signals(code)
+    try:
+        sig = calculate_chart_signals(code)
+    except Exception as _e:
+        logger.warning("calculate_chart_signals 예외 %s: %s", code, _e)
+        sig = None
     if not sig:
-        return f"❌ {name}({code}) 신호 계산 실패. KIS API 연결을 확인하세요.", None
+        return f"❌ {name}({code}) 차트 데이터 조회 실패\n거래소 응답 지연일 수 있어요. 잠시 후 다시 시도해주세요.", None
 
     s = sig.get("signals", {})
     def v(k): return "✅" if s.get(k) else "❌"
@@ -1473,6 +1477,8 @@ def analyze_chart_for_chat(query: str) -> tuple:
 
     # 차트 PNG 생성 → Ollama 비전 분석
     chart_path = generate_chart_png(code, name, df_daily=sig.get("df_daily"))
+    if not chart_path:
+        logger.warning("generate_chart_png 실패: %s", code)
     if chart_path:
         try:
             from llm_client import call_mistral_vision
