@@ -171,19 +171,29 @@ def _calc_adx(df, window=14):
         return None, None, None
 
 
-def _ichimoku_signal(c: "pd.Series") -> bool:
-    """일목균형표 — 주가 > 선행스팬1 > 선행스팬2 (완전 상승 배열) 확인.
-    선행스팬1 = (전환선9 + 기준선26) / 2
-    선행스팬2 = (52일 고+저) / 2
+def _ichimoku_signal(df) -> bool:
+    """일목균형표 — HTS 설정 기준 (전환1/기준1/선행1=1/선행2=2)
+    주가 > 선행스팬1 > 선행스팬2 (상승 배열) 확인.
+    선행스팬1 = (전환선1 + 기준선1) / 2  → shift(1)
+    선행스팬2 = (2기간 고+저) / 2         → shift(1)
     """
-    if len(c) < 52:
+    # df 또는 Series 둘 다 허용 (하위 호환)
+    if hasattr(df, "columns"):
+        c = df["close"]
+        h = df["high"] if "high" in df.columns else c
+        l = df["low"]  if "low"  in df.columns else c
+    else:
+        c = h = l = df  # 구 방식: close만 있는 경우
+    if len(c) < 4:
         return False
-    tenkan   = (c.rolling(9).max()  + c.rolling(9).min())  / 2
-    kijun    = (c.rolling(26).max() + c.rolling(26).min()) / 2
-    senkou_a = (tenkan + kijun) / 2
-    senkou_b = (c.rolling(52).max() + c.rolling(52).min()) / 2
+    tenkan   = (h.rolling(1).max() + l.rolling(1).min()) / 2   # 전환선(1) = (고+저)/2
+    kijun    = (h.rolling(1).max() + l.rolling(1).min()) / 2   # 기준선(1) = 동일
+    senkou_a = ((tenkan + kijun) / 2).shift(1)                  # 선행스팬1
+    senkou_b = ((h.rolling(2).max() + l.rolling(2).min()) / 2).shift(1)  # 선행스팬2
     price    = float(c.iloc[-1])
-    return price > float(senkou_a.iloc[-1]) > float(senkou_b.iloc[-1])
+    sa       = float(senkou_a.iloc[-1])
+    sb       = float(senkou_b.iloc[-1])
+    return price > sa > sb
 
 
 def _ma_signals(df) -> dict:
@@ -219,7 +229,7 @@ def _tf_four_signals(df, label: str, signals: dict):
         signals[f"{label}_rsi_val"]   = signals[f"{label}_macd_val"] = signals[f"{label}_adx_val"] = None
         return
     c = df["close"]
-    signals[f"{label}_일목균형표"] = _ichimoku_signal(c)
+    signals[f"{label}_일목균형표"] = _ichimoku_signal(df)  # HTS 설정(전환1/기준1/선행2) 적용
     adx_v, pdi_v, mdi_v = _calc_adx(df, 3)
     signals[f"{label}_ADX"]     = bool(adx_v and adx_v > 7 and pdi_v > mdi_v)
     signals[f"{label}_adx_val"] = round(adx_v, 1) if adx_v else None
