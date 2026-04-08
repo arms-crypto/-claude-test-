@@ -201,6 +201,34 @@ auto_trade_cycle()  ← 30초 루프, risk_gate → select_volume → buy/sell
 - RSI: **빨강** / Signal: **녹색**
 - 기준선1: 30 / 기준선2: 70
 
+## 2026-04-08 주요 변경사항
+
+### 차트 시스템 완성
+- `generate_chart_png()` — HTS 설정 완전 일치 (5패널: 메인/거래량/ADX/RSI/MACD)
+- `_ichimoku_signal()` — 신호 계산도 HTS 파라미터(전환1/기준1/선행2)로 통일
+- 비전 분석 프롬프트 — 실제 차트 구성(5패널) 명시하여 분석 정확도 향상
+
+### 스캔 속도 개선 (~60초 → ~10초)
+- `scan_mode=True` — 분봉 스킵 (KIS API 7→3 호출/종목)
+- `_ollama_buy_decision` → 신호수 룰 대체 (≥6=BUY / 4~5=HOLD / <4=SELL)
+- `_make_scan_reason()` — 신호 기반 자동 근거 생성
+- `max_workers` 10 (KIS API 레이트 리밋 방지)
+
+### 라우팅 개선
+- 차트 키워드 감지: 공백 버전 추가 + 노이즈 단어 제거 (`해줘`, `부탁해`, `워치리스트` 등)
+- 복합 쿼리 충돌 해결: "워치리스트 + 차트분석" → 차트분석 우선 처리
+- 스캔 결과에서 단타0/4 항목 제거 (분봉 미계산 시 표시 불필요)
+
+### 도구 가드레일 (llm_client.py)
+- ㅋㅋ/ㅎㅎ 등 의성어·감탄사 → 도구 호출 금지
+- 히스토리에 검색 결과 있으면 web_search 재호출 금지
+- get_stock_price에 명확한 종목명/코드만 허용
+
+### 2-stage RAG (proxy_v54.py + rag_store.py)
+- 서버 시작 시 `store_tool_definitions()` — 도구 15개 tool_memory에 저장
+- `smart_wakeup_monitor` 스레드 — 순매수 변동/차트신호 급변 시 PC 자동 웨이크업
+- `_sleep_watcher` — 장중/장외 무관 10분 유휴 시 최대절전
+
 ## 현재 진행 이슈
 - **가상주문 실전API** — 실시간 시세로 가상매매 중, `REAL_TRADE=True` 전환 시 실제 체결
 - **모듈화 예정** — proxy_v54.py → 16개 파일 분리 (안정화 후 진행)
@@ -212,6 +240,8 @@ auto_trade_cycle()  ← 30초 루프, risk_gate → select_volume → buy/sell
 - 단일 파일(proxy_v54.py)로 되돌리기 금지 — 8개 모듈로 분리된 상태 유지
 - `query_portfolio`에 거래내역 라우팅 금지 — `query_trade_history` 사용
 - 분봉 신호를 buy_count(12)에 포함 금지 — 단타타이밍 참고용으로만 표시
+- 일목균형표 파라미터를 표준(9/26/52)으로 되돌리지 말 것 — HTS 설정(전환1/기준1/선행2) 유지
+- `scan_buy_signals_for_chat`에서 `_ollama_buy_decision` 복구 금지 — 신호수 룰로 충분
 
 ## 자주 쓰는 명령
 ```bash

@@ -326,6 +326,85 @@ def search_knowledge(query: str, n_results: int = 3) -> str:
 
 
 # -------------------------
+# 1단계 RAG — 도구 정의 저장/검색 (read-only, 서버 시작 시 1회 저장)
+
+def store_tool_definitions(tools: list) -> int:
+    """
+    _ALL_TOOLS 도구 정의를 tool_memory 컬렉션에 저장.
+    서버 시작 시 1회 호출. 같은 도구명이 있으면 덮어씀.
+    """
+    try:
+        _get_client()
+        tool_col = _client.get_or_create_collection("tool_memory")
+        stored = 0
+        for tool in tools:
+            fn = tool.get("function", tool)
+            name = fn.get("name", "")
+            desc = fn.get("description", "")
+            params = fn.get("parameters", {})
+            if not name:
+                continue
+            # 파라미터 텍스트 직렬화
+            param_lines = []
+            props = params.get("properties", {})
+            required_list = params.get("required", [])
+            for pname, pinfo in props.items():
+                req = "필수" if pname in required_list else "선택"
+                pdesc = pinfo.get("description", "")
+                ptype = pinfo.get("type", "string")
+                param_lines.append(f"  - {pname} ({ptype}, {req}): {pdesc}")
+            text = (f"도구명: {name}\n"
+                    f"설명: {desc}\n"
+                    f"파라미터:\n" + ("\n".join(param_lines) if param_lines else "  없음"))
+            doc_id = f"tool_{name}"
+            try:
+                tool_col.delete(ids=[doc_id])
+            except Exception:
+                pass
+            emb = _embed(text)
+            if emb:
+                tool_col.add(
+                    ids=[doc_id],
+                    embeddings=[emb],
+                    documents=[text],
+                    metadatas=[{"name": name, "description": desc[:200]}],
+                )
+                stored += 1
+        logger.info("도구 RAG 저장 완료: %d개", stored)
+        return stored
+    except Exception as e:
+        logger.error("도구 RAG 저장 실패: %s", e)
+        return 0
+
+
+def search_tools(query: str, n_results: int = 5) -> str:
+    """
+    질문에 관련된 도구 정의를 tool_memory에서 검색해서 텍스트로 반환.
+    tool_memory가 비어있으면 자동으로 _ALL_TOOLS 로딩 시도.
+    """
+    try:
+        _get_client()
+        tool_col = _client.get_or_create_collection("tool_memory")
+        if tool_col.count() == 0:
+            # 지연 초기화
+            try:
+                from llm_client import _ALL_TOOLS
+                store_tool_definitions(_ALL_TOOLS)
+            except Exception as _ie:
+                logger.warning("도구 RAG 지연 초기화 실패: %s", _ie)
+                return ""
+        emb = _embed(query)
+        if not emb:
+            return ""
+        n = min(n_results, tool_col.count())
+        r = tool_col.query(query_embeddings=[emb], n_results=n)
+        return "\n\n".join(r["documents"][0]) if r["documents"][0] else ""
+    except Exception as e:
+        logger.error("도구 RAG 검색 실패: %s", e)
+        return ""
+
+
+# -------------------------
 # 상태 확인
 def rag_status() -> str:
     try:
@@ -333,10 +412,12 @@ def rag_status() -> str:
         news_col  = _client.get_or_create_collection("news_memory")
         trade_col = _client.get_or_create_collection("trade_memory")
         know_col  = _client.get_or_create_collection("knowledge_memory")
+        tool_col  = _client.get_or_create_collection("tool_memory")
         return (f"📚 RAG 저장소\n"
                 f"  뉴스 기억: {news_col.count()}건\n"
                 f"  매매 기억: {trade_col.count()}건\n"
-                f"  지식 베이스: {know_col.count()}건")
+                f"  지식 베이스: {know_col.count()}건\n"
+                f"  도구 정의: {tool_col.count()}개")
     except Exception as e:
         return f"RAG 상태 확인 실패: {e}"
 

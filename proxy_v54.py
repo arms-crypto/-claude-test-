@@ -26,7 +26,7 @@ from llm_client import call_mistral_only
 from search_utils import perplexica_search, search_and_summarize
 from auto_trader import collect_smart_flows, get_smart_recommendations
 from telegram_bots import handle_tg, handle_tg_srv, auto_report_scheduler
-from auto_trader import auto_trade_loop
+from auto_trader import auto_trade_loop, smart_wakeup_monitor
 from mock_trading.telegram_handler import parse_mock_command
 
 # -------------------------
@@ -179,7 +179,19 @@ if __name__ == "__main__":
         except Exception:
             logger.exception("백그라운드 DB 초기화 실패")
 
+    def _init_tool_rag():
+        """서버 시작 시 도구 정의를 RAG tool_memory에 저장 (1단계 RAG 초기화)."""
+        try:
+            time.sleep(3)
+            from rag_store import store_tool_definitions
+            from llm_client import _ALL_TOOLS
+            n = store_tool_definitions(_ALL_TOOLS)
+            logger.info("도구 RAG 초기화 완료: %d개 저장", n)
+        except Exception:
+            logger.exception("도구 RAG 초기화 실패")
+
     threading.Thread(target=_run_db_init_once, daemon=True).start()
+    threading.Thread(target=_init_tool_rag, daemon=True).start()
 
     # 2) 텔레그램 감시 스레드 실행
     threading.Thread(target=handle_tg, daemon=True).start()
@@ -191,15 +203,16 @@ if __name__ == "__main__":
     # 4) 30초 포트폴리오 자동매매 스레드 실행
     threading.Thread(target=auto_trade_loop, daemon=True).start()
 
-    # 5) PC 슬립 워처 — 거래시간 외 10분 유휴 시 자동 최대절전
+    # 4-1) 스마트 웨이크업 모니터 — 순매수 신규진입 + 차트신호 급변 시 PC 자동 웨이크업
+    threading.Thread(target=smart_wakeup_monitor, daemon=True).start()
+
+    # 5) PC 슬립 워처 — 10분 유휴 시 자동 최대절전 (장중/장외 무관)
     def _sleep_watcher():
         import time as _t
         from llm_client import send_sleep
-        from auto_trader import is_trading_hours
         while True:
             _t.sleep(60)
-            if not is_trading_hours():
-                send_sleep(delay_min=10)
+            send_sleep(delay_min=10)  # 장중/장외 무관 — 10분 유휴 시 최대절전
 
     threading.Thread(target=_sleep_watcher, daemon=True).start()
 
