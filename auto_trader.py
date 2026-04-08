@@ -1701,8 +1701,7 @@ def scan_buy_signals_for_chat(months: int = 3, days: int = None) -> str:
         tt     = decision.get("trade_type", "스윙")
         reason = (decision.get("reason") or "")[:80]
         bc     = sig["buy_count"]
-        mc     = sig.get("minute_count", 0)
-        return f"{star}{name}({code}) {bc}/12 단타{mc}/4 [{tt}] 누적{day_cnt}일 — {reason}"
+        return f"{star}{name}({code}) {bc}/12 [{tt}] 누적{day_cnt}일 — {reason}"
 
     if results_buy:
         lines.append(f"✅ 매수 신호 ({len(results_buy)}개)")
