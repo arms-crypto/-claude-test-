@@ -1379,8 +1379,8 @@ def generate_chart_png(code: str, name: str, df_daily=None) -> str | None:
         # 일목균형표 (HTS 설정: 전환1 기준1 선행1=1 선행2=2 후행1)
         tenkan   = (high.rolling(1).max()  + low.rolling(1).min())  / 2   # 전환선(1)
         kijun    = (high.rolling(1).max()  + low.rolling(1).min())  / 2   # 기준선(1)
-        senkou_a = ((tenkan + kijun) / 2).shift(1)                         # 선행스팬1
         senkou_b = ((high.rolling(2).max() + low.rolling(2).min()) / 2).shift(1)  # 선행스팬2
+        chikou   = close.shift(-1)                                          # 후행스팬(1)
 
         # MAC 채널 (기간5, ±10%)
         mac_ma   = close.rolling(5).mean()
@@ -1418,11 +1418,10 @@ def generate_chart_png(code: str, name: str, df_daily=None) -> str | None:
         ax1.plot(x, mac_high,  color='orange',   linewidth=0.8, label='High MA',   alpha=0.8)
         ax1.plot(x, mac_low,   color='orange',   linewidth=0.8, label='Low MA',    alpha=0.8)
         ax1.fill_between(x, mac_upper, mac_lower, color='skyblue', alpha=0.07)
-        # 기준선 (검정)
-        ax1.plot(x, kijun,    color='black', linewidth=1.0, label='기준선', alpha=0.9)
-        # 선행스팬1 녹색, 선행스팬2 파란색
-        ax1.plot(x, senkou_a, color='green', linewidth=0.9, label='선행1',  alpha=0.9)
-        ax1.plot(x, senkou_b, color='blue',  linewidth=0.9, label='선행2',  alpha=0.9)
+        # 기준선 (녹색), 선행스팬2 (보라), 후행스팬 (노랑)  — 선행스팬1 제거
+        ax1.plot(x, kijun,   color='green',  linewidth=1.0, label='기준선', alpha=0.9)
+        ax1.plot(x, senkou_b, color='purple', linewidth=0.9, label='선행2',  alpha=0.9)
+        ax1.plot(x, chikou,  color='yellow', linewidth=0.9, label='후행스팬', alpha=0.85)
         # 종가 라인
         ax1.plot(x, close, color='red', linewidth=1.2, label='종가')
         _tk = {"fontproperties": _fp, "fontsize": 12} if _fp else {"fontsize": 12}
@@ -1582,7 +1581,7 @@ def analyze_chart_for_chat(query: str) -> tuple:
                 + (f"## 과거 유사 패턴\n{rag_pattern}\n\n" if rag_pattern else "")
                 +
                 "## 차트 구성 (5패널)\n"
-                "- 패널1(메인): 종가 라인(빨강) + 기준선(검정, 1기간) + 선행스팬1(녹색) + 선행스팬2(파랑) + MAC채널(하늘색 상/하한±10%, 주황 고/저MA)\n"
+                "- 패널1(메인): 종가 라인(빨강) + 기준선(녹색, 1기간) + 선행스팬2(보라) + 후행스팬(노랑, 1기간) + MAC채널(하늘색 상/하한±10%, 주황 고/저MA)\n"
                 "- 패널2: 거래량 (양봉=빨강, 음봉=파랑)\n"
                 "- 패널3: ADX(녹색)/PDI(빨강)/MDI(파랑), 기준선7\n"
                 "- 패널4: RSI(6,빨강)/Signal(녹색), 기준선30·70\n"
@@ -1590,7 +1589,7 @@ def analyze_chart_for_chat(query: str) -> tuple:
                 "## 분석 방법\n"
                 "위 학습 기법을 현재 차트에 직접 적용해서 분석해줘.\n"
                 "기법에서 말하는 조건이 지금 신호와 일치하는지 하나씩 대조하고:\n"
-                "1. 추세 — 가격과 기준선·스팬1·스팬2 위치 관계 (학습기법 적용)\n"
+                "1. 추세 — 가격과 기준선(녹색)·스팬2(보라)·후행스팬(노랑) 위치 관계 (학습기법 적용)\n"
                 "2. 구간 판단 — 상승초입/상승중/고점권/하락초입/하락중/바닥권 중 어디?\n"
                 "3. 핵심 근거 — 기법과 일치하는 신호 / 기법과 다른 신호\n"
                 "4. 결론 — 매수/관망/매도 + 진입or청산 타이밍"
