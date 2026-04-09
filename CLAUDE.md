@@ -177,12 +177,12 @@ auto_trade_cycle()  ← 30초 루프, risk_gate → select_volume → buy/sell
 
 ### 오버레이 상세 설정 (HTS 기준)
 
-**a. 일목균형표** — 기준1 / 전환1 / 선행1=1 / 선행2=2 / 후행1
+**a. 일목균형표** — 기준1 / 전환1 / 선행2=2
 - 전환선: 제거 (X)
 - 기준선: **녹색**
 - 선행스팬1: 제거 (X)
 - 선행스팬2: **보라색**
-- 후행스팬: **노랑**
+- 후행스팬: 제거 (X)
 - 구름대(fill): 제거 (X)
 
 **b. MAC 채널** — 기간5, 상한율10%, 하한율10%
@@ -200,6 +200,26 @@ auto_trade_cycle()  ← 30초 루프, risk_gate → select_volume → buy/sell
 **e. RSI** — 기간6, Signal6
 - RSI: **빨강** / Signal: **녹색**
 - 기준선1: 30 / 기준선2: 70
+
+## 2026-04-09 주요 변경사항
+
+### 차트 시스템 정리
+- `generate_chart_png()` — 후행스팬(노랑) 제거 완료. 현재 오버레이: 기준선(녹색)+선행스팬2(보라)만
+- `_ichimoku_signal()` — 1% 마진 추가 (`>=sa*0.99`) — period=1 특성상 가격이 선행스팬과 근접 시 위로 간주
+- 비전 분석 프롬프트 — RAG 주입 순서 변경: 차트구성 설명 → RAG (기준선 우선 인식)
+- 비전 결과 후처리 — 컴파일된 regex로 스팬1→선행스팬2, 후행스팬→기준선 교체
+
+### RAG 정비
+- `chart_method_memory` — 스팬1 포함 오염 문서 9개 삭제
+- `learn_chart_method.py` — 학습 질문에서 스팬1 제거, 선행스팬2/기준선으로 통일
+
+### 슬립 타이머 안정화
+- `touch_ollama_request()` — llm_client.py에 헬퍼 추가, 직접 접근 제거
+- `/ping_sleep_timer` — Flask 엔드포인트 (로컬호스트 전용), night_analysis.sh 시작 시 호출
+- `send_sleep()` — 성공 후 타이머 리셋으로 중복 절전 방지
+
+### night_analysis.sh 개선
+- 스캔 결과 4096자 초과 시 Python으로 한글 안전 truncation (MAX_LEN=3900)
 
 ## 2026-04-08 주요 변경사항
 

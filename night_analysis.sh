@@ -14,6 +14,9 @@ send_tg() {
 
 send_tg "📡 [$NOW_KST] 내일 참고용 워치리스트 분석 시작..."
 
+# 슬립 타이머 리셋 — 스캔 중 Ollama 미호출로 PC 절전 방지
+curl -s http://localhost:11435/ping_sleep_timer > /dev/null
+
 RESULT=$(cd "$WORKDIR" && timeout 600 python3 -c "
 from auto_trader import scan_buy_signals_for_chat
 print(scan_buy_signals_for_chat(months=3))
@@ -92,9 +95,16 @@ $PREP}$FOOTER"
     if [ ${#COMBINED} -le 4000 ]; then
         send_tg "$COMBINED"
     else
+        # 스캔 결과 자체가 길면 앞부분만 전송 (Python으로 한글 멀티바이트 안전 처리)
+        MAX_LEN=3900
+        RESULT_SHORT=$(python3 -c "
+import sys
+s = sys.stdin.read()
+print(s[:${MAX_LEN}] + ('\n...(생략)' if len(s) > ${MAX_LEN} else ''))
+" <<< "$RESULT")
         send_tg "🌙 [내일 참고] 외국인+기관 워치리스트 분석
 
-$RESULT$FOOTER"
+$RESULT_SHORT$FOOTER"
         [ -n "$PREP" ] && send_tg "📋 [내일 분석 준비]
 $PREP"
     fi

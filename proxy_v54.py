@@ -43,6 +43,16 @@ def health():
     return jsonify({"status": "ok"}), 200
 
 
+@app.route('/ping_sleep_timer', methods=['GET'])
+def ping_sleep_timer():
+    """야간 배치 등 Ollama 미사용 작업 시작 전 슬립 타이머 리셋용 (로컬호스트 전용)"""
+    if request.remote_addr not in ('127.0.0.1', '::1'):
+        return jsonify({"error": "forbidden"}), 403
+    from llm_client import touch_ollama_request
+    touch_ollama_request()
+    return jsonify({"status": "ok", "reset": True}), 200
+
+
 @app.route('/ask', methods=['POST'])
 def ask():
     msg = request.json.get("message", "")

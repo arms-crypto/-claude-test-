@@ -14,6 +14,11 @@ collect_smart_flows(), get_smart_recommendations()
 import os
 import re
 import json
+
+# 비전 분석 후처리 — 베이스 모델 환각 교정 (선행스팬1 없음)
+_RE_SPAN1 = re.compile(r'선행스팬\s*1')
+_RE_SPAN_1 = re.compile(r'스팬\s*1')
+_RE_HUIHAENG = re.compile(r'후행스팬')
 import datetime
 import requests
 import pandas as pd
@@ -193,7 +198,8 @@ def _ichimoku_signal(df) -> bool:
     price    = float(c.iloc[-1])
     sa       = float(senkou_a.iloc[-1])
     sb       = float(senkou_b.iloc[-1])
-    return price > sa > sb
+    # 1% 마진 — period=1 특성상 가격이 선행스팬과 근접하면 위로 간주
+    return price >= sa * 0.99 and sa >= sb * 0.99
 
 
 def _ma_signals(df) -> dict:
@@ -1418,10 +1424,9 @@ def generate_chart_png(code: str, name: str, df_daily=None) -> str | None:
         ax1.plot(x, mac_high,  color='orange',   linewidth=0.8, label='High MA',   alpha=0.8)
         ax1.plot(x, mac_low,   color='orange',   linewidth=0.8, label='Low MA',    alpha=0.8)
         ax1.fill_between(x, mac_upper, mac_lower, color='skyblue', alpha=0.07)
-        # 기준선 (녹색), 선행스팬2 (보라), 후행스팬 (노랑)  — 선행스팬1 제거
+        # 기준선 (녹색), 선행스팬2 (보라)  — 선행스팬1·후행스팬 제거
         ax1.plot(x, kijun,   color='green',  linewidth=1.0, label='기준선', alpha=0.9)
         ax1.plot(x, senkou_b, color='purple', linewidth=0.9, label='선행2',  alpha=0.9)
-        ax1.plot(x, chikou,  color='yellow', linewidth=0.9, label='후행스팬', alpha=0.85)
         # 종가 라인
         ax1.plot(x, close, color='red', linewidth=1.2, label='종가')
         _tk = {"fontproperties": _fp, "fontsize": 12} if _fp else {"fontsize": 12}
@@ -1577,25 +1582,31 @@ def analyze_chart_for_chat(query: str) -> tuple:
             vision_prompt = (
                 f"이 종목은 {name}({code})이야. 아래 기술적 신호 데이터도 참고해.\n\n"
                 f"{signal_summary}\n"
-                + (f"## Ollama 학습 기법\n{rag_method}\n\n" if rag_method else "")
-                + (f"## 과거 유사 패턴\n{rag_pattern}\n\n" if rag_pattern else "")
-                +
-                "## 차트 구성 (5패널)\n"
-                "- 패널1(메인): 종가 라인(빨강) + 기준선(녹색, 1기간) + 선행스팬2(보라) + 후행스팬(노랑, 1기간) + MAC채널(하늘색 상/하한±10%, 주황 고/저MA)\n"
+                "## 차트 구성 (5패널) — 반드시 이 설명을 기준으로 분석할 것\n"
+                "- 패널1(메인): 종가 라인(빨강) + 기준선(녹색, 1기간) + 선행스팬2(보라) + MAC채널(하늘색 상/하한±10%, 주황 고/저MA)\n"
+                "  ※ 이 차트에는 선행스팬1·후행스팬이 없습니다. 녹색=기준선, 보라=선행스팬2 — 이 2가지만 존재. '스팬1'·'후행스팬'은 절대 언급하지 마세요.\n"
                 "- 패널2: 거래량 (양봉=빨강, 음봉=파랑)\n"
                 "- 패널3: ADX(녹색)/PDI(빨강)/MDI(파랑), 기준선7\n"
                 "- 패널4: RSI(6,빨강)/Signal(녹색), 기준선30·70\n"
                 "- 패널5: MACD(5,13,빨강)/Signal(6,녹색), 기준선0\n\n"
+                + (f"## Ollama 학습 기법 (참고용 — 위 차트 구성 우선)\n{rag_method}\n\n" if rag_method else "")
+                + (f"## 과거 유사 패턴\n{rag_pattern}\n\n" if rag_pattern else "")
+                +
                 "## 분석 방법\n"
                 "위 학습 기법을 현재 차트에 직접 적용해서 분석해줘.\n"
+                "기법에서 '스팬1'·'후행스팬'을 언급해도 이 차트에는 없으니 무시하고, 기준선/선행스팬2로만 판단해.\n"
                 "기법에서 말하는 조건이 지금 신호와 일치하는지 하나씩 대조하고:\n"
-                "1. 추세 — 가격과 기준선(녹색)·스팬2(보라)·후행스팬(노랑) 위치 관계 (학습기법 적용)\n"
+                "1. 추세 — 가격과 기준선(녹색)·선행스팬2(보라) 위치 관계 (학습기법 적용)\n"
                 "2. 구간 판단 — 상승초입/상승중/고점권/하락초입/하락중/바닥권 중 어디?\n"
                 "3. 핵심 근거 — 기법과 일치하는 신호 / 기법과 다른 신호\n"
                 "4. 결론 — 매수/관망/매도 + 진입or청산 타이밍"
             )
             vision_result = call_mistral_vision(vision_prompt, chart_path)
             if vision_result and len(vision_result) > 30:
+                # 베이스 모델 환각 후처리 — 이 차트에 없는 선행스팬1·후행스팬 언급 제거
+                vision_result = _RE_SPAN1.sub('선행스팬2', vision_result)
+                vision_result = _RE_SPAN_1.sub('선행스팬2', vision_result)
+                vision_result = _RE_HUIHAENG.sub('기준선', vision_result)
                 return (
                     f"📊 {name}({code}) 차트 분석 (비전)\n\n"
                     f"{signal_summary}"

@@ -63,6 +63,11 @@ import time as _time_mod
 _last_ollama_request = [_time_mod.time()]  # 마지막 Ollama 요청 시각 (시작 시각으로 초기화)
 
 
+def touch_ollama_request():
+    """슬립 타이머 리셋 — Ollama 비사용 작업(스캔 등) 시작 전 호출"""
+    _last_ollama_request[0] = _time_mod.time()
+
+
 def send_sleep(delay_min: int = 5):
     """
     PC에 최대절전(hibernate) 명령 전송.
@@ -83,6 +88,7 @@ def send_sleep(delay_min: int = 5):
         )
         if result.returncode == 0:
             logger.info("PC 최대절전 명령 전송 완료")
+            touch_ollama_request()  # 재전송 방지
             return True
         logger.warning("최대절전 명령 실패: %s", result.stderr.decode()[:100])
     except Exception as e:
