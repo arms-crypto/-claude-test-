@@ -714,7 +714,7 @@ def _ollama_sell_decision(code: str, name: str, pnl: float, qty: int,
                           trade_type: str = "스윙") -> dict:
     """
     Ollama에게 매도 여부 + 다음 확인 시각 판단 요청.
-    trade_type: "단타"(당일청산, 익절+2%/손절-1%) | "스윙"(익절+5%/손절-3%)
+    trade_type: "단타"(당일청산, 익절+2%/손절-1%) | "스윙"(익절+5%/손절-2%)
     반환: {"action": "HOLD"|"SELL_PARTIAL"|"SELL_ALL",
            "ratio": 0.0~1.0, "reason": str, "check_after": int(분)}
     실패/타임아웃 시 폴백 룰 적용.
@@ -769,6 +769,7 @@ def _ollama_sell_decision(code: str, name: str, pnl: float, qty: int,
            "\n"
            if trade_type == "단타" else
            "\n판단 기준 (스윙 — 수일 보유 가능):\n"
+           "- 익절 목표 +5%, 손절 -2%\n"
            "- 변동성 크면 섣불리 손절 말고 추세 확인\n"
            "- HOLD 시 check_after 5~30분\n"
            "- 추세 꺾이거나 손실 확대 중이면 SELL\n\n")
@@ -811,8 +812,8 @@ def _ollama_sell_decision(code: str, name: str, pnl: float, qty: int,
     else:
         if pnl >= 5:
             return {"action": "SELL_PARTIAL", "ratio": 0.3, "check_after": 10, "reason": "폴백 스윙 +5% 익절"}
-        if pnl <= -3:
-            return {"action": "SELL_ALL",     "ratio": 1.0, "check_after": 0,  "reason": "폴백 스윙 -3% 손절"}
+        if pnl <= -2:  # -3% → -2% 강화
+            return {"action": "SELL_ALL",     "ratio": 1.0, "check_after": 0,  "reason": "폴백 스윙 -2% 손절"}
         return     {"action": "HOLD",         "ratio": 0.0, "check_after": 15, "reason": "폴백 스윙 유지"}
 
 
@@ -874,7 +875,11 @@ def auto_trade_cycle():
 
                 if action == "SELL_PARTIAL":
                     sell_qty = max(1, int(qty * ratio))
-                    result   = sell_mock(code, sell_qty, reason=f"Ollama: {reason}")
+                    # 남은 수량이 1주 이하면 전량 매도 (수수료 낭비 방지)
+                    if sell_qty >= qty or (qty - sell_qty) <= 1:
+                        action   = "SELL_ALL"
+                        sell_qty = qty
+                    result   = sell_mock(code, sell_qty if action == "SELL_PARTIAL" else None, reason=f"Ollama: {reason}")
                     emoji    = "🤑" if pnl >= 0 else "🟡"
                     logger.info("%s 부분매도 %s(%s): %+.1f%% %d주 [%s]",
                                 emoji, name, code, pnl, sell_qty, reason)
