@@ -1780,7 +1780,8 @@ def scan_buy_signals_for_chat(months: int = 3, days: int = None) -> str:
     lines = [f"📊 외국인+기관 워치리스트 {len(candidates)}종목 스캔 (최근 {period_label} 누적)\n"]
 
     def _one_line(code, name, day_cnt, both, sig, decision):
-        from mock_trading.kis_client import is_nxt_supported, is_nxt_hours
+        from mock_trading.kis_client import is_nxt_supported
+        from auto_trader import is_nxt_hours
         star   = "⭐" if both else "  "
         tt     = decision.get("trade_type", "스윙")
         reason = (decision.get("reason") or "")[:80]
