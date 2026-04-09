@@ -405,6 +405,75 @@ def search_tools(query: str, n_results: int = 5) -> str:
 
 
 # -------------------------
+# Ollama 자율 학습 기법 검색 (learn_chart_method.py로 구축)
+def search_chart_method(query: str, n_results: int = 3) -> str:
+    """
+    Ollama가 스스로 발견한 차트 분석 기법을 검색.
+    매매/분석 시 참고용.
+    """
+    try:
+        _get_client()
+        col = _client.get_or_create_collection("chart_method_memory")
+        if col.count() == 0:
+            return ""
+        emb = _embed(query[:1000])
+        if not emb:
+            return ""
+        n = min(n_results, col.count())
+        r = col.query(query_embeddings=[emb], n_results=n)
+        results = []
+        for doc, meta in zip(r["documents"][0], r["metadatas"][0]):
+            cat = meta.get("category", "")
+            sec = meta.get("sector", "전체")
+            results.append(f"[학습기법/{cat}/{sec}]\n{doc}")
+        return "\n\n".join(results) if results else ""
+    except Exception as e:
+        logger.error("기법 검색 실패: %s", e)
+        return ""
+
+
+# -------------------------
+# 차트 패턴 검색 (build_signal_history.py로 구축된 학습 데이터)
+def search_chart_pattern(query: str, n_results: int = 5) -> str:
+    """
+    현재 신호 상황과 유사한 과거 패턴을 chart_pattern_memory에서 검색.
+    스캔/분석 시 Ollama가 참고할 과거 사례 반환.
+    """
+    try:
+        _get_client()
+        pat_col = _client.get_or_create_collection("chart_pattern_memory")
+        stat_col = _client.get_or_create_collection("chart_pattern_stats")
+
+        if pat_col.count() == 0 and stat_col.count() == 0:
+            return ""
+
+        emb = _embed(query[:2000])
+        if not emb:
+            return ""
+
+        results = []
+
+        # 1. 통계 요약 먼저 (패턴 조합별 승률)
+        if stat_col.count() > 0:
+            n = min(3, stat_col.count())
+            r = stat_col.query(query_embeddings=[emb], n_results=n)
+            for doc in r["documents"][0]:
+                results.append(f"[과거패턴통계]\n{doc}")
+
+        # 2. 개별 사례 (유사 상황)
+        if pat_col.count() > 0:
+            n = min(n_results, pat_col.count())
+            r = pat_col.query(query_embeddings=[emb], n_results=n)
+            for doc, meta in zip(r["documents"][0], r["metadatas"][0]):
+                results.append(f"[유사사례 {meta.get('date','')} {meta.get('name','')}]\n{doc}")
+
+        return "\n\n".join(results) if results else ""
+    except Exception as e:
+        logger.error("차트패턴 검색 실패: %s", e)
+        return ""
+
+
+# -------------------------
 # 상태 확인
 def rag_status() -> str:
     try:
@@ -413,11 +482,15 @@ def rag_status() -> str:
         trade_col = _client.get_or_create_collection("trade_memory")
         know_col  = _client.get_or_create_collection("knowledge_memory")
         tool_col  = _client.get_or_create_collection("tool_memory")
+        pat_col   = _client.get_or_create_collection("chart_pattern_memory")
+        stat_col  = _client.get_or_create_collection("chart_pattern_stats")
         return (f"📚 RAG 저장소\n"
                 f"  뉴스 기억: {news_col.count()}건\n"
                 f"  매매 기억: {trade_col.count()}건\n"
                 f"  지식 베이스: {know_col.count()}건\n"
-                f"  도구 정의: {tool_col.count()}개")
+                f"  도구 정의: {tool_col.count()}개\n"
+                f"  차트패턴 학습: {pat_col.count()}건\n"
+                f"  패턴통계: {stat_col.count()}건")
     except Exception as e:
         return f"RAG 상태 확인 실패: {e}"
 

@@ -158,6 +158,19 @@ def get_best_price(code: str) -> int:
     return _price_kis(code) or get_nxt_price(code) or _price_yahoo(code) or _price_naver(code)
 
 
+# NXT 지원 여부 캐시 (종목코드 → True/False)
+_nxt_support_cache: dict = {}
+
+def is_nxt_supported(code: str) -> bool:
+    """종목이 NXT(넥스트트레이드) 지원 여부 확인. 캐시 적용."""
+    if code in _nxt_support_cache:
+        return _nxt_support_cache[code]
+    result = get_nxt_price(code) is not None
+    _nxt_support_cache[code] = result
+    logger.debug("NXT 지원 %s: %s", code, result)
+    return result
+
+
 def _order_headers(tr_id: str) -> dict:
     token = get_token()
     return {
@@ -175,6 +188,11 @@ def buy_stock(code: str, qty: int, price: int = 0) -> dict:
     price=0 → 시장가, price>0 → 지정가
     반환: {"success": bool, "order_no": str, "msg": str}
     """
+    # NXT 시간에 KRX 전용 종목은 주문 불가
+    if is_nxt_hours() and not is_nxt_supported(code):
+        logger.warning("NXT 시간 KRX전용 종목 매수 차단: %s", code)
+        return {"success": False, "order_no": "", "msg": f"NXT 미지원 종목 — KRX 시간에만 거래 가능"}
+
     if not REAL_TRADE:
         cur = _price_kis(code) or _price_yahoo(code) or _price_naver(code) or price
         logger.info("가상 매수 %s %d주 @%d (REAL_TRADE=False)", code, qty, cur)

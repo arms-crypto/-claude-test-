@@ -391,6 +391,13 @@ def sell_mock(code: str, qty: int, reason: str = "") -> str:
     pool   = get_db_pool()
     result = mt.sell(code, qty, oracle_pool=pool)
     logger.info("[자동매매] SELL %s qty=%s %s → %s", code, qty, reason, result[:60])
+    # 피드백 루프: 익절이면 기법 신뢰도 UP, 손절이면 DOWN
+    try:
+        from learn_chart_method import update_method_trust
+        correct = "익절" in reason or "목표" in reason
+        update_method_trust("종합_매매기법", correct)
+    except Exception:
+        pass
     return result
 
 
@@ -752,6 +759,16 @@ def _ollama_sell_decision(code: str, name: str, pnl: float, qty: int,
                    f"매수신호={sig['buy_count']}/12")
 
     rag_sell = _rag_trade_history(code, sig or {})
+
+    # 학습된 기법 조회
+    rag_method_sell = ""
+    try:
+        from rag_store import search_chart_method
+        rag_method_sell = search_chart_method(
+            f"하락 매도 익절 손절 타이밍 {trade_type}", n_results=2)
+    except Exception:
+        pass
+
     kst_time_str = datetime.datetime.now(pytz.timezone("Asia/Seoul")).strftime("%H:%M")
     prompt = (
         f"종목: {name}({code})\n"
@@ -760,6 +777,7 @@ def _ollama_sell_decision(code: str, name: str, pnl: float, qty: int,
         f"오늘 변동폭: {day_range_pct:.1f}% | ATR5: {atr5_pct:.1f}%\n"
         f"차트: {sig_txt}\n"
         f"보유일수: {hold_days}일\n"
+        + (f"[학습된 매도 기법]\n{rag_method_sell}\n" if rag_method_sell else "")
         + (rag_sell + "\n" if rag_sell else "")
         + f"\n전략: {trade_type}\n"
         + ("\n판단 기준 (단타 — 당일 청산 목표):\n"
@@ -839,7 +857,23 @@ def auto_trade_cycle():
 
     # ── 1. 보유종목 관리 ─────────────────────────────────────────────
     try:
+        from mock_trading.kis_client import REAL_TRADE, get_balance
         holdings = _get_auto_mt()._get_holdings()
+
+        # 실전 매매 시 KIS API 실제 평균단가로 덮어쓰기
+        # portfolio.db와 실제 체결 단가가 다를 수 있음 (분할매수/정정 등)
+        if REAL_TRADE:
+            try:
+                kis_bal = get_balance()
+                kis_avg = {h["code"]: h["avg_price"] for h in kis_bal.get("holdings", [])}
+                holdings = [
+                    (code, name, qty, kis_avg.get(code, avg_price))
+                    for code, name, qty, avg_price in holdings
+                ]
+                logger.debug("실전 평균단가 적용: %s", kis_avg)
+            except Exception as _be:
+                logger.warning("KIS 평균단가 조회 실패, DB값 사용: %s", _be)
+
         for code, name, qty, avg_price in holdings:
             try:
                 current = get_price(code)
@@ -1495,6 +1529,45 @@ def analyze_chart_for_chat(query: str) -> tuple:
         f"ADX={sig.get('adx','?'):.1f} MACD히스트={sig.get('macd_hist','?')}\n\n"
     )
 
+    # Ollama 자율 학습 기법 조회 (chart_method_memory)
+    rag_method = ""
+    try:
+        from rag_store import search_chart_method
+        sector = next((v for k, v in {
+            "005930": "반도체", "000660": "반도체",
+            "005380": "자동차", "068270": "바이오",
+            "035720": "IT플랫폼", "105560": "금융",
+        }.items() if k == code), "전체")
+        method_query = f"{sector} 차트분석 기법 상승 하락 일목균형 월봉 주봉"
+        rag_method = search_chart_method(method_query, n_results=2)
+    except Exception as _me:
+        logger.debug("기법 RAG 조회 실패: %s", _me)
+
+    # RAG 과거 패턴 조회 (chart_pattern_memory)
+    rag_pattern = ""
+    try:
+        from rag_store import search_chart_pattern
+        # 현재 신호 상황을 쿼리 텍스트로 변환
+        s = sig.get("signals", {})
+        def _pos(tf, line):
+            # price_vs_kijun 방향 텍스트 생성
+            ichi = s.get(f"{tf}_일목균형표")
+            rsi  = s.get(f"{tf}_rsi_val")
+            macd = s.get(f"{tf}_macd_val")
+            return (f"{line}: 기준선{'위' if ichi else '아래'} "
+                    f"RSI:{rsi:.0f}" if rsi else f"{line}: 기준선{'위' if ichi else '아래'}")
+        rag_query = (
+            f"종목:{name} "
+            f"월봉:기준선{'위' if s.get('월봉_일목균형표') else '아래'} "
+            f"주봉:기준선{'위' if s.get('주봉_일목균형표') else '아래'} "
+            f"일봉:기준선{'위' if s.get('일봉_일목균형표') else '아래'} "
+            f"MA:{'정배열' if s.get('일봉_정배열') else '역배열'} "
+            f"신호:{sig['buy_count']}/12"
+        )
+        rag_pattern = search_chart_pattern(rag_query, n_results=3)
+    except Exception as _re2:
+        logger.debug("RAG 패턴 조회 실패: %s", _re2)
+
     # 차트 PNG 생성 → Ollama 비전 분석
     chart_path = generate_chart_png(code, name, df_daily=sig.get("df_daily"))
     if not chart_path:
@@ -1505,17 +1578,22 @@ def analyze_chart_for_chat(query: str) -> tuple:
             vision_prompt = (
                 f"이 종목은 {name}({code})이야. 아래 기술적 신호 데이터도 참고해.\n\n"
                 f"{signal_summary}\n"
+                + (f"## Ollama 학습 기법\n{rag_method}\n\n" if rag_method else "")
+                + (f"## 과거 유사 패턴\n{rag_pattern}\n\n" if rag_pattern else "")
+                +
                 "## 차트 구성 (5패널)\n"
                 "- 패널1(메인): 종가 라인(빨강) + 기준선(검정, 1기간) + 선행스팬1(녹색) + 선행스팬2(파랑) + MAC채널(하늘색 상/하한±10%, 주황 고/저MA)\n"
                 "- 패널2: 거래량 (양봉=빨강, 음봉=파랑)\n"
                 "- 패널3: ADX(녹색)/PDI(빨강)/MDI(파랑), 기준선7\n"
                 "- 패널4: RSI(6,빨강)/Signal(녹색), 기준선30·70\n"
                 "- 패널5: MACD(5,13,빨강)/Signal(6,녹색), 기준선0\n\n"
-                "위 차트를 보고 다음 형식으로 분석해줘:\n"
-                "1. 추세 — 종가와 기준선·MAC채널의 위치 관계, 선행스팬1/2 방향\n"
-                "2. 모멘텀 — ADX 강도(7 이상=추세 유효), RSI 과매수/과매도, MACD 크로스 여부\n"
-                "3. 거래량 — 최근 거래량 증감 특이사항\n"
-                "4. 판단 — 매수/관망/매도 + 2줄 근거"
+                "## 분석 방법\n"
+                "위 학습 기법을 현재 차트에 직접 적용해서 분석해줘.\n"
+                "기법에서 말하는 조건이 지금 신호와 일치하는지 하나씩 대조하고:\n"
+                "1. 추세 — 가격과 기준선·스팬1·스팬2 위치 관계 (학습기법 적용)\n"
+                "2. 구간 판단 — 상승초입/상승중/고점권/하락초입/하락중/바닥권 중 어디?\n"
+                "3. 핵심 근거 — 기법과 일치하는 신호 / 기법과 다른 신호\n"
+                "4. 결론 — 매수/관망/매도 + 진입or청산 타이밍"
             )
             vision_result = call_mistral_vision(vision_prompt, chart_path)
             if vision_result and len(vision_result) > 30:
@@ -1702,11 +1780,15 @@ def scan_buy_signals_for_chat(months: int = 3, days: int = None) -> str:
     lines = [f"📊 외국인+기관 워치리스트 {len(candidates)}종목 스캔 (최근 {period_label} 누적)\n"]
 
     def _one_line(code, name, day_cnt, both, sig, decision):
+        from mock_trading.kis_client import is_nxt_supported, is_nxt_hours
         star   = "⭐" if both else "  "
         tt     = decision.get("trade_type", "스윙")
         reason = (decision.get("reason") or "")[:80]
         bc     = sig["buy_count"]
-        return f"{star}{name}({code}) {bc}/12 [{tt}] 누적{day_cnt}일 — {reason}"
+        nxt_tag = ""
+        if is_nxt_hours():
+            nxt_tag = " [KRX+NXT]" if is_nxt_supported(code) else " [KRX전용]"
+        return f"{star}{name}({code}) {bc}/12 [{tt}]{nxt_tag} 누적{day_cnt}일 — {reason}"
 
     if results_buy:
         lines.append(f"✅ 매수 신호 ({len(results_buy)}개)")
