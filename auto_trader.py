@@ -226,7 +226,7 @@ def _ma_signals(df) -> dict:
 def _tf_four_signals(df, label: str, signals: dict):
     """
     단일 타임프레임 DataFrame → 4개 지표 계산 후 signals dict에 기록.
-    지표: 일목균형표(9/26/52) | ADX(3) PDI>MDI | RSI(6) 30~70 | MACD(5,13,6) > 0
+    지표: 일목균형표(9/26/52) | ADX(3) PDI>MDI | RSI(6) > 50 | MACD(5,13,6) > 0
     """
     if df is None or len(df) < 6:
         signals[f"{label}_일목균형표"] = signals[f"{label}_ADX"] = \
@@ -1749,11 +1749,11 @@ def analyze_chart_for_chat(query: str) -> tuple:
     except Exception:
         logger.warning("analyze_chart_for_chat Ollama 판단 실패 %s", code)
 
-    # 폴백: 신호 수로 단순 판단
+    # 폴백: 신호 수로 단순 판단 (BUY>=6, HOLD 4-5, SELL<4 — /12 기준)
     cnt = sig['buy_count']
-    if cnt >= 10:
+    if cnt >= 6:
         action_str = "📈 매수"
-    elif cnt >= 6:
+    elif cnt >= 4:
         action_str = "⏸ 관망"
     else:
         action_str = "📉 매도"
