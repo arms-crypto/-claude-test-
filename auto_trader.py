@@ -1246,7 +1246,7 @@ def smart_wakeup_monitor():
                 top_candidates = [(c, n) for c, n, d, _ in sorted(watchlist, key=lambda x: -x[2])[:8]]
                 for code, name in top_candidates:
                     try:
-                        sig = calculate_chart_signals(code, name)
+                        sig = calculate_chart_signals(code)
                         bc = sig.get("buy_count", 0)
                         prev_bc = _prev_signals.get(code, bc)
                         delta = bc - prev_bc
