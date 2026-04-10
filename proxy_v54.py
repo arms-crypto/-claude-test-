@@ -203,6 +203,13 @@ if __name__ == "__main__":
     threading.Thread(target=_run_db_init_once, daemon=True).start()
     threading.Thread(target=_init_tool_rag, daemon=True).start()
 
+    # 3) 업종 파라미터 로드
+    try:
+        import sector_params
+        sector_params.load()
+    except Exception:
+        logger.exception("sector_params 로드 실패")
+
     # 2) 텔레그램 감시 스레드 실행
     threading.Thread(target=handle_tg, daemon=True).start()
     threading.Thread(target=handle_tg_srv, daemon=True).start()

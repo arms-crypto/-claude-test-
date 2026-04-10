@@ -195,11 +195,10 @@ def _ichimoku_signal(df) -> bool:
     kijun    = (h.rolling(1).max() + l.rolling(1).min()) / 2   # 기준선(1) = 동일
     senkou_a = ((tenkan + kijun) / 2).shift(1)                  # 선행스팬1
     senkou_b = ((h.rolling(2).max() + l.rolling(2).min()) / 2).shift(1)  # 선행스팬2
-    price    = float(c.iloc[-1])
-    sa       = float(senkou_a.iloc[-1])
-    sb       = float(senkou_b.iloc[-1])
-    # 1% 마진 — period=1 특성상 가격이 선행스팬과 근접하면 위로 간주
-    return price >= sa * 0.99 and sa >= sb * 0.99
+    price = float(c.iloc[-1])
+    kj    = float(kijun.iloc[-1])   # 차트에 보이는 기준선(녹색) 현재값
+    # 가격이 차트 기준선(녹색) 위에 있는지만 확인 — 시각적 일치
+    return price >= kj * 0.99
 
 
 def _ma_signals(df) -> dict:
@@ -542,6 +541,56 @@ def _classify_trade_type(sig: dict) -> str:
     return "단타" if score_3min >= 3 else "스윙"
 
 
+
+# 종목코드 → 업종 역방향 맵 (train_sector_kis.py SECTOR_STOCKS 기반)
+_CODE_TO_SECTOR = {
+    # 반도체
+    "005930": "반도체", "000660": "반도체", "042700": "반도체",
+    "336370": "반도체", "240810": "반도체",
+    # 방산
+    "012450": "방산",   "079550": "방산",   "064350": "방산",   "047050": "방산",
+    # 자동차
+    "005380": "자동차", "000270": "자동차", "012330": "자동차",
+    "011210": "자동차", "161390": "자동차",
+    # 2차전지
+    "373220": "2차전지","006400": "2차전지","247540": "2차전지",
+    "086520": "2차전지","096530": "2차전지","278280": "2차전지",
+    # 바이오
+    "207940": "바이오", "068270": "바이오", "128940": "바이오",
+    "196170": "바이오", "028300": "바이오", "141080": "바이오",
+    # IT플랫폼
+    "035420": "IT플랫폼","035720": "IT플랫폼","018260": "IT플랫폼",
+    "259960": "IT플랫폼","036570": "IT플랫폼",
+    # 금융
+    "105560": "금융",   "055550": "금융",   "086790": "금융",
+    "316140": "금융",   "032830": "금융",   "000810": "금융",
+    # 철강/소재
+    "005490": "철강/소재","004020": "철강/소재","010060": "철강/소재",
+    "011000": "철강/소재","002380": "철강/소재",
+    # 건설
+    "000720": "건설",   "047040": "건설",   "006360": "건설",
+    "000080": "건설",   "008770": "건설",
+    # 에너지
+    "096770": "에너지", "010950": "에너지", "015760": "에너지", "267250": "에너지",
+    # 조선/해운
+    "009540": "조선/해운","042660": "조선/해운","010140": "조선/해운",
+    "011200": "조선/해운","000120": "조선/해운",
+    # 반도체장비/소재
+    "403870": "반도체장비/소재","079940": "반도체장비/소재","357780": "반도체장비/소재",
+    "285130": "반도체장비/소재","166090": "반도체장비/소재",
+    # 게임/엔터
+    "041510": "게임/엔터","035900": "게임/엔터","352820": "게임/엔터",
+    # 유통/소비
+    "139480": "유통/소비","004170": "유통/소비","069960": "유통/소비",
+    "007310": "유통/소비","271560": "유통/소비",
+    # 통신
+    "017670": "통신",   "030200": "통신",   "032640": "통신",
+    # ETF
+    "069500": "ETF", "122630": "ETF", "229200": "ETF",
+    "396500": "ETF", "494310": "ETF", "462330": "ETF", "267270": "ETF",
+}
+
+
 def _ollama_buy_decision(code: str, name: str, sig: dict) -> dict:
     """
     PC Ollama(mistral)에게 매수 여부 + 전략 유형 판단 요청.
@@ -559,30 +608,66 @@ def _ollama_buy_decision(code: str, name: str, sig: dict) -> dict:
     정배열  = "✅" if s.get("일봉_정배열")   else "❌"
     가격위치 = "✅" if s.get("일봉_가격위치") else "❌"
 
+    # 업종별 학습 기법 RAG 조회 (chart_method_memory) — 섹터 필터 우선
+    sector = _CODE_TO_SECTOR.get(code, "전체")
+    rag_method = ""
+    try:
+        from rag_store import search_chart_method
+        rag_method = search_chart_method(
+            f"상승진입기법 하락경계 타임프레임신뢰도", n_results=3, sector=sector
+        )
+    except Exception as _me:
+        logger.debug("업종 RAG 조회 실패: %s", _me)
+
+    # 업종 파라미터 로드 (없거나 오래됐으면 백그라운드 자동 학습 트리거)
+    _sp = {}
+    try:
+        import sector_params as _sp_mod
+        _sp = _sp_mod.get(sector)
+    except Exception as _spe:
+        logger.debug("sector_params 조회 실패: %s", _spe)
+
     prompt = (
-        f"종목: {name}({code}) | 총신호={sig['buy_count']}/12\n\n"
+        f"종목: {name}({code}) | 업종: {sector} | 총신호={sig['buy_count']}/12\n\n"
+
+        "월봉 (장기 추세)\n"
+        f"  기준선{'위(✅)' if s.get('월봉_일목균형표') else '아래(❌)'} | ADX={v('월봉_ADX')} | RSI={v('월봉_RSI')} | MACD={v('월봉_MACD')}\n\n"
 
         "주봉 (스윙 방향)\n"
-        f"  일목균형표={v('주봉_일목균형표')} | ADX={v('주봉_ADX')} | MACD={v('주봉_MACD')}\n\n"
+        f"  기준선{'위(✅)' if s.get('주봉_일목균형표') else '아래(❌)'} | ADX={v('주봉_ADX')} | RSI={v('주봉_RSI')} | MACD={v('주봉_MACD')}\n\n"
 
-        "일봉 + 월봉 (추세 확인)\n"
-        f"  일봉: 일목균형표={v('일봉_일목균형표')} | ADX={v('일봉_ADX')} | MACD={v('일봉_MACD')}\n"
-        f"  월봉: 일목균형표={v('월봉_일목균형표')} | ADX={v('월봉_ADX')} | MACD={v('월봉_MACD')}\n"
-        f"  이동평균: MA5={ma5:,.0f} MA20={ma20:,.0f} MA60={ma60:,.0f} MA120={ma120:,.0f}\n"
+        "일봉 (진입 판단)\n"
+        f"  기준선{'위(✅)' if s.get('일봉_일목균형표') else '아래(❌)'} | ADX={v('일봉_ADX')} | RSI={v('일봉_RSI')} | MACD={v('일봉_MACD')}\n"
+        f"  MA5={ma5:,.0f} MA20={ma20:,.0f} MA60={ma60:,.0f} MA120={ma120:,.0f}\n"
         f"  정배열={정배열} | 현재가>MA20={가격위치} | MACD히스트={sig['macd_hist']} | ADX={sig['adx']}\n\n"
 
-        "스윙 진입 타이밍 (15/30/60분봉 합의 — 타이밍 참고용, BUY/SKIP 판단에 영향 없음)\n"
-        f"  일목균형표={v('분봉_일목균형표')} | ADX={v('분봉_ADX')} | MACD={v('분봉_MACD')}\n\n"
-        "단타 신호 (3분봉 — 3/4 이상이면 당일청산 단타)\n"
-        f"  일목균형표={v('분봉_3분_일목균형표')} | ADX={v('분봉_3분_ADX')} | MACD={v('분봉_3분_MACD')}\n\n"
-        "기타: 외국인+기관 순매수, 거래량 상위 종목\n"
+        "분봉 타이밍 (15/30/60분봉 — 타이밍 참고, BUY/SKIP 판단 영향 없음)\n"
+        f"  기준선{v('분봉_일목균형표')} | ADX={v('분봉_ADX')} | MACD={v('분봉_MACD')}\n\n"
+
+        "단타 (3분봉 — 3/4 이상이면 당일청산)\n"
+        f"  기준선{v('분봉_3분_일목균형표')} | ADX={v('분봉_3분_ADX')} | MACD={v('분봉_3분_MACD')}\n\n"
     )
+
+    if _sp and _sp.get("note") and _sp.get("note") != "기본값":
+        prompt += (
+            f"## {sector} 업종 최적 파라미터 (10년 데이터 도출)\n"
+            f"  권장최소신호: {_sp.get('min_signal',6)}/12 | "
+            f"외국인기관동시: {'필수' if _sp.get('require_both') else '불필요'} | "
+            f"권장보유: {_sp.get('hold_days',10)}일\n"
+            f"  근거: {_sp.get('note','')}\n\n"
+        )
+
+    if rag_method:
+        prompt += f"## {sector} 업종 학습 기법 (10년 데이터 기반 — 참고용)\n{rag_method}\n\n"
+
     rag = _rag_trade_history(code, sig)
     if rag:
         prompt += rag + "\n\n"
+
     trade_type = _classify_trade_type(sig)  # 3분봉 기반 코드 결정 (단타/스윙)
     prompt += (
-        "매수 여부를 판단하세요. 스윙은 주봉/일봉/월봉 기준으로 판단하고, 15~60분봉은 진입 타이밍 참고용입니다.\n"
+        "위 신호와 업종 학습 기법을 종합해서 매수 여부를 판단하세요.\n"
+        "과거 패턴은 참고용이며, 현재 신호가 최우선입니다.\n"
         "JSON만 반환:\n"
         '{"action":"BUY"|"SKIP","reason":"한줄설명"}'
     )
@@ -607,43 +692,66 @@ def _ollama_buy_decision(code: str, name: str, sig: dict) -> dict:
 
 def select_volume_smart_chart() -> list:
     """
-    DB 3개월 워치리스트(외국인/기관 누적) ∩ 거래량TOP20 → Ollama 매수판단.
-    교집합 없으면 오늘 실시간 순매수 폴백.
+    차트 신호 기반 후보 선발 — DB 3개월 워치리스트 전체를 병렬 스캔,
+    신호수(buy_count) 내림차순 정렬 후 BUY(≥6) 상위 7개 반환.
+    거래량은 참고용 로그만 출력.
     [(code, sig_dict), ...] 최대 7개 반환.
     """
-    # 3개월 DB 워치리스트 (⭐동시 포함 전체)
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
     watchlist = get_watchlist_from_db(months=3)
     watch_codes = {code for code, _, __, ___ in watchlist}
 
+    # 거래량 TOP20 — 참고용 로그만
     vol_top = get_volume_surge_top20()
     vol_set = set(vol_top)
+    overlap = [c for c in watch_codes if c in vol_set]
+    logger.info("워치리스트%d종목 병렬 스캔 시작 (거래량TOP20 참고: %d종목 겹침)",
+                len(watch_codes), len(overlap))
 
-    # 거래량 TOP20 교집합 우선
-    candidates = [c for c in watch_codes if c in vol_set]
-    logger.info("후보 %d종목 (DB워치리스트%d ∩ 거래량%d)",
-                len(candidates), len(watch_codes), len(vol_top))
-
-    # 교집합 0 폴백: 워치리스트 전체 (거래량 무관)
-    if not candidates:
-        candidates = list(watch_codes)[:20]
-        logger.info("교집합 0 → DB워치리스트 전체 폴백 %d종목", len(candidates))
-
-    # 2차 폴백: 오늘 실시간 순매수
-    if not candidates:
-        foreign = _scrape_naver_codes("9000", limit=20)
-        inst_set = set(_scrape_naver_codes("1000", limit=20))
-        candidates = [c for c in foreign if c in inst_set][:10]
-        logger.info("2차 폴백 → 오늘 실시간 순매수 %d종목", len(candidates))
-    targets = []
-    for code in candidates:
-        sig = calculate_chart_signals(code)
+    def _scan_one(code):
+        sig = calculate_chart_signals(code, scan_mode=True)
         if not sig:
-            continue
+            return None
         name = _get_name_by_code(code)
-        decision = _ollama_buy_decision(code, name, sig)
+        vol_tag = " [거래량상위]" if code in vol_set else ""
+        sig["name"] = name
+        sig["vol_tag"] = vol_tag
+        return (code, sig)
+
+    results = []
+    with ThreadPoolExecutor(max_workers=10) as ex:
+        futures = {ex.submit(_scan_one, code): code for code in watch_codes}
+        for fut in as_completed(futures):
+            try:
+                r = fut.result()
+                if r:
+                    results.append(r)
+            except Exception:
+                pass
+
+    # 신호수 내림차순 정렬 → 업종별 min_signal 필터 (없으면 기본 6)
+    results.sort(key=lambda x: x[1].get("buy_count", 0), reverse=True)
+    try:
+        import sector_params as _sp_mod
+        def _min_sig(code):
+            s = _CODE_TO_SECTOR.get(code, "전체")
+            return _sp_mod.get(s).get("min_signal", 6)
+    except Exception:
+        def _min_sig(code): return 6
+    buy_candidates = [(code, sig) for code, sig in results
+                      if sig.get("buy_count", 0) >= _min_sig(code)]
+
+    logger.info("차트 BUY 후보: %d종목 (신호≥6/12)", len(buy_candidates))
+    for code, sig in buy_candidates[:10]:
+        logger.info("  %s(%s) %d/12%s", sig.get("name", code), code,
+                    sig.get("buy_count", 0), sig.get("vol_tag", ""))
+
+    targets = []
+    for code, sig in buy_candidates:
+        decision = _ollama_buy_decision(code, sig.get("name", code), sig)
         if decision["action"] == "BUY":
             sig["trade_type"] = decision.get("trade_type", "스윙")
-            sig["name"] = name
             targets.append((code, sig))
         if len(targets) >= 7:
             break
@@ -766,12 +874,13 @@ def _ollama_sell_decision(code: str, name: str, pnl: float, qty: int,
 
     rag_sell = _rag_trade_history(code, sig or {})
 
-    # 학습된 기법 조회
+    # 업종별 학습 기법 조회 (chart_method_memory) — 섹터 필터 우선
+    sell_sector = _CODE_TO_SECTOR.get(code, "전체")
     rag_method_sell = ""
     try:
         from rag_store import search_chart_method
         rag_method_sell = search_chart_method(
-            f"하락 매도 익절 손절 타이밍 {trade_type}", n_results=2)
+            f"하락경계 매도 익절 손절 타이밍 {trade_type}", n_results=2, sector=sell_sector)
     except Exception:
         pass
 
@@ -1524,9 +1633,9 @@ def analyze_chart_for_chat(query: str) -> tuple:
 
     signal_summary = (
         f"종목: {name}({code}) | 총신호: {sig['buy_count']}/12\n\n"
-        f"월봉: 일목{v('월봉_일목균형표')} ADX{v('월봉_ADX')} RSI{v('월봉_RSI')} MACD{v('월봉_MACD')}\n"
-        f"주봉: 일목{v('주봉_일목균형표')} ADX{v('주봉_ADX')} RSI{v('주봉_RSI')} MACD{v('주봉_MACD')}\n"
-        f"일봉: 일목{v('일봉_일목균형표')} ADX{v('일봉_ADX')} RSI{v('일봉_RSI')} MACD{v('일봉_MACD')} "
+        f"월봉: 기준선{'위(✅)' if s.get('월봉_일목균형표') else '아래(❌)'} ADX{v('월봉_ADX')} RSI{v('월봉_RSI')} MACD{v('월봉_MACD')}\n"
+        f"주봉: 기준선{'위(✅)' if s.get('주봉_일목균형표') else '아래(❌)'} ADX{v('주봉_ADX')} RSI{v('주봉_RSI')} MACD{v('주봉_MACD')}\n"
+        f"일봉: 기준선{'위(✅)' if s.get('일봉_일목균형표') else '아래(❌)'} ADX{v('일봉_ADX')} RSI{v('일봉_RSI')} MACD{v('일봉_MACD')} "
         f"정배열{v('일봉_정배열')} 가격>MA20{v('일봉_가격위치')}\n"
         f"분봉(15/30/60): 일목{v('분봉_일목균형표')} ADX{v('분봉_ADX')} RSI{v('분봉_RSI')} MACD{v('분봉_MACD')}\n"
         f"단타(3분): 일목{v('분봉_3분_일목균형표')} ADX{v('분봉_3분_ADX')} RSI{v('분봉_3분_RSI')} MACD{v('분봉_3분_MACD')}\n"
@@ -1596,7 +1705,7 @@ def analyze_chart_for_chat(query: str) -> tuple:
                 "위 학습 기법을 현재 차트에 직접 적용해서 분석해줘.\n"
                 "기법에서 '스팬1'·'후행스팬'을 언급해도 이 차트에는 없으니 무시하고, 기준선/선행스팬2로만 판단해.\n"
                 "기법에서 말하는 조건이 지금 신호와 일치하는지 하나씩 대조하고:\n"
-                "1. 추세 — 가격과 기준선(녹색)·선행스팬2(보라) 위치 관계 (학습기법 적용)\n"
+                "1. 추세 — 월봉/주봉/일봉 각각 기준선(녹색)·선행스팬2(보라) 위치 관계를 타임프레임별로 구분해서 서술. 절대 뭉뚱그리지 말 것.\n"
                 "2. 구간 판단 — 상승초입/상승중/고점권/하락초입/하락중/바닥권 중 어디?\n"
                 "3. 핵심 근거 — 기법과 일치하는 신호 / 기법과 다른 신호\n"
                 "4. 결론 — 매수/관망/매도 + 진입or청산 타이밍"

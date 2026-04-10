@@ -201,6 +201,64 @@ auto_trade_cycle()  ← 30초 루프, risk_gate → select_volume → buy/sell
 - RSI: **빨강** / Signal: **녹색**
 - 기준선1: 30 / 기준선2: 70
 
+## 2026-04-10 주요 변경사항
+
+### 매매 시스템 버그 수정
+- `mock_trading/kis_client.py` — `buy_stock()` 내 `is_nxt_hours()` NameError 수정
+  - lazy import: `from auto_trader import is_nxt_hours as _is_nxt_hours`
+  - 이 버그로 오늘 하루 전체 매수 주문 실패했었음 (is_nxt_hours가 미정의 상태)
+- `mock_trading/kis_client.py` — KIS 토큰 파일 캐시 추가
+  - `.kis_token_cache.json` 저장/복구 → 서버 재시작 후 재발급 없이 토큰 재사용
+  - KIS 하루 1회 발급 제한 대응
+
+### 종목 선발 방식 전면 변경 (auto_trader.py)
+- `select_volume_smart_chart()` — **거래량 기반 → 차트 신호 기반으로 변경**
+  - **이전**: 워치리스트 ∩ 거래량TOP20 교집합 → 8종목 (한화에어로 12/12 신호에도 미선발)
+  - **이후**: 워치리스트 85종목 전체 병렬 스캔 → buy_count ≥ 6 내림차순 → 상위 7개
+  - 거래량은 `[거래량상위]` 태그로 로그 참고만
+  - `ThreadPoolExecutor(max_workers=10)` 병렬 스캔 (~15초)
+
+### 일목균형표 신호 로직 단순화 (auto_trader.py)
+- `_ichimoku_signal()` — **선행스팬1 제거, 기준선(kijun)만 비교**
+  - **이전**: `price >= 선행스팬1*0.99 and 선행스팬1 >= 선행스팬2*0.99`
+  - **이후**: `price >= kijun*0.99` — 차트에 실제로 보이는 기준선(녹색)과 일치
+- 차트 분석 출력 포맷: `일목균형표` → `기준선위(✅)/아래(❌)` 명시
+- 비전 프롬프트: 월봉/주봉/일봉 타임프레임별 구분 서술 강제 ("뭉뚱그리지 말 것")
+
+### PC 절전 로직 개선 (llm_client.py)
+- `_get_pc_user_idle_min()` 추가 — SSH로 `quser` 실행, Windows 사용자 유휴 시간 파싱
+- `send_sleep()` 조건 강화:
+  - **이전**: Ollama 유휴 10분 → 즉시 절전 (사용자가 PC 직접 쓰는 중에도 절전됨)
+  - **이후**: Ollama 유휴 10분 **AND** Windows 사용자 유휴 **15분 이상** 동시 충족 시만 절전
+  - 로그: `"PC 사용자 유휴 N분 (직접 사용 중으로 판단)"` 으로 차단 이유 명시
+
+### Ollama 가드레일 강화 (llm_client.py)
+- 감탄사/잡담 응답 시 메타 주석 금지: `"일반 대화는 ~할 수 있습니다"` 류 발언 차단
+- 인사엔 인사로, 잡담엔 잡담으로 짧게 응답하도록 명시
+
+### 업종별 KIS 학습 시스템 신설
+- `train_sector_kis.py` — 10개 업종 × 2~3종목(대형·중형) KIS 10년 데이터 학습
+  - KIS 5년씩 2청크로 10년 월봉/주봉/일봉 수집
+  - 각 시점별 12신호 계산 + 이후 수익률 레이블링 → `sector_signal.db`
+  - Ollama: 업종별 상승기법·하락경계·타임프레임신뢰도 3개 질문 × 10업종
+  - 업종간 비교 학습 → `chart_method_memory` RAG 저장
+- `learn_chart_method.py` / `train_sector_kis.py` — **킵얼라이브 스레드 추가**
+  - 4분 30초마다 `/ping_sleep_timer` 호출 → 학습 중 PC 절전 방지
+
+### 학습 종목 목록 (train_sector_kis.py)
+| 업종 | 대형 | 중형 |
+|------|------|------|
+| 반도체 | 삼성전자, SK하이닉스 | 한미반도체 |
+| 방산 | 한화에어로스페이스 | LIG넥스원, 현대로템 |
+| 자동차 | 현대차, 기아, 현대모비스 | — |
+| 2차전지 | LG에너지솔루션, 삼성SDI | 에코프로비엠 |
+| 바이오 | 삼성바이오로직스, 셀트리온 | 한미약품 |
+| IT플랫폼 | NAVER, 카카오, 삼성SDS | — |
+| 금융 | KB금융, 신한지주, 하나금융 | — |
+| 철강/소재 | POSCO홀딩스 | 현대제철, OCI홀딩스 |
+| 건설 | 현대건설 | 대우건설, GS건설 |
+| 에너지 | SK이노베이션, S-Oil, 한국전력 | — |
+
 ## 2026-04-09 주요 변경사항
 
 ### 차트 시스템 정리

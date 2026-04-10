@@ -406,9 +406,10 @@ def search_tools(query: str, n_results: int = 5) -> str:
 
 # -------------------------
 # Ollama 자율 학습 기법 검색 (learn_chart_method.py로 구축)
-def search_chart_method(query: str, n_results: int = 3) -> str:
+def search_chart_method(query: str, n_results: int = 3, sector: str = None) -> str:
     """
     Ollama가 스스로 발견한 차트 분석 기법을 검색.
+    sector 지정 시 해당 업종 문서 우선 반환 (전체 문서도 포함).
     매매/분석 시 참고용.
     """
     try:
@@ -419,13 +420,36 @@ def search_chart_method(query: str, n_results: int = 3) -> str:
         emb = _embed(query[:1000])
         if not emb:
             return ""
-        n = min(n_results, col.count())
-        r = col.query(query_embeddings=[emb], n_results=n)
+
         results = []
+
+        # 업종 지정 시: 해당 업종 문서 먼저 메타데이터 필터로 조회
+        if sector and sector != "전체":
+            try:
+                n_sec = min(2, col.count())
+                r_sec = col.query(
+                    query_embeddings=[emb],
+                    n_results=n_sec,
+                    where={"sector": sector}
+                )
+                for doc, meta in zip(r_sec["documents"][0], r_sec["metadatas"][0]):
+                    cat = meta.get("category", "")
+                    sec = meta.get("sector", "전체")
+                    results.append(f"[학습기법/{cat}/{sec}]\n{doc}")
+            except Exception:
+                pass
+
+        # 전체 임베딩 검색 (업종 문서 이미 있으면 n_results 줄임)
+        n_remain = max(1, n_results - len(results))
+        n = min(n_remain, col.count())
+        r = col.query(query_embeddings=[emb], n_results=n)
+        seen = {d[:50] for d in [x[0] for x in [results]]} if results else set()
         for doc, meta in zip(r["documents"][0], r["metadatas"][0]):
-            cat = meta.get("category", "")
-            sec = meta.get("sector", "전체")
-            results.append(f"[학습기법/{cat}/{sec}]\n{doc}")
+            if doc[:50] not in seen:
+                cat = meta.get("category", "")
+                sec = meta.get("sector", "전체")
+                results.append(f"[학습기법/{cat}/{sec}]\n{doc}")
+
         return "\n\n".join(results) if results else ""
     except Exception as e:
         logger.error("기법 검색 실패: %s", e)

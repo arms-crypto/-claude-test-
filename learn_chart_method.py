@@ -264,10 +264,32 @@ RSI/MACD/ADX 보조지표 관점에서:
 
 # ── 메인 학습 루프 ────────────────────────────────────────────────────────────
 
+def _start_keepalive():
+    """4분 30초마다 /ping_sleep_timer 호출 → PC 절전 방지."""
+    import threading, requests as _req
+    def _loop():
+        while True:
+            time.sleep(270)
+            try:
+                _req.get("http://localhost:11435/ping_sleep_timer", timeout=5)
+                logger.info("[킵얼라이브] 슬립 타이머 리셋")
+            except Exception:
+                pass
+    threading.Thread(target=_loop, daemon=True).start()
+
+
 def learn():
     logger.info("=" * 60)
     logger.info("Ollama 차트 기법 자율 학습 시작")
     logger.info("=" * 60)
+
+    # PC 절전 방지
+    try:
+        import requests as _req
+        _req.get("http://localhost:11435/ping_sleep_timer", timeout=5)
+    except Exception:
+        pass
+    _start_keepalive()
 
     # DB 종목 목록 확인
     con = sqlite3.connect(DB_PATH)

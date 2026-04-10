@@ -68,16 +68,60 @@ def touch_ollama_request():
     _last_ollama_request[0] = _time_mod.time()
 
 
+def _get_pc_user_idle_min() -> int:
+    """
+    PC Windows 사용자 유휴 시간(분) 반환.
+    quser 출력에서 Active 세션의 IDLE TIME 파싱.
+    확인 실패 or 현재 사용 중 → 0 반환 (절전 차단).
+    """
+    import subprocess
+    try:
+        result = subprocess.run(
+            ["ssh", "-o", "ConnectTimeout=5", "-o", "StrictHostKeyChecking=no",
+             "-p", "2224", "-i", "/home/ubuntu/.ssh/id_ed25519",
+             "ultimate@221.144.111.116",
+             "quser 2>nul"],
+            capture_output=True, timeout=10
+        )
+        output = result.stdout.decode(errors="ignore")
+        for line in output.splitlines():
+            if "Active" not in line and "활성" not in line:
+                continue
+            parts = line.split()
+            # quser 컬럼: USERNAME SESSIONNAME ID STATE IDLE_TIME LOGON_TIME
+            # Active/STATE 앞 컬럼이 IDLE_TIME
+            for i, p in enumerate(parts):
+                if p in ("Active", "활성") and i >= 1:
+                    idle_str = parts[i - 1]
+                    if idle_str.lower() == "none":
+                        return 0  # 방금까지 활성 사용 중
+                    if ":" in idle_str:
+                        h, m = idle_str.replace("+", "").split(":")[:2]
+                        return int(h) * 60 + int(m)
+        return 0  # 파싱 실패 → 안전하게 차단
+    except Exception as e:
+        logger.debug("PC 유휴 확인 실패: %s", e)
+        return 0  # SSH 실패 → 안전하게 차단
+
+
 def send_sleep(delay_min: int = 5):
     """
     PC에 최대절전(hibernate) 명령 전송.
-    delay_min: Ollama 마지막 요청 후 N분 유휴 상태일 때만 전송.
+    조건 1: Ollama 마지막 요청 후 delay_min분 유휴.
+    조건 2: Windows 사용자 세션도 15분 이상 유휴 (직접 사용 중이면 차단).
     """
     import subprocess, time
     idle = time.time() - _last_ollama_request[0]
     if idle < delay_min * 60:
         logger.info("send_sleep 스킵 — 마지막 요청 %.0f초 전 (유휴 기준 %d분)", idle, delay_min)
         return False
+
+    # PC 사용자가 직접 쓰고 있는지 확인
+    pc_idle_min = _get_pc_user_idle_min()
+    if pc_idle_min < 15:
+        logger.info("send_sleep 스킵 — PC 사용자 유휴 %d분 (기준 15분, 직접 사용 중으로 판단)", pc_idle_min)
+        return False
+
     try:
         result = subprocess.run(
             ["ssh", "-o", "ConnectTimeout=5", "-o", "StrictHostKeyChecking=no",
@@ -87,7 +131,8 @@ def send_sleep(delay_min: int = 5):
             capture_output=True, timeout=10
         )
         if result.returncode == 0:
-            logger.info("PC 최대절전 명령 전송 완료")
+            logger.info("PC 최대절전 명령 전송 완료 (Ollama유휴 %.0f분 / PC유휴 %d분)",
+                        idle / 60, pc_idle_min)
             touch_ollama_request()  # 재전송 방지
             return True
         logger.warning("최대절전 명령 실패: %s", result.stderr.decode()[:100])
@@ -404,7 +449,7 @@ _TOOL_SYSTEM = """나는 Ollama_Agent다. mistral-small3.1:24b 모델 기반의 
 프롬프트에 [참고 데이터] 섹션이 있으면 그 수치가 최우선이다.
 
 ## 도구 호출 가드레일 (반드시 준수)
-1. 입력이 한글 의성어(ㅋㅋ, ㅎㅎ, ㅠㅠ 등), 이모티콘, 짧은 감탄사(아, 오, 와, 네, 응, 맞아, 좋아, 음, 잠깐, 잠시만) 또는 주식과 무관한 일상 대화인 경우 → 도구 호출 절대 금지. 자연스럽게 대화로만 응답한다. 특히 get_stock_price에는 6자리 숫자 코드 또는 명확한 한국 종목명만 넘긴다.
+1. 입력이 한글 의성어(ㅋㅋ, ㅎㅎ, ㅠㅠ 등), 이모티콘, 짧은 감탄사(아, 오, 와, 네, 응, 맞아, 좋아, 음, 잠깐, 잠시만) 또는 주식과 무관한 일상 대화인 경우 → 도구 호출 절대 금지. 짧고 자연스럽게 한국어로만 답한다. 자신의 능력이나 역할을 설명하는 메타 주석("일반 대화는 ~할 수 있습니다" 같은 말) 절대 금지. 인사에는 인사로, 잡담에는 잡담으로 응답한다. 질문이 주식/트레이딩과 무관하면 그 맥락 그대로 답한다. 특히 get_stock_price에는 6자리 숫자 코드 또는 명확한 한국 종목명만 넘긴다.
 2. 이전 대화 기록(Context)에 이미 최신 정보나 뉴스 검색 결과가 포함되어 있다면, 사용자가 명시적으로 "다시 검색해줘"라고 요청하지 않는 한 web_search 기능을 다시 사용하지 마세요. 기존 정보를 바탕으로 답변하세요.
 3. 사용자의 짧은 맞장구("좋은 생각이야", "그렇구나", "알겠어", "계속해봐", "음", "오", "맞아")는 이전 대화 기록(Context)에 이미 최신 정보나 뉴스 검색 결과가 포함되어 있다면, 사용자가 명시적으로 "다시 검색해줘"라고 요청하지 않는 한 web_search 기능을 다시 사용하지 마세요. 기존 정보를 바탕으로 답변하세요."""
 
