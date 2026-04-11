@@ -1,3 +1,14 @@
 __pycache__/
 *.log
 *.pyc
+mock_trading/portfolio.db
+mock_trading/portfolio_backup_*.db
+mock_trading/sector_signal.db
+mock_trading/.kis_token_cache.json
+rag_data/
+nohup.out
+*.png
+backtest_result.csv
+test_output.py.bak*
+.openclaw/
+inspect_reports/
