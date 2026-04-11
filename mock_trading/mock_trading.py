@@ -15,7 +15,7 @@ from datetime import datetime
 import pytz
 import yfinance as yf
 
-from .kis_client import get_price, resolve_code, buy_stock, sell_stock, get_balance
+from . import kis_client as _default_kis
 
 logger = logging.getLogger(__name__)
 KST = pytz.timezone("Asia/Seoul")
@@ -26,8 +26,9 @@ DB_PATH = os.path.join(os.path.dirname(__file__), "portfolio.db")
 class MockTrading:
     INITIAL_CASH = 100_000_000  # 1억
 
-    def __init__(self, db_path: str = DB_PATH):
+    def __init__(self, db_path: str = DB_PATH, kis_module=None):
         self.db_path = db_path
+        self._kis = kis_module or _default_kis
         self._init_db()
 
     # ── DB 헬퍼 ─────────────────────────────────────────────────────────────
@@ -144,11 +145,11 @@ class MockTrading:
 
     def buy(self, name_or_code: str, amount_krw: int, oracle_pool=None,
             buy_signals=None, rsi=None, macd_hist=None) -> str:
-        code, name = resolve_code(name_or_code)
+        code, name = self._kis.resolve_code(name_or_code)
         if not code:
             return f"❌ '{name_or_code}' 종목을 찾을 수 없습니다."
 
-        price = get_price(code)
+        price = self._kis.get_price(code)
         if not price:
             return f"❌ {name}({code}) 가격 조회 실패"
 
@@ -156,8 +157,8 @@ class MockTrading:
         if qty < 1:
             return f"❌ 수량 부족 (1주 {price:,}원, 요청 {amount_krw:,}원)"
 
-        # KIS 모의투자 매수 주문
-        result = buy_stock(code, qty)
+        # KIS 매수 주문
+        result = self._kis.buy_stock(code, qty)
         if not result["success"]:
             return f"❌ KIS 모의 매수 실패: {result['msg']}"
 
@@ -195,7 +196,7 @@ class MockTrading:
     # ── 매도 ─────────────────────────────────────────────────────────────────
 
     def sell(self, name_or_code: str, qty: int = None, oracle_pool=None) -> str:
-        code, name = resolve_code(name_or_code)
+        code, name = self._kis.resolve_code(name_or_code)
         if not code:
             return f"❌ '{name_or_code}' 종목을 찾을 수 없습니다."
 
@@ -212,12 +213,12 @@ class MockTrading:
         if sell_qty > hold_qty:
             return f"❌ 보유 수량 부족 (보유 {hold_qty:,}주)"
 
-        price = get_price(code)
+        price = self._kis.get_price(code)
         if not price:
             return f"❌ {name}({code}) 가격 조회 실패"
 
-        # KIS 모의투자 매도 주문
-        result = sell_stock(code, sell_qty)
+        # KIS 매도 주문
+        result = self._kis.sell_stock(code, sell_qty)
         if not result["success"]:
             return f"❌ KIS 모의 매도 실패: {result['msg']}"
 
@@ -249,8 +250,8 @@ class MockTrading:
     # ── 현황 ─────────────────────────────────────────────────────────────────
 
     def get_status(self) -> str:
-        # KIS 모의투자 잔고 실시간 조회
-        bal = get_balance()
+        # KIS 잔고 실시간 조회
+        bal = self._kis.get_balance()
         cash = bal["cash"] or self.cash
         kis_holdings = bal["holdings"]
 
@@ -269,7 +270,7 @@ class MockTrading:
             name      = h["name"]
             qty       = h["qty"]
             avg_price = h["avg_price"]
-            price     = h["current_price"] or get_price(code) or avg_price
+            price     = h["current_price"] or self._kis.get_price(code) or avg_price
             invest    = avg_price * qty
             eval_val  = price * qty
             profit    = eval_val - invest

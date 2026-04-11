@@ -37,11 +37,28 @@ logger = config.logger
 
 # ── 싱글턴/알림 헬퍼 ────────────────────────────────────────────────────────
 
+# KY 계좌 텔레그램 설정
+_KY_BOT_TOKEN = "8246789875:AAH7M28afnrVvvKF95jFqg7zDYSZD8xqOE0"
+_KY_CHAT_ID   = "8647480979"
+_KY_DB_PATH   = os.path.join(os.path.dirname(__file__), "mock_trading", "portfolio_ky.db")
+
+_auto_mt_ky_inst = None
+
+
 def _get_auto_mt():
     if config._auto_mt_inst is None:
         from mock_trading.mock_trading import MockTrading
         config._auto_mt_inst = MockTrading()
     return config._auto_mt_inst
+
+
+def _get_auto_mt_ky():
+    global _auto_mt_ky_inst
+    if _auto_mt_ky_inst is None:
+        from mock_trading.mock_trading import MockTrading
+        from mock_trading import kis_client_ky
+        _auto_mt_ky_inst = MockTrading(db_path=_KY_DB_PATH, kis_module=kis_client_ky)
+    return _auto_mt_ky_inst
 
 
 def _tg_notify(text: str):
@@ -55,6 +72,19 @@ def _tg_notify(text: str):
         )
     except Exception:
         logger.exception("_tg_notify 실패")
+
+
+def _tg_notify_ky(text: str):
+    """KY 계좌 소유자 텔레그램 알림 전송 (비차단)"""
+    try:
+        requests.post(
+            f"https://api.telegram.org/bot{_KY_BOT_TOKEN}/sendMessage",
+            json={"chat_id": _KY_CHAT_ID, "text": text},
+            proxies={"http": None, "https": None},
+            timeout=10,
+        )
+    except Exception:
+        logger.exception("_tg_notify_ky 실패")
 
 
 # ── 거래량 상위 20 ────────────────────────────────────────────────────────────
@@ -391,7 +421,7 @@ def is_nxt_hours() -> bool:
 # ── 모의 매도/매수 래퍼 ─────────────────────────────────────────────────────
 
 def sell_mock(code: str, qty: int, reason: str = "") -> str:
-    """MockTrading.sell 래퍼. qty=None 이면 전량"""
+    """MockTrading.sell 래퍼. qty=None 이면 전량. KY 계좌도 미러 매도."""
     mt     = _get_auto_mt()
     pool   = get_db_pool()
     result = mt.sell(code, qty, oracle_pool=pool)
@@ -403,11 +433,21 @@ def sell_mock(code: str, qty: int, reason: str = "") -> str:
         update_method_trust("종합_매매기법", correct)
     except Exception:
         pass
+
+    # KY 계좌 미러 매도
+    try:
+        mt_ky  = _get_auto_mt_ky()
+        res_ky = mt_ky.sell(code, qty)
+        logger.info("[KY] SELL %s → %s", code, res_ky[:60])
+        _tg_notify_ky(f"📉 [KY 자동매도]\n{res_ky}")
+    except Exception:
+        logger.exception("[KY] SELL 미러 실패: %s", code)
+
     return result
 
 
 def buy_mock(code: str, amount: int, sig: dict = None) -> str:
-    """MockTrading.buy 래퍼. amount = 매수금액(원), sig = 차트신호 dict"""
+    """MockTrading.buy 래퍼. amount = 매수금액(원), sig = 차트신호 dict. KY 계좌도 미러 매수."""
     mt   = _get_auto_mt()
     pool = get_db_pool()
     kwargs = {}
@@ -417,6 +457,20 @@ def buy_mock(code: str, amount: int, sig: dict = None) -> str:
         kwargs["macd_hist"]   = sig.get("macd_hist")
     result = mt.buy(code, amount, oracle_pool=pool, **kwargs)
     logger.info("[자동매매] BUY  %s %d원 → %s", code, amount, result[:60])
+
+    # KY 계좌 미러 매수 (잔고 기반 금액 별도 계산)
+    try:
+        mt_ky   = _get_auto_mt_ky()
+        ky_cash = mt_ky.cash
+        ky_used = len(mt_ky._get_holdings())
+        ky_remain = max(1, 7 - ky_used)
+        ky_amount = max(50_000, min(5_000_000, int(ky_cash / ky_remain)))
+        res_ky = mt_ky.buy(code, ky_amount, **kwargs)
+        logger.info("[KY] BUY  %s %d원 → %s", code, ky_amount, res_ky[:60])
+        _tg_notify_ky(f"📈 [KY 자동매수]\n{res_ky}")
+    except Exception:
+        logger.exception("[KY] BUY 미러 실패: %s", code)
+
     return result
 
 
