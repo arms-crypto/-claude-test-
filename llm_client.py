@@ -83,21 +83,32 @@ def _get_pc_user_idle_min() -> int:
              "quser 2>nul"],
             capture_output=True, timeout=10
         )
-        output = result.stdout.decode(errors="ignore")
-        for line in output.splitlines():
-            if "Active" not in line and "활성" not in line:
+        # 한글 Windows는 인코딩이 깨질 수 있으므로 cp949 → utf-8 순 시도
+        for enc in ("cp949", "utf-8", "ignore"):
+            try:
+                output = result.stdout.decode(enc if enc != "ignore" else "utf-8",
+                                              errors="ignore" if enc == "ignore" else "strict")
+                break
+            except Exception:
                 continue
+
+        import re
+        for line in output.splitlines():
             parts = line.split()
-            # quser 컬럼: USERNAME SESSIONNAME ID STATE IDLE_TIME LOGON_TIME
-            # Active/STATE 앞 컬럼이 IDLE_TIME
+            if len(parts) < 4:
+                continue
+            # IDLE_TIME 컬럼 위치: 헤더 제외 데이터 행에서 none 또는 H:MM 패턴 탐색
             for i, p in enumerate(parts):
-                if p in ("Active", "활성") and i >= 1:
-                    idle_str = parts[i - 1]
-                    if idle_str.lower() == "none":
-                        return 0  # 방금까지 활성 사용 중
-                    if ":" in idle_str:
-                        h, m = idle_str.replace("+", "").split(":")[:2]
-                        return int(h) * 60 + int(m)
+                if p.lower() == "none":
+                    return 0  # 방금까지 활성 사용 중
+                if re.fullmatch(r'\d+:\d{2}', p) or re.fullmatch(r'\d+\+\d+:\d{2}', p):
+                    # H:MM 또는 D+H:MM 형식
+                    cleaned = p.replace("+", ":")
+                    nums = cleaned.split(":")
+                    if len(nums) == 2:
+                        return int(nums[0]) * 60 + int(nums[1])
+                    if len(nums) == 3:  # D+H:MM
+                        return int(nums[0]) * 1440 + int(nums[1]) * 60 + int(nums[2])
         return 0  # 파싱 실패 → 안전하게 차단
     except Exception as e:
         logger.debug("PC 유휴 확인 실패: %s", e)
