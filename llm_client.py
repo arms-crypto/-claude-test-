@@ -802,7 +802,8 @@ def call_gemma3(prompt: str, use_tools: bool = True) -> str:
     import datetime as _dt, pytz as _pytz, json as _json, re as _re
     _now = _dt.datetime.now(_pytz.timezone("Asia/Seoul"))
     # 날짜를 유저 메시지 앞에 붙임 → 시스템 프롬프트 고정 → Ollama KV 캐시 재사용
-    _dated_prompt = f"[{_now.strftime('%Y-%m-%d %H:%M KST')}] {prompt}"
+    _DAYS_KO = ["월요일","화요일","수요일","목요일","금요일","토요일","일요일"]
+    _dated_prompt = f"[{_now.strftime('%Y-%m-%d')} {_DAYS_KO[_now.weekday()]} {_now.strftime('%H:%M KST')}] {prompt}"
     messages = [
         {"role": "system", "content": _GEMMA3_TOOL_SYSTEM},
         {"role": "user",   "content": _dated_prompt},
@@ -887,7 +888,8 @@ def call_mistral_vision(prompt: str, image_path: str, system: str = "한국 주�
 
     import datetime as _dt, pytz as _pytz
     _now = _dt.datetime.now(_pytz.timezone("Asia/Seoul"))
-    _dated_prompt = f"[{_now.strftime('%Y-%m-%d %H:%M KST')}] {prompt}"
+    _DAYS_KO = ["월요일","화요일","수요일","목요일","금요일","토요일","일요일"]
+    _dated_prompt = f"[{_now.strftime('%Y-%m-%d')} {_DAYS_KO[_now.weekday()]} {_now.strftime('%H:%M KST')}] {prompt}"
 
     payload = {
         "model": config.QWEN_MODEL,
@@ -929,7 +931,8 @@ def call_mistral_only(prompt: str, system: str = _TOOL_SYSTEM, use_tools: bool =
 
     import datetime as _dt, pytz as _pytz
     _now = _dt.datetime.now(_pytz.timezone("Asia/Seoul"))
-    _dated_prompt = f"[{_now.strftime('%Y-%m-%d %H:%M KST')}] {prompt}"
+    _DAYS_KO = ["월요일","화요일","수요일","목요일","금요일","토요일","일요일"]
+    _dated_prompt = f"[{_now.strftime('%Y-%m-%d')} {_DAYS_KO[_now.weekday()]} {_now.strftime('%H:%M KST')}] {prompt}"
 
     # ── 2단계 RAG 주입 ──────────────────────────────────────────────
     _system = system
