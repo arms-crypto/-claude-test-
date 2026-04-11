@@ -250,7 +250,11 @@ def _derive_one(sector: str) -> dict:
 
 
 def _save():
-    """메모리 캐시 → sector_params.json 저장."""
+    """메모리 캐시를 sector_params.json 파일로 저장한다.
+
+    PARAMS_PATH 경로에 UTF-8 인코딩으로 JSON 저장.
+    실패 시 logger.error로 기록하고 조용히 무시한다.
+    """
     try:
         with open(PARAMS_PATH, "w", encoding="utf-8") as f:
             json.dump(_params, f, ensure_ascii=False, indent=2)
