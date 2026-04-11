@@ -193,8 +193,6 @@ auto_trade_cycle()  ← 30초 루프, risk_gate → select_volume → buy/sell (
 - **KY 실전 계좌** — 2026-04-11 추가, 미러 매매 중 (`44384407-01`, REAL_TRADE=True)
 - **가상주문** — 실시간 시세로 가상매매 중 (`44197559-01`, REAL_TRADE=False)
 - **모듈화 예정** — proxy_v54.py → 16개 파일 분리 (안정화 후 진행)
-- **장중 자동점검** — 스케줄 에이전트 trig_01NTvrDUFKtYzoNoHfGPMrTF (09/11/13/15시 KST)
-- **모닝 보수 에이전트** — trig_01Wgb24aru4pDzfzMKY52nx4 (평일 09:00 KST)
 
 ## 절대 하지 말 것
 - pre-injection 블록(ai_chat.py 3-1, 3-2, 3-3) 제거 금지 — 환각 방지 핵심
