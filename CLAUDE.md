@@ -1,5 +1,11 @@
 # 프로젝트 컨텍스트
 
+## 협업 구조 (Claude + Mistral)
+- **Mistral (pc_worker.py)** — 읽기 전용 분석 전담: 버그 후보 추출, 코드 리뷰, 리서치
+  - 도구: `read_file`, `bash(조회)`, `report` 만 허용
+  - 실행: `python3 pc_worker.py "분석 지시"` → `/tmp/pc_worker_last_report.txt` 결과 저장
+- **Claude** — 보고받은 내용 검토 후 실제 파일 수정
+
 ## 핵심 파일
 - `proxy_v54.py` — 메인 서버 (Flask 11435, 텔레그램 봇 2개 + 자동매매)
 - `ai_chat.py` — ask_ai() 핵심 로직 (봇1 메시지 처리)
