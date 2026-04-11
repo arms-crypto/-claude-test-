@@ -47,7 +47,7 @@ TOOLS = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "path": {"type": "string", "description": "읽을 파일 경로 (절대 또는 프로젝트 기준 상대경로)"},
+                    "path":   {"type": "string", "description": "읽을 파일 경로 (절대 또는 프로젝트 기준 상대경로)"},
                     "offset": {"type": "integer", "description": "시작 줄 번호 (기본값 1)"},
                     "limit":  {"type": "integer", "description": "읽을 줄 수 (기본값 200)"},
                 },
@@ -58,43 +58,12 @@ TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "write_file",
-            "description": "파일 전체를 덮어씁니다. 작은 수정은 edit_file을 사용하세요.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "path":    {"type": "string", "description": "쓸 파일 경로"},
-                    "content": {"type": "string", "description": "파일 전체 내용"},
-                },
-                "required": ["path", "content"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "edit_file",
-            "description": "파일에서 old_str을 new_str로 정확히 1회 치환합니다.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "path":    {"type": "string", "description": "수정할 파일 경로"},
-                    "old_str": {"type": "string", "description": "대체될 기존 문자열 (파일 내 유일해야 함)"},
-                    "new_str": {"type": "string", "description": "대체할 새 문자열"},
-                },
-                "required": ["path", "old_str", "new_str"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
             "name": "bash",
-            "description": "쉘 명령어를 실행하고 stdout/stderr를 반환합니다.",
+            "description": "읽기 전용 쉘 명령어만 실행합니다. (ls, grep, cat 등 조회용만 허용)",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "command": {"type": "string", "description": "실행할 bash 명령어"},
+                    "command": {"type": "string", "description": "실행할 bash 명령어 (읽기 전용)"},
                 },
                 "required": ["command"],
             },
@@ -104,11 +73,11 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "report",
-            "description": "작업 결과를 텔레그램으로 보고하고 작업을 종료합니다.",
+            "description": "분석 결과를 보고하고 작업을 종료합니다.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "message": {"type": "string", "description": "텔레그램으로 보낼 보고 내용"},
+                    "message": {"type": "string", "description": "분석 결과 보고 내용"},
                 },
                 "required": ["message"],
             },
@@ -222,10 +191,9 @@ SYSTEM_PROMPT = """\
 - 수정 완료 후 report 도구로 결과 보고 (수정 파일명:줄번호 포함)
 
 ## 도구 사용 규칙 (절대 준수)
-- 파일을 수정할 때는 반드시 **write_file** 도구를 실제로 호출할 것 (edit_file 사용 금지)
-- write_file 사용 순서: 1) read_file로 전체 내용 읽기 → 2) 수정된 전체 내용으로 write_file 호출
-- 수정 내용을 텍스트나 코드블록으로만 출력하는 것은 금지 — 반드시 write_file 도구를 호출해야 함
-- 작업 완료는 반드시 report 도구 호출로만 표시할 것 — 텍스트 응답으로 종료 금지
+- 파일 수정 권한 없음 — read_file로 읽기만 가능
+- 분석 결과, 버그 후보, 개선 제안은 report 도구로 상세히 보고할 것
+- 작업 완료는 반드시 report 도구 호출로만 표시할 것
 
 ## 금지 사항
 - pre-injection 블록(ai_chat.py 3-1/3-2/3-3) 절대 제거 금지
