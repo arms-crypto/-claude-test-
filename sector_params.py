@@ -84,6 +84,14 @@ def all_params() -> dict:
 # ── 내부 함수 ─────────────────────────────────────────────────────────────────
 
 def _is_fresh(p: dict) -> bool:
+    """파라미터가 STALE_DAYS 이내에 갱신된 신선한 데이터인지 확인.
+
+    Args:
+        p: 파라미터 딕셔너리. 'updated_at' 키(ISO 형식 문자열)를 포함해야 한다.
+
+    Returns:
+        updated_at이 있고 현재로부터 STALE_DAYS일 미만이면 True, 그 외 False.
+    """
     updated = p.get("updated_at")
     if not updated:
         return False
@@ -95,7 +103,15 @@ def _is_fresh(p: dict) -> bool:
 
 
 def _trigger(sector: str):
-    """중복 방지 후 백그라운드 학습 스레드 시작."""
+    """중복 방지 후 백그라운드 학습 스레드 시작.
+
+    이미 학습 중인 업종(_learning 집합)은 건너뛴다.
+    _learning에 추가 후 daemon 스레드(_worker)를 시작하며,
+    스레드 완료 시 _worker의 finally 블록에서 _learning에서 제거된다.
+
+    Args:
+        sector: 학습할 업종명 (예: '반도체', '방산').
+    """
     with _lock:
         if sector in _learning:
             return
