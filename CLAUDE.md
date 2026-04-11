@@ -6,13 +6,15 @@
 - `llm_client.py` — LLM 호출, 도구 정의, WoL
 - `telegram_bots.py` — 텔레그램 봇 핸들러, 시장보고서 읽기
 - `search_utils.py` — SearXNG / Perplexica 검색
-- `mock_trading/kis_client.py` — KIS API 모의투자 클라이언트
+- `mock_trading/kis_client.py` — KIS 가상주문 클라이언트 (계좌 44197559-01, REAL_TRADE=False)
+- `mock_trading/kis_client_ky.py` — KIS 실전 클라이언트 (KY 계좌 44384407-01, REAL_TRADE=True)
 - `mock_trading/mock_trading.py` — 매수/매도 로직, portfolio.db 관리
-- `mock_trading/portfolio.db` — SQLite 포트폴리오
+- `mock_trading/portfolio.db` — SQLite 가상 포트폴리오 (초기잔고 1억, 2026-04-07 초기화)
+- `mock_trading/portfolio_ky.db` — KY 실전 포트폴리오
 - `evening_report.sh` — 평일 20:00 Claude 분석 → 텔레그램 보고
 - `hourly_check.sh` — 시간별 점검 + 시장보고서 파일 갱신
 - `~/.openclaw/workspace-trading/scripts/risk_gate.py` — VIX 리스크 게이트
-- `~/.openclaw/workspace-research/data/market_report.txt` — 시장보고서 파일 (hourly_check가 갱신)
+- `~/.openclaw/workspace-research/data/market_report.txt` — 시장보고서 파일
 
 ## 핵심 설정값
 | 항목 | 값 |
@@ -42,7 +44,7 @@ call_gemma3()       ← 로컬 Ollama gemma3:4b (프롬프트 기반 tool callin
   └─ 도구 1회 호출 후 결과 요약 → 텔레그램 전송
 
 handle_tg_srv()     ← 텔레그램 봇2, 슬래시 명령 + call_gemma3
-auto_trade_cycle()  ← 30초 루프, risk_gate → select_volume → buy/sell
+auto_trade_cycle()  ← 30초 루프, risk_gate → select_volume → buy/sell (가상+KY 미러)
 ```
 
 ## 도구 라우팅 규칙 (llm_client.py _TOOL_SYSTEM)
@@ -65,12 +67,12 @@ auto_trade_cycle()  ← 30초 루프, risk_gate → select_volume → buy/sell
 - "절대로 수치를 추측하거나 만들지 마세요"
 - "사용자에게 어떤 도구를 쓸지 묻거나 선택지를 제시하지 말 것"
 
-## 스캔/신호 시스템 (2026-04-06 확정)
+## 스캔/신호 시스템
 
 ### 신호 구조
 - **12신호 스윙**: 월봉4 + 주봉4 + 일봉4 (일목균형표·ADX·RSI·MACD)
 - **4신호 단타**: 분봉4 — buy_count에 포함 안 함, "단타타이밍" 참고용만 표시
-- **RSI 기준**: `RSI > 50` (강한 추세 종목 포함, 구: 30<RSI<70)
+- **RSI 기준**: `RSI > 50` (강한 추세 종목 포함)
 - **BUY**: 신호 ≥ 6/12 | **HOLD**: 4-5/12 | **SELL**: < 4/12
 
 ### 워치리스트 구조
@@ -107,46 +109,33 @@ auto_trade_cycle()  ← 30초 루프, risk_gate → select_volume → buy/sell
 - `_ollama_buy_decision()` — 여전히 Ollama 호출 → 신호 수 기반 룰로 대체 고려
 - 분봉 데이터: 장 마감 후(15:30~) 불안정 → 시간대별 제외 옵션 검토
 
-### 히스토리 복구
-- `_naver_net_buy_list(date_str='YYYYMMDD')` — `&ntp=` 파라미터로 과거 날짜 조회 가능
-- `collect_smart_flows` — Oracle DB `mock_smart_flows` 테이블에 6개월 보관
+## KIS 계좌 구성
 
-## KIS 실전 API + 가상주문 (2026-04-07 전환)
-
-### 접속 설정 (mock_trading/kis_client.py)
-- **실전 API** — `https://openapi.koreainvestment.com:9443`, 계좌 44197559-01
-- **REAL_TRADE = False** — 주문은 가상(portfolio.db만 업데이트), True로 바꿔야 실제 체결
-- **KRX + NXT** — `get_price()` KRX 시세, `get_nxt_price()` NXT 야간 시세, `get_best_price()` 자동 폴백
+### 가상주문 계좌 (mock_trading/kis_client.py)
+- **실전 API** — `https://openapi.koreainvestment.com:9443`, 계좌 `44197559-01`
+- **REAL_TRADE = False** — portfolio.db만 업데이트, 실제 체결 없음
+- **KRX + NXT** — `get_price()` KRX, `get_nxt_price()` NXT, `get_best_price()` 자동 폴백
 - tr_id: 조회 FHKST*, 잔고 TTTC8434R, 매수 TTTC0802U, 매도 TTTC0801U
+
+### KY 실전 계좌 (mock_trading/kis_client_ky.py) — 2026-04-11 추가
+- **실전 API** — 계좌 `44384407-01`
+- **REAL_TRADE = True** — 실제 체결, portfolio_ky.db 별도 관리
+- **미러 매매** — auto_trade_cycle()에서 가상계좌와 동시 주문, 텔레그램 별도 알림
 
 ### 거래시간
 - `is_trading_hours()`: **KST 08:00~20:00 평일** (NXT 포함)
 - `is_nxt_hours()`: 08:00~09:00, 15:30~20:00 (NXT 단독 구간)
 
-### 자동매매 워치리스트
-- `select_volume_smart_chart()`: **DB 3개월 워치리스트 ∩ 거래량TOP20** 우선
-- 교집합 없으면 워치리스트 전체 → 오늘 실시간 순매수 2차 폴백
+### 종목 선발 (select_volume_smart_chart)
+- 워치리스트 전체 병렬 스캔 → buy_count ≥ 6 내림차순 → 상위 7개
+- `ThreadPoolExecutor(max_workers=10)` (~15초)
 
-### PC 자동 최대절전 (2026-04-07 추가)
-- PC SSH: `ultimate@221.144.111.116:2224` (공유기 포트포워딩)
-- `send_sleep(delay_min=10)`: 마지막 Ollama 요청 후 10분 유휴 → `shutdown /h` 전송
-- `_sleep_watcher` 스레드: 60초 주기, 거래시간 외 구간에서 자동 호출
-- `_last_ollama_request`: `call_mistral_only()` 호출마다 갱신
-- **PC 절전 타이머 끔** AC/DC 모두 0 (`powercfg /change standby-timeout-ac 0` + `standby-timeout-dc 0`)
-- Windows 작업 스케줄러: `RemoteHibernate` (SYSTEM 권한 `shutdown /h`) — `schtasks /run /tn RemoteHibernate`으로 호출
-- `send_sleep()`: `shutdown /h` 직접 → `schtasks /run /tn RemoteHibernate` 변경 (권한 문제 해결)
+### PC 자동 최대절전 (llm_client.py)
+- `send_sleep()`: Ollama 유휴 10분 **AND** Windows 사용자 유휴 15분 이상 동시 충족 시만 절전
+- `schtasks /run /tn RemoteHibernate` — SYSTEM 권한 절전 실행
+- `_get_pc_user_idle_min()` — SSH `quser` cp949 디코딩 + 패턴 파싱
 
-### 가상 포트폴리오
-- 초기 잔고: **1억원**
-- DB 초기화: 2026-04-07 (백업: `mock_trading/portfolio_backup_20260407.db`)
-
-## 야간 보고서 파이프라인 (2026-04-07 확정)
-
-### night_analysis.sh — 평일 20:35 자동 실행
-1. Python → `scan_buy_signals_for_chat(months=3)` 직접 계산 (Ollama 불필요)
-2. 텔레그램 전송 (1줄 요약 포맷)
-3. `store_scan_result()` → RAG scan_memory 저장
-4. Ollama → 스캔 결과 분석 요약 → 텔레그램 전송
+## 야간 보고서 파이프라인
 
 ### 크론 스케줄 (KST 기준, TZ=Asia/Seoul)
 | 시각 | 작업 |
@@ -157,12 +146,13 @@ auto_trade_cycle()  ← 30초 루프, risk_gate → select_volume → buy/sell
 | 20:35 평일 | `night_analysis.sh` — 워치리스트 스캔 + 텔레그램 + RAG |
 
 ### RAG 스캔 결과 pre-injection (ai_chat.py)
-- **21:00 이후** + 스캔 관련 키워드 → `search_scan()` RAG 직접 주입 (도구 호출 없음)
+- **21:00 이후** + 스캔 관련 키워드 → `search_scan()` RAG 직접 주입
 - **장중(~20:00)** → 실시간 `scan_buy_signals` 도구 호출
 
 ### KIS 토큰 관리 (kis_client.py)
 - `threading.Lock()` — 병렬 스캔 시 동시 발급 방지 (403 오류 해결)
 - 유효기간 24시간 캐시, 만료 60초 전 자동 갱신
+- `.kis_token_cache.json` 파일 캐시 — 서버 재시작 후 재발급 없이 재사용
 
 ## 차트 설정 (generate_chart_png — auto_trader.py)
 
@@ -178,139 +168,26 @@ auto_trade_cycle()  ← 30초 루프, risk_gate → select_volume → buy/sell
 ### 오버레이 상세 설정 (HTS 기준)
 
 **a. 일목균형표** — 기준1 / 전환1 / 선행2=2
-- 전환선: 제거 (X)
-- 기준선: **녹색**
-- 선행스팬1: 제거 (X)
-- 선행스팬2: **보라색**
-- 후행스팬: 제거 (X)
-- 구름대(fill): 제거 (X)
+- 기준선: **녹색** / 선행스팬2: **보라색** (전환선·선행스팬1·후행스팬·구름대 모두 제거)
+- `_ichimoku_signal()`: `price >= kijun*0.99` — 기준선(녹색)과 일치
 
 **b. MAC 채널** — 기간5, 상한율10%, 하한율10%
-- MAC Upper / Lower: **하늘색**
-- High MA / Low MA: **주황색**
+- MAC Upper/Lower: **하늘색** / High MA/Low MA: **주황색**
 
 **c. ADX** — DMI기간3, ADX기간3
-- ADX: **녹색** / PDI: **빨강** / MDI: **파랑**
-- 기준선: 7 (빨강 점선)
+- ADX: **녹색** / PDI: **빨강** / MDI: **파랑** / 기준선: 7 (빨강 점선)
 
 **d. MACD** — 단기5, 장기13, Signal6
-- MACD: **빨강** / Signal: **녹색**
-- 기준선: 0
+- MACD: **빨강** / Signal: **녹색** / 기준선: 0
 
 **e. RSI** — 기간6, Signal6
-- RSI: **빨강** / Signal: **녹색**
-- 기준선1: 30 / 기준선2: 70
-
-## 2026-04-10 주요 변경사항
-
-### 매매 시스템 버그 수정
-- `mock_trading/kis_client.py` — `buy_stock()` 내 `is_nxt_hours()` NameError 수정
-  - lazy import: `from auto_trader import is_nxt_hours as _is_nxt_hours`
-  - 이 버그로 오늘 하루 전체 매수 주문 실패했었음 (is_nxt_hours가 미정의 상태)
-- `mock_trading/kis_client.py` — KIS 토큰 파일 캐시 추가
-  - `.kis_token_cache.json` 저장/복구 → 서버 재시작 후 재발급 없이 토큰 재사용
-  - KIS 하루 1회 발급 제한 대응
-
-### 종목 선발 방식 전면 변경 (auto_trader.py)
-- `select_volume_smart_chart()` — **거래량 기반 → 차트 신호 기반으로 변경**
-  - **이전**: 워치리스트 ∩ 거래량TOP20 교집합 → 8종목 (한화에어로 12/12 신호에도 미선발)
-  - **이후**: 워치리스트 85종목 전체 병렬 스캔 → buy_count ≥ 6 내림차순 → 상위 7개
-  - 거래량은 `[거래량상위]` 태그로 로그 참고만
-  - `ThreadPoolExecutor(max_workers=10)` 병렬 스캔 (~15초)
-
-### 일목균형표 신호 로직 단순화 (auto_trader.py)
-- `_ichimoku_signal()` — **선행스팬1 제거, 기준선(kijun)만 비교**
-  - **이전**: `price >= 선행스팬1*0.99 and 선행스팬1 >= 선행스팬2*0.99`
-  - **이후**: `price >= kijun*0.99` — 차트에 실제로 보이는 기준선(녹색)과 일치
-- 차트 분석 출력 포맷: `일목균형표` → `기준선위(✅)/아래(❌)` 명시
-- 비전 프롬프트: 월봉/주봉/일봉 타임프레임별 구분 서술 강제 ("뭉뚱그리지 말 것")
-
-### PC 절전 로직 개선 (llm_client.py)
-- `_get_pc_user_idle_min()` 추가 — SSH로 `quser` 실행, Windows 사용자 유휴 시간 파싱
-- `send_sleep()` 조건 강화:
-  - **이전**: Ollama 유휴 10분 → 즉시 절전 (사용자가 PC 직접 쓰는 중에도 절전됨)
-  - **이후**: Ollama 유휴 10분 **AND** Windows 사용자 유휴 **15분 이상** 동시 충족 시만 절전
-  - 로그: `"PC 사용자 유휴 N분 (직접 사용 중으로 판단)"` 으로 차단 이유 명시
-
-### Ollama 가드레일 강화 (llm_client.py)
-- 감탄사/잡담 응답 시 메타 주석 금지: `"일반 대화는 ~할 수 있습니다"` 류 발언 차단
-- 인사엔 인사로, 잡담엔 잡담으로 짧게 응답하도록 명시
-
-### 업종별 KIS 학습 시스템 신설
-- `train_sector_kis.py` — 10개 업종 × 2~3종목(대형·중형) KIS 10년 데이터 학습
-  - KIS 5년씩 2청크로 10년 월봉/주봉/일봉 수집
-  - 각 시점별 12신호 계산 + 이후 수익률 레이블링 → `sector_signal.db`
-  - Ollama: 업종별 상승기법·하락경계·타임프레임신뢰도 3개 질문 × 10업종
-  - 업종간 비교 학습 → `chart_method_memory` RAG 저장
-- `learn_chart_method.py` / `train_sector_kis.py` — **킵얼라이브 스레드 추가**
-  - 4분 30초마다 `/ping_sleep_timer` 호출 → 학습 중 PC 절전 방지
-
-### 학습 종목 목록 (train_sector_kis.py)
-| 업종 | 대형 | 중형 |
-|------|------|------|
-| 반도체 | 삼성전자, SK하이닉스 | 한미반도체 |
-| 방산 | 한화에어로스페이스 | LIG넥스원, 현대로템 |
-| 자동차 | 현대차, 기아, 현대모비스 | — |
-| 2차전지 | LG에너지솔루션, 삼성SDI | 에코프로비엠 |
-| 바이오 | 삼성바이오로직스, 셀트리온 | 한미약품 |
-| IT플랫폼 | NAVER, 카카오, 삼성SDS | — |
-| 금융 | KB금융, 신한지주, 하나금융 | — |
-| 철강/소재 | POSCO홀딩스 | 현대제철, OCI홀딩스 |
-| 건설 | 현대건설 | 대우건설, GS건설 |
-| 에너지 | SK이노베이션, S-Oil, 한국전력 | — |
-
-## 2026-04-09 주요 변경사항
-
-### 차트 시스템 정리
-- `generate_chart_png()` — 후행스팬(노랑) 제거 완료. 현재 오버레이: 기준선(녹색)+선행스팬2(보라)만
-- `_ichimoku_signal()` — 1% 마진 추가 (`>=sa*0.99`) — period=1 특성상 가격이 선행스팬과 근접 시 위로 간주
-- 비전 분석 프롬프트 — RAG 주입 순서 변경: 차트구성 설명 → RAG (기준선 우선 인식)
-- 비전 결과 후처리 — 컴파일된 regex로 스팬1→선행스팬2, 후행스팬→기준선 교체
-
-### RAG 정비
-- `chart_method_memory` — 스팬1 포함 오염 문서 9개 삭제
-- `learn_chart_method.py` — 학습 질문에서 스팬1 제거, 선행스팬2/기준선으로 통일
-
-### 슬립 타이머 안정화
-- `touch_ollama_request()` — llm_client.py에 헬퍼 추가, 직접 접근 제거
-- `/ping_sleep_timer` — Flask 엔드포인트 (로컬호스트 전용), night_analysis.sh 시작 시 호출
-- `send_sleep()` — 성공 후 타이머 리셋으로 중복 절전 방지
-
-### night_analysis.sh 개선
-- 스캔 결과 4096자 초과 시 Python으로 한글 안전 truncation (MAX_LEN=3900)
-
-## 2026-04-08 주요 변경사항
-
-### 차트 시스템 완성
-- `generate_chart_png()` — HTS 설정 완전 일치 (5패널: 메인/거래량/ADX/RSI/MACD)
-- `_ichimoku_signal()` — 신호 계산도 HTS 파라미터(전환1/기준1/선행2)로 통일
-- 비전 분석 프롬프트 — 실제 차트 구성(5패널) 명시하여 분석 정확도 향상
-
-### 스캔 속도 개선 (~60초 → ~10초)
-- `scan_mode=True` — 분봉 스킵 (KIS API 7→3 호출/종목)
-- `_ollama_buy_decision` → 신호수 룰 대체 (≥6=BUY / 4~5=HOLD / <4=SELL)
-- `_make_scan_reason()` — 신호 기반 자동 근거 생성
-- `max_workers` 10 (KIS API 레이트 리밋 방지)
-
-### 라우팅 개선
-- 차트 키워드 감지: 공백 버전 추가 + 노이즈 단어 제거 (`해줘`, `부탁해`, `워치리스트` 등)
-- 복합 쿼리 충돌 해결: "워치리스트 + 차트분석" → 차트분석 우선 처리
-- 스캔 결과에서 단타0/4 항목 제거 (분봉 미계산 시 표시 불필요)
-
-### 도구 가드레일 (llm_client.py)
-- ㅋㅋ/ㅎㅎ 등 의성어·감탄사 → 도구 호출 금지
-- 히스토리에 검색 결과 있으면 web_search 재호출 금지
-- get_stock_price에 명확한 종목명/코드만 허용
-
-### 2-stage RAG (proxy_v54.py + rag_store.py)
-- 서버 시작 시 `store_tool_definitions()` — 도구 15개 tool_memory에 저장
-- `smart_wakeup_monitor` 스레드 — 순매수 변동/차트신호 급변 시 PC 자동 웨이크업
-- `_sleep_watcher` — 장중/장외 무관 10분 유휴 시 최대절전
+- RSI: **빨강** / Signal: **녹색** / 기준선: 30, 70
 
 ## 현재 진행 이슈
-- **가상주문 실전API** — 실시간 시세로 가상매매 중, `REAL_TRADE=True` 전환 시 실제 체결
+- **KY 실전 계좌** — 2026-04-11 추가, 미러 매매 중 (`44384407-01`, REAL_TRADE=True)
+- **가상주문** — 실시간 시세로 가상매매 중 (`44197559-01`, REAL_TRADE=False)
 - **모듈화 예정** — proxy_v54.py → 16개 파일 분리 (안정화 후 진행)
-- **장중 자동점검** — 스케줄 에이전트 trig_01NTvrDUFKtYzoNoHfGPMrTF (3/31 09/11/13/15시 KST)
+- **장중 자동점검** — 스케줄 에이전트 trig_01NTvrDUFKtYzoNoHfGPMrTF (09/11/13/15시 KST)
 - **모닝 보수 에이전트** — trig_01Wgb24aru4pDzfzMKY52nx4 (평일 09:00 KST)
 
 ## 절대 하지 말 것
@@ -320,13 +197,13 @@ auto_trade_cycle()  ← 30초 루프, risk_gate → select_volume → buy/sell
 - 분봉 신호를 buy_count(12)에 포함 금지 — 단타타이밍 참고용으로만 표시
 - 일목균형표 파라미터를 표준(9/26/52)으로 되돌리지 말 것 — HTS 설정(전환1/기준1/선행2) 유지
 - `scan_buy_signals_for_chat`에서 `_ollama_buy_decision` 복구 금지 — 신호수 룰로 충분
+- `kis_client_ky.py`의 REAL_TRADE=True 절대 False로 바꾸지 말 것
 
 ## 자주 쓰는 명령
 ```bash
 sudo systemctl restart proxy_v54   # 서버 재시작
 systemctl status proxy_v54         # 상태 확인
 journalctl -u proxy_v54 -n 50      # 최근 로그
-grep "tool call" proxy_v54.log | tail -20  # 도구 호출 확인
 curl -s http://localhost:11435/health  # 헬스체크
 curl -s http://221.144.111.116:11434/api/tags  # PC Ollama 확인
 ```
