@@ -68,48 +68,57 @@ def touch_ollama_request():
     _last_ollama_request[0] = _time_mod.time()
 
 
+_PS_IDLE_SCRIPT = "/tmp/get_idle.ps1"
+_PS_IDLE_REMOTE = "C:/temp/get_idle.ps1"
+_PS_IDLE_CONTENT = r"""Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+public class IdleTime {
+    [DllImport("user32.dll")]
+    static extern bool GetLastInputInfo(ref LASTINPUTINFO plii);
+    [StructLayout(LayoutKind.Sequential)]
+    public struct LASTINPUTINFO { public uint cbSize; public uint dwTime; }
+    public static int GetIdleMinutes() {
+        var info = new LASTINPUTINFO();
+        info.cbSize = (uint)Marshal.SizeOf(info);
+        GetLastInputInfo(ref info);
+        return (int)((Environment.TickCount - info.dwTime) / 60000);
+    }
+}
+"@
+[IdleTime]::GetIdleMinutes()
+"""
+
+def _ensure_idle_script():
+    """로컬에 PS1 스크립트 파일이 없으면 생성 후 PC에 업로드."""
+    import subprocess, os
+    if not os.path.exists(_PS_IDLE_SCRIPT):
+        with open(_PS_IDLE_SCRIPT, "w") as f:
+            f.write(_PS_IDLE_CONTENT)
+    subprocess.run(
+        ["scp", "-o", "ConnectTimeout=5", "-o", "StrictHostKeyChecking=no",
+         "-P", "2224", "-i", "/home/ubuntu/.ssh/id_ed25519",
+         _PS_IDLE_SCRIPT, f"ultimate@221.144.111.116:{_PS_IDLE_REMOTE}"],
+        capture_output=True, timeout=10
+    )
+
 def _get_pc_user_idle_min() -> int:
     """
     PC Windows 사용자 유휴 시간(분) 반환.
-    quser 출력에서 Active 세션의 IDLE TIME 파싱.
-    확인 실패 or 현재 사용 중 → 0 반환 (절전 차단).
+    PowerShell GetLastInputInfo API로 마지막 입력 후 경과 시간 측정.
+    확인 실패 → 0 반환 (절전 차단).
     """
     import subprocess
     try:
+        _ensure_idle_script()
         result = subprocess.run(
             ["ssh", "-o", "ConnectTimeout=5", "-o", "StrictHostKeyChecking=no",
              "-p", "2224", "-i", "/home/ubuntu/.ssh/id_ed25519",
              "ultimate@221.144.111.116",
-             "quser 2>nul"],
-            capture_output=True, timeout=10
+             f"powershell -ExecutionPolicy Bypass -File {_PS_IDLE_REMOTE}"],
+            capture_output=True, timeout=15
         )
-        # 한글 Windows는 인코딩이 깨질 수 있으므로 cp949 → utf-8 순 시도
-        for enc in ("cp949", "utf-8", "ignore"):
-            try:
-                output = result.stdout.decode(enc if enc != "ignore" else "utf-8",
-                                              errors="ignore" if enc == "ignore" else "strict")
-                break
-            except Exception:
-                continue
-
-        import re
-        for line in output.splitlines():
-            parts = line.split()
-            if len(parts) < 4:
-                continue
-            # IDLE_TIME 컬럼 위치: 헤더 제외 데이터 행에서 none 또는 H:MM 패턴 탐색
-            for i, p in enumerate(parts):
-                if p.lower() == "none":
-                    return 0  # 방금까지 활성 사용 중
-                if re.fullmatch(r'\d+:\d{2}', p) or re.fullmatch(r'\d+\+\d+:\d{2}', p):
-                    # H:MM 또는 D+H:MM 형식
-                    cleaned = p.replace("+", ":")
-                    nums = cleaned.split(":")
-                    if len(nums) == 2:
-                        return int(nums[0]) * 60 + int(nums[1])
-                    if len(nums) == 3:  # D+H:MM
-                        return int(nums[0]) * 1440 + int(nums[1]) * 60 + int(nums[2])
-        return 0  # 파싱 실패 → 안전하게 차단
+        return int(result.stdout.decode("utf-8", errors="ignore").strip())
     except Exception as e:
         logger.debug("PC 유휴 확인 실패: %s", e)
         return 0  # SSH 실패 → 안전하게 차단
