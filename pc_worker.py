@@ -11,7 +11,7 @@ Mistral(221.144.111.116:11434)이 파일 읽기/쓰기/bash 실행 도구로
 코드 작업을 수행하고 결과를 텔레그램으로 보고합니다.
 """
 
-import sys, os, json, time, subprocess, argparse, requests, textwrap
+import sys, os, json, re, time, subprocess, argparse, requests, textwrap
 sys.path.insert(0, "/home/ubuntu/-claude-test-")
 os.chdir("/home/ubuntu/-claude-test-")
 
@@ -165,8 +165,7 @@ def execute_tool(name: str, args: dict) -> str:
 
         elif name == "report":
             msg = args["message"]
-            tg_send(f"🤖 [PC 작업자 보고]\n\n{msg}")
-            # Claude Code에서 읽을 수 있도록 파일로도 저장
+            # Claude Code에서 읽을 수 있도록 파일로 저장
             report_path = "/tmp/pc_worker_last_report.txt"
             with open(report_path, "w", encoding="utf-8") as f:
                 import datetime
@@ -176,13 +175,59 @@ def execute_tool(name: str, args: dict) -> str:
     except Exception as e:
         return f"❌ 오류: {e}"
 
+# ── 텍스트 → tool call 폴백 파서 ─────────────────────────────────────────────
+def _extract_tool_calls_from_text(content: str) -> list:
+    """Mistral이 tool call을 JSON 텍스트로 출력했을 때 파싱해서 tool_calls 형식으로 변환."""
+    results = []
+    # [{"name": "...", "arguments": {...}}] 형식 추출
+    for m in re.finditer(r'\[\s*\{.*?"name"\s*:.*?\}\s*\]', content, re.DOTALL):
+        try:
+            items = json.loads(m.group())
+            for i, item in enumerate(items):
+                name = item.get("name", "")
+                args = item.get("arguments", {})
+                if name in {t["function"]["name"] for t in TOOLS}:
+                    results.append({
+                        "id": f"fallback_{i}",
+                        "function": {"name": name, "arguments": args}
+                    })
+        except Exception:
+            pass
+    # {"name": "...", "arguments": {...}} 단일 형식도 시도
+    if not results:
+        for m in re.finditer(r'\{\s*"name"\s*:\s*"(\w+)".*?"arguments"\s*:\s*(\{.*?\})\s*\}', content, re.DOTALL):
+            try:
+                name = m.group(1)
+                args = json.loads(m.group(2))
+                if name in {t["function"]["name"] for t in TOOLS}:
+                    results.append({
+                        "id": "fallback_0",
+                        "function": {"name": name, "arguments": args}
+                    })
+            except Exception:
+                pass
+    return results
+
+
 # ── Mistral 호출 루프 ─────────────────────────────────────────────────────────
 SYSTEM_PROMPT = """\
 너는 Python 자동매매 시스템의 코드 작업 전담 에이전트다.
 주어진 작업을 도구(read_file, edit_file, bash 등)를 사용해 직접 수행하고,
 완료 후 반드시 report 도구로 결과를 보고해야 한다.
 
-규칙:
+## 작업 방식 (필수)
+- 파일 수정 시 권한 확인, 승인 요청, "수정할까요?" 같은 질문 절대 금지
+- 작업 지시를 받으면 즉시 read_file로 파일을 읽고 edit_file/write_file로 바로 수정
+- "수정해도 될까요?", "확인해주세요", "진행할까요?" 등의 확인 메시지 없이 바로 실행
+- 수정 완료 후 report 도구로 결과 보고 (수정 파일명:줄번호 포함)
+
+## 도구 사용 규칙 (절대 준수)
+- 파일을 수정할 때는 반드시 edit_file 또는 write_file 도구를 **실제로 호출**할 것
+- 수정 내용을 텍스트나 코드블록으로만 출력하는 것은 금지 — 도구를 호출해야 실제로 적용됨
+- "다음과 같이 수정했습니다", "수정된 내용은:" 같은 텍스트 출력으로 대체하지 말 것
+- 작업 완료는 반드시 report 도구 호출로만 표시할 것 — 텍스트 응답으로 종료 금지
+
+## 금지 사항
 - pre-injection 블록(ai_chat.py 3-1/3-2/3-3) 절대 제거 금지
 - proxy_v54.py 단일 파일로 되돌리기 금지
 - RSI 기준 50 유지 (30~70으로 바꾸지 말 것)
@@ -193,7 +238,6 @@ SYSTEM_PROMPT = """\
 
 def run_worker(task: str, extra_files: list = None):
     print(f"[PC 작업자] 작업 시작: {task[:80]}")
-    tg_send(f"🔧 [PC 작업자 시작]\n\n{task[:200]}")
 
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
@@ -227,7 +271,7 @@ def run_worker(task: str, extra_files: list = None):
                     "tools":    TOOLS,
                     "stream":   False,
                 },
-                timeout=120,
+                timeout=300,
                 proxies=NO_PROXY,
             )
             resp.raise_for_status()
@@ -242,12 +286,16 @@ def run_worker(task: str, extra_files: list = None):
         tool_calls = msg.get("tool_calls", [])
         content    = msg.get("content", "")
 
-        # 도구 호출 없으면 종료
+        # 도구 호출 없으면 — content에서 JSON tool call 폴백 파싱
         if not tool_calls:
-            print(f"[PC 작업자] 도구 없음, 종료: {content[:100]}")
-            if content.strip():
-                tg_send(f"🤖 [PC 작업자 완료]\n\n{content}")
-            return
+            tool_calls = _extract_tool_calls_from_text(content)
+            if tool_calls:
+                print(f"[PC 작업자] 텍스트에서 tool call {len(tool_calls)}개 추출")
+            else:
+                print(f"[PC 작업자] 도구 없음, 종료: {content[:100]}")
+                if content.strip():
+                    print(f"[PC 작업자 완료] {content}")
+                return
 
         # assistant 메시지 추가
         messages.append({"role": "assistant", "content": content, "tool_calls": tool_calls})
@@ -277,7 +325,7 @@ def run_worker(task: str, extra_files: list = None):
             print("[PC 작업자] report 완료, 종료")
             return
 
-    tg_send("🤖 [PC 작업자]\n\n⚠️ 최대 반복 횟수 초과 — 작업 미완료")
+    print("[PC 작업자] ⚠️ 최대 반복 횟수 초과 — 작업 미완료")
     print("[PC 작업자] 최대 반복 초과")
 
 

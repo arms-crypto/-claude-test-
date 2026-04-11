@@ -121,7 +121,14 @@ def _trigger(sector: str):
 
 
 def _worker(sector: str):
-    """백그라운드 학습 워커."""
+    """백그라운드 학습 워커.
+
+    업종별 신호 데이터를 수집하고 학습하여 파라미터를 도출한 후,
+    이를 JSON 파일에 저장합니다.
+
+    Args:
+        sector: 학습할 업종명 (예: '반도체', '방산').
+    """
     try:
         logger.info("[sector_params] ▶ 학습 시작: %s", sector)
         from train_sector_kis import SECTOR_STOCKS, process_stock, learn_sector, init_db
@@ -168,7 +175,14 @@ def _worker(sector: str):
 
 
 def _ask_ollama(prompt: str) -> str:
-    """PC → 로컬 순서로 Ollama 호출."""
+    """PC → 로컬 순서로 Ollama를 호출하여 응답을 반환한다.
+
+    Args:
+        prompt: Ollama API에 전달할 프롬프트 문자열.
+
+    Returns:
+        Ollama API 응답 문자열. 모든 엔드포인트 실패 시 빈 문자열 반환.
+    """
     for url, model in [(OLLAMA_PC, "mistral-small3.1:24b"), (OLLAMA_LOCAL, "gemma3:4b")]:
         try:
             r = requests.post(url, json={
@@ -185,9 +199,17 @@ def _ask_ollama(prompt: str) -> str:
 
 
 def _derive_one(sector: str) -> dict:
-    """
-    sector_signal.db 통계 → Ollama → 업종 파라미터 1개 도출.
-    실패 시 DEFAULT_PARAMS 반환.
+    """sector_signal.db 통계를 분석해 Ollama로 업종 파라미터 1개를 도출한다.
+
+    DB에서 해당 업종의 신호수별 승률/수익률 통계를 집계하고,
+    Ollama에 프롬프트로 전달해 최적 매매 파라미터 JSON을 반환받는다.
+
+    Args:
+        sector: 파라미터를 도출할 업종명 (예: '반도체', '방산').
+
+    Returns:
+        min_signal, require_both, max_atr_pct, hold_days, note 키를 포함한 딕셔너리.
+        데이터 부족 또는 실패 시 DEFAULT_PARAMS 반환.
     """
     default = DEFAULT_PARAMS.copy()
     try:
