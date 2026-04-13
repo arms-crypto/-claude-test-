@@ -166,7 +166,7 @@ def wait_for_ollama(timeout: int = 120, interval: int = 10) -> bool:
     deadline = time.time() + timeout
     while time.time() < deadline:
         try:
-            r = requests.get("http://192.168.1.138:8000/v1/models", timeout=5)
+            r = requests.get("http://221.144.111.116:8000/v1/models", timeout=5)
             if r.status_code == 200:
                 logger.info("LM Studio 응답 확인 — 서버 정상")
                 return True
@@ -918,7 +918,7 @@ def call_mistral_vision(prompt: str, image_path: str, system: str = "한국 주�
     }
     try:
         r = requests.post(
-            "http://192.168.1.138:8000/v1/chat/completions",
+            "http://221.144.111.116:8000/v1/chat/completions",
             json=payload,
             timeout=120,
             proxies={"http": None, "https": None},
@@ -1038,7 +1038,7 @@ def call_mistral_only(prompt: str, system: str = _TOOL_SYSTEM, use_tools: bool =
     last_exc = None
     for attempt in range(1, config.MISTRAL_MAX_RETRY + 1):
         try:
-            r = requests.post("http://192.168.1.138:8000/v1/chat/completions", json=payload, timeout=(1, 300))
+            r = requests.post("http://221.144.111.116:8000/v1/chat/completions", json=payload, timeout=(1, 300))
             r.raise_for_status()
             data = r.json()
             # OpenAI 호환 응답 형식: {"choices": [{"message": {"content": "..."}}]}
@@ -1073,7 +1073,7 @@ def call_mistral_only(prompt: str, system: str = _TOOL_SYSTEM, use_tools: bool =
                     "temperature": 0.7,
                     "max_tokens": 3000,
                 }
-                r2 = requests.post("http://192.168.1.138:8000/v1/chat/completions", json=payload2, timeout=(1, 300))
+                r2 = requests.post("http://221.144.111.116:8000/v1/chat/completions", json=payload2, timeout=(1, 300))
                 r2.raise_for_status()
                 msg = (r2.json().get("choices") or [{}])[0].get("message", {})
                 continue
@@ -1116,7 +1116,7 @@ call_qwen = call_mistral_only
 def _ollama_alive() -> bool:
     """LM Studio (localhost:8000) 응답 가능 여부를 1초 안에 확인."""
     try:
-        r = requests.get("http://192.168.1.138:8000/v1/models", timeout=1)
+        r = requests.get("http://221.144.111.116:8000/v1/models", timeout=1)
         return r.status_code == 200
     except Exception:
         return False
