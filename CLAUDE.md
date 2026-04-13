@@ -53,6 +53,24 @@ handle_tg_srv()     ← 텔레그램 봇2, 슬래시 명령 + call_gemma3
 auto_trade_cycle()  ← 30초 루프, risk_gate → select_volume → buy/sell (가상+KY 미러)
 ```
 
+## RAG 1단계: 도구 정의 15개 (읽기 전용 주입)
+ai_chat.py → call_mistral_only()에서 자동 주입 (llm_client.py RAG 1단계):
+1. `get_stock_price` — 주가/시세 조회
+2. `web_search` — 웹 검색 (최근 뉴스)
+3. `search_local_knowledge` — RAG 검색 (저장된 뉴스/시장보고서)
+4. `query_portfolio` — 보유종목/잔고/평가손익 (읽기만)
+5. `query_trade_history` — 거래내역/매매기록
+6. `get_news` — 종목별 뉴스
+7. `deep_search` — 심층분석 (Perplexica)
+8. `fetch_url` — URL 읽기
+9. `scan_buy_signals` — 매수신호 스캔
+10. `get_watchlist` — 워치리스트 조회
+11. `analyze_chart` — 차트 기술분석
+12. `get_foreign_net_buy` — 외국인 순매수
+13. `read_file` — 파일 읽기
+14. `write_file` — 파일 쓰기 (관리자만)
+15. `run_command` — 쉘 명령 (관리자만)
+
 ## 도구 라우팅 규칙 (llm_client.py _TOOL_SYSTEM)
 - **주가/시세** → `get_stock_price`
 - **시황/증시/나스닥** → `web_search` or `search_local_knowledge`
