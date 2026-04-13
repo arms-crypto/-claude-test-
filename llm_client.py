@@ -177,11 +177,17 @@ def wait_for_ollama(timeout: int = 120, interval: int = 10) -> bool:
 
 
 def _parse_ollama_response(r) -> str:
-    """Ollama chat 응답에서 텍스트 추출 (JSON / NDJSON 모두 처리)."""
+    """응답에서 텍스트 추출 (Ollama/OpenAI 호환 모두 처리)."""
     raw_text = r.text.strip()
     try:
         data = r.json()
         if isinstance(data, dict):
+            # OpenAI 형식: {"choices": [{"message": {"content": "..."}}]}
+            if "choices" in data:
+                choices = data.get("choices", [])
+                if choices and isinstance(choices[0], dict):
+                    return choices[0].get("message", {}).get("content", "")
+            # Ollama 형식: {"message": {"content": "..."}}
             if "message" in data:
                 return data["message"]["content"]
             if "response" in data:
@@ -900,25 +906,26 @@ def call_mistral_vision(prompt: str, image_path: str, system: str = "한국 주�
     _DAYS_KO = ["월요일","화요일","수요일","목요일","금요일","토요일","일요일"]
     _dated_prompt = f"[{_now.strftime('%Y-%m-%d')} {_DAYS_KO[_now.weekday()]} {_now.strftime('%H:%M KST')}] {prompt}"
 
+    # OpenAI 호환 API 페이로드 (LM Studio localhost:8000)
     payload = {
-        "model": config.QWEN_MODEL,
+        "model": "mistral-small-3.2-24b-instruct-2506",
         "messages": [
             {"role": "system", "content": system},
             {"role": "user", "content": _dated_prompt, "images": [img_b64]},
         ],
-        "options": {"temperature": 0.5, "num_predict": 2000, "num_ctx": 8192},
-        "stream": False,
+        "temperature": 0.5,
+        "max_tokens": 2000,
     }
     try:
         r = requests.post(
-            config.QWEN_URL,
+            "http://localhost:8000/v1/chat/completions",
             json=payload,
             timeout=120,
             proxies={"http": None, "https": None},
         )
         r.raise_for_status()
         data = r.json()
-        return (data.get("message") or {}).get("content", "").strip()
+        return ((data.get("choices") or [{}])[0].get("message") or {}).get("content", "").strip()
     except Exception as e:
         logger.error("call_mistral_vision 실패: %s", e)
         return ""
@@ -970,11 +977,12 @@ def call_mistral_only(prompt: str, system: str = _TOOL_SYSTEM, use_tools: bool =
         messages.extend(history_messages)
     messages.append({"role": "user", "content": _dated_prompt})
 
+    # OpenAI 호환 API 페이로드 (LM Studio localhost:8000)
     payload = {
-        "model": config.QWEN_MODEL,
+        "model": "mistral-small-3.2-24b-instruct-2506",
         "messages": messages,
-        "options": {"temperature": 0.7, "num_predict": 3000, "num_ctx": 8192},
-        "stream": False,
+        "temperature": 0.7,
+        "max_tokens": 3000,
     }
     # RAG 텍스트 주입 방식 — native tools payload 미사용
 
@@ -1030,10 +1038,11 @@ def call_mistral_only(prompt: str, system: str = _TOOL_SYSTEM, use_tools: bool =
     last_exc = None
     for attempt in range(1, config.MISTRAL_MAX_RETRY + 1):
         try:
-            r = requests.post(config.QWEN_URL, json=payload, timeout=(1, 300))
+            r = requests.post("http://localhost:8000/v1/chat/completions", json=payload, timeout=(1, 300))
             r.raise_for_status()
             data = r.json()
-            msg = data.get("message", {})
+            # OpenAI 호환 응답 형식: {"choices": [{"message": {"content": "..."}}]}
+            msg = (data.get("choices") or [{}])[0].get("message", {})
 
             # 도구 호출 루프 (최대 3라운드)
             for _round in range(3):
@@ -1059,14 +1068,14 @@ def call_mistral_only(prompt: str, system: str = _TOOL_SYSTEM, use_tools: bool =
                 messages.append({"role": "assistant", "content": content})
                 messages.append({"role": "user", "content": f"[도구 결과: {tool_name}]\n{tool_result}\n\n위 결과를 바탕으로 한국어로 답해줘."})
                 payload2 = {
-                    "model": config.QWEN_MODEL,
+                    "model": "mistral-small-3.2-24b-instruct-2506",
                     "messages": messages,
-                    "options": {"temperature": 0.7, "num_predict": 3000, "num_ctx": 8192},
-                    "stream": False,
+                    "temperature": 0.7,
+                    "max_tokens": 3000,
                 }
-                r2 = requests.post(config.QWEN_URL, json=payload2, timeout=(1, 300))
+                r2 = requests.post("http://localhost:8000/v1/chat/completions", json=payload2, timeout=(1, 300))
                 r2.raise_for_status()
-                msg = r2.json().get("message", {})
+                msg = (r2.json().get("choices") or [{}])[0].get("message", {})
                 continue
 
             return (msg.get("content") or "").strip() or _parse_ollama_response(r)
@@ -1105,9 +1114,9 @@ call_qwen = call_mistral_only
 
 
 def _ollama_alive() -> bool:
-    """Ollama 응답 가능 여부를 1초 안에 확인."""
+    """LM Studio (localhost:8000) 응답 가능 여부를 1초 안에 확인."""
     try:
-        r = requests.get(f"http://{config.REMOTE_OLLAMA_IP}:11434/api/tags", timeout=1)
+        r = requests.get("http://localhost:8000/v1/models", timeout=1)
         return r.status_code == 200
     except Exception:
         return False
