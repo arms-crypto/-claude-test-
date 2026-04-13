@@ -986,7 +986,12 @@ def call_mistral_only(prompt: str, system: str = _TOOL_SYSTEM, use_tools: bool =
     }
     # RAG 텍스트 주입 방식 — native tools payload 미사용
 
-    _DIRECT_RETURN_TOOLS = {"scan_buy_signals", "get_watchlist", "analyze_chart"}
+    _DIRECT_RETURN_TOOLS = {
+        "scan_buy_signals", "get_watchlist", "analyze_chart",
+        "web_search", "get_stock_price", "get_news", "fetch_url",
+        "query_portfolio", "query_trade_history", "search_local_knowledge",
+        "get_foreign_net_buy", "deep_search"
+    }
     _KNOWN_TOOLS = {
         "scan_buy_signals", "get_watchlist", "analyze_chart", "get_stock_price",
         "get_news", "web_search", "query_portfolio", "query_trade_history",
