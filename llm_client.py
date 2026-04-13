@@ -162,13 +162,13 @@ def send_sleep(delay_min: int = 5):
 
 
 def wait_for_ollama(timeout: int = 120, interval: int = 10) -> bool:
-    """Ollama가 응답할 때까지 대기. timeout초 내에 응답하면 True."""
+    """LM Studio (localhost:8000)가 응답할 때까지 대기. timeout초 내에 응답하면 True."""
     deadline = time.time() + timeout
     while time.time() < deadline:
         try:
-            r = requests.get(f"http://{config.REMOTE_OLLAMA_IP}:11434/api/tags", timeout=5)
+            r = requests.get("http://localhost:8000/v1/models", timeout=5)
             if r.status_code == 200:
-                logger.info("Ollama 응답 확인 — PC 켜짐")
+                logger.info("LM Studio 응답 확인 — 서버 정상")
                 return True
         except Exception:
             pass
