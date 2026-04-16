@@ -28,16 +28,18 @@ LM_STUDIO_URL = "http://221.144.111.116:8000/v1/chat/completions"
 QWEN_MODEL    = "qwen3.5-27b-claude-4.6-opus-reasoning-distilled"
 WORKSPACE     = "/home/ubuntu/-claude-test-"
 
-SYSTEM_PROMPT = """너는 서버 보수 협업 에이전트다. 반드시 한국어로 답변한다.
+SYSTEM_PROMPT = """너는 서버 보수 협업 조수(assistant)다. 반드시 한국어로 답변한다.
 
 역할:
 - 로그 분석, 버그 후보 추출, 코드 리뷰, 문제 진단
 - 파일 읽기와 bash 명령 실행으로 직접 조사
+- 버그 수정, 코드 개선 등 파일 직접 수정
 - Claude(설계자)에게 전달할 보고서 작성
 
 도구 사용 형식 (필요시):
 {"tool": "read_file", "path": "/절대/경로"}
 {"tool": "bash", "cmd": "명령어"}
+{"tool": "write_file", "path": "/절대/경로", "content": "전체 파일 내용"}
 
 주요 파일:
 - 서버 로그: /home/ubuntu/-claude-test-/proxy_v54.log
@@ -46,13 +48,19 @@ SYSTEM_PROMPT = """너는 서버 보수 협업 에이전트다. 반드시 한국
 - KIS 클라이언트: /home/ubuntu/-claude-test-/mock_trading/kis_client.py
 - KY 클라이언트: /home/ubuntu/-claude-test-/mock_trading/kis_client_ky.py
 
+파일 수정 규칙:
+- 수정 전 반드시 read_file로 현재 내용 확인
+- 수정 후 변경 내용을 명확히 보고 (몇 번째 줄, 무엇을 바꿨는지)
+- git commit은 하지 말 것 — Claude가 검토 후 직접 커밋
+
 절대 금지:
-- 파일 수정 (읽기만 가능)
+- REAL_TRADE 값 변경 (kis_client.py: False 유지, kis_client_ky.py: True 유지)
+- ai_chat.py pre-injection 블록(3-1, 3-2, 3-3) 제거/수정
 - 서비스 재시작 (보고만 할 것)
-- 확실하지 않으면 추측하지 말고 보고만 할 것
+- 확실하지 않으면 수정하지 말고 보고만 할 것
 
 단순 조회(파일읽기·로그확인)는 추론 없이 즉시 처리.
-버그분석·코드리뷰에만 깊은 추론 사용."""
+버그분석·코드리뷰·수정에만 깊은 추론 사용."""
 
 
 # ── 도구 실행 ─────────────────────────────────────────────────────────────────
@@ -88,6 +96,57 @@ def _run_tool(tool_call: dict) -> str:
             return "명령 타임아웃 (15초)"
         except Exception as e:
             return f"명령 실행 실패: {e}"
+
+    elif tool == "write_file":
+        path = tool_call.get("path", "")
+        content = tool_call.get("content", "")
+        if not path or not content:
+            return "write_file: path 또는 content 누락"
+        # 절대경로 강제
+        if not path.startswith("/"):
+            return f"절대경로 필요: {path}"
+        # 위험 내용 차단
+        PROTECTED = [
+            ("REAL_TRADE = True",    "kis_client_ky.py의 REAL_TRADE=True는 수정 금지"),
+            ("REAL_TRADE=True",      "kis_client_ky.py의 REAL_TRADE=True는 수정 금지"),
+            ("REAL_TRADE = False",   "kis_client.py의 REAL_TRADE=False는 수정 금지 (kis_client_ky.py에 False 추가 시도 차단)"),
+        ]
+        # kis_client_ky.py에 REAL_TRADE=False 쓰기 차단
+        if "kis_client_ky" in path and "REAL_TRADE = False" in content:
+            return "차단: kis_client_ky.py에 REAL_TRADE=False 설정 금지 (실전 계좌)"
+        # kis_client.py(비KY)에 REAL_TRADE=True 쓰기 차단
+        if "kis_client_ky" not in path and "kis_client" in path and "REAL_TRADE = True" in content:
+            return "차단: kis_client.py에 REAL_TRADE=True 설정 금지 (가상계좌)"
+        # pre-injection 블록 삭제 차단 (ai_chat.py)
+        if "ai_chat" in path:
+            for marker in ["3-1)", "3-2)", "3-3)", "pre-injection"]:
+                if marker not in content:
+                    return f"차단: ai_chat.py에서 pre-injection 블록({marker}) 제거 금지"
+        # 백업 생성
+        backup_path = path + ".bak"
+        try:
+            with open(path) as f:
+                old_content = f.read()
+            with open(backup_path, "w") as f:
+                f.write(old_content)
+        except FileNotFoundError:
+            old_content = ""
+        except Exception as e:
+            return f"백업 실패: {e}"
+        # 파일 쓰기
+        try:
+            with open(path, "w") as f:
+                f.write(content)
+        except Exception as e:
+            return f"파일 쓰기 실패: {e}"
+        # 변경 라인 수 계산
+        old_lines = old_content.splitlines()
+        new_lines = content.splitlines()
+        added   = len(new_lines) - len(old_lines)
+        sign    = f"+{added}" if added >= 0 else str(added)
+        return (f"✅ 파일 수정 완료: {path}\n"
+                f"변경: {len(old_lines)}줄 → {len(new_lines)}줄 ({sign})\n"
+                f"백업: {backup_path}")
 
     return f"알 수 없는 도구: {tool}"
 

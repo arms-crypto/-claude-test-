@@ -1,13 +1,15 @@
 # 프로젝트 컨텍스트
 
 ## 협업 구조 (Claude + Qwen)
-- **Qwen (서버보수에이전트.py)** — 서버 보수 협업 전담: 로그 분석, 버그 후보 추출, 코드 리뷰
+- **Qwen 조수 (서버보수에이전트.py)** — 서버 보수 협업 전담: 로그 분석, 버그 후보 추출, 코드 리뷰, **파일 직접 수정**
   - LM Studio `qwen3.5-27b-claude-4.6-opus-reasoning-distilled` (포트 8000)
   - worker 봇(@OpenClaz_pc_bot) 토큰으로 텔레그램 수신
-  - 도구: `read_file`, `bash(조회)` 내장 (파일 수정/서비스 재시작 금지)
+  - 도구: `read_file`, `bash(조회)`, `write_file(수정)` 내장
+  - 보호 규칙: REAL_TRADE 값 변경 금지, ai_chat.py pre-injection 블록 수정 금지
+  - 수정 시 자동 .bak 백업 생성, 변경 내용 보고 (git commit은 Claude가 검토 후 직접)
   - 실행: `python3 서버보수에이전트.py` → 텔레그램으로 직접 보고
   - 종료: `/exit` 입력
-- **Claude** — Qwen 보고 검토 후 실제 파일 수정
+- **Claude (설계자)** — Qwen 수정 결과 검토 후 git commit, 위험 판단, 아키텍처 결정
 - **OpenClaw** — research/trading 에이전트만 운영 (worker 봇 비활성화됨)
 
 ## 핵심 파일
