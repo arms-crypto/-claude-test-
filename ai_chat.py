@@ -2,8 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 ai_chat.py — AI 챗봇
-get_session_history(), get_verified_facts(), get_fact_info_for_session(),
-check_and_store_fact(), get_latest_db_news(), ask_ai()
+get_session_history(), get_latest_db_news(), ask_ai()
 """
 
 import re
@@ -13,7 +12,7 @@ import logging
 import pytz
 
 import config
-from db_utils import get_db_pool, get_stock_code_from_db, save_stock_code_to_db, save_fact_to_db
+from db_utils import get_db_pool, get_stock_code_from_db, save_stock_code_to_db
 from stock_data import (
     get_yahoo_price, get_price_by_code, get_naver_price,
     stock_price_overseas, korea_invest_stock, get_foreign_net_buy
@@ -33,16 +32,6 @@ def get_session_history(session_id):
     return config.store[session_id]
 
 
-def get_verified_facts(session_id):
-    if session_id not in config.verified_facts_store:
-        config.verified_facts_store[session_id] = []
-    return "\n".join(config.verified_facts_store[session_id])
-
-
-def get_fact_info_for_session(session_id: str) -> str:
-    if session_id in config.verified_facts_store:
-        return "\n".join(config.verified_facts_store[session_id])
-    return ""
 
 
 # -------------------------
@@ -81,26 +70,6 @@ def learn_from_response(user_input: str, ai_response: str):
     except Exception:
         logger.exception("learn_from_response 예외")
 
-
-# 팩트 검증 백그라운드
-def check_and_store_fact(session_id, user_input, ai_response):
-    check_prompt = f"""
-    당신은 엄격한 팩트 체커입니다.
-    다음 사용자의 말에서, 사용자의 '이름', '나이', '자산', '직업' 등 명확한 개인 정보나 영구적으로 기억해야 할 중요한 사실이 있다면 1문장으로 요약하세요.
-    단, 농담, 인사말, 불확실한 미래 예측, 단순 질문이라면 무조건 'None'이라고만 대답하세요.
-
-    사용자: {user_input}
-    AI: {ai_response}
-    """
-    try:
-        fact_result = call_qwen(check_prompt, use_tools=False)
-        if "None" not in fact_result and len(fact_result.strip()) > 5:
-            if session_id not in config.verified_facts_store:
-                config.verified_facts_store[session_id] = []
-            config.verified_facts_store[session_id].append(fact_result.strip())
-            logger.info("팩트 검증 성공, 저장: %s", fact_result.strip())
-    except Exception:
-        logger.exception("check_and_store_fact 예외")
 
 
 # -------------------------
@@ -141,29 +110,39 @@ def ask_ai(session_id, user_input):
             return "⏰ PC가 응답하지 않습니다. 잠시 후 다시 시도해주세요.", None
         logger.info("ask_ai: Ollama 복구 확인, 처리 계속")
 
-    # 1) 6자리 코드만 입력시 자동학습
+    # 0-1) 6자리 코드 감지 → korea_invest_stock 통합 처리
+    _code_match = re.search(r'(\d{6})', user_input)
+    if _code_match:
+        _code = _code_match.group(1)
+        # "현재가", "가격", "시세" 등의 키워드 확인
+        if any(k in user_input for k in ["현재가", "가격", "시세", "조회"]):
+            price = korea_invest_stock(_code)
+            if price:
+                return price, None
+
+    # 1) 순 6자리 코드만 입력시 korea_invest_stock에 위임
     if len(user_input.strip()) == 6 and user_input.strip().isdigit():
         code = user_input.strip()
-        save_stock_code_to_db("코드학습", code)
-        price = get_yahoo_price(code) or get_price_by_code(code) or get_naver_price(code)
+        price = korea_invest_stock(code)
         if price:
-            return f"✅ `{code}` 자동학습! 💾\n현재가: **{price}**", None
+            return price, None
         return f"❌ `{code}`: 가격 조회 실패", None
 
-    # 2) 이름만 입력시 DB 조회 (3자 이상 + 숫자/영문 포함 또는 한자어만)
+    # 2) 이름만 입력시 korea_invest_stock에 위임
     clean_name = re.sub(r'\d{6}', '', user_input).strip()
-    if clean_name and len(clean_name) >= 3 and not re.match(r'^[a-zA-Z가-힣]{1,2}$', clean_name):
-        code = get_stock_code_from_db(clean_name)
-        if code:
-            price = get_yahoo_price(code) or get_price_by_code(code) or get_naver_price(code)
-            if price:
-                return f"**{clean_name}**: {price} (DB) 💾\n`[{code}]`", None
+    # 종목명 + 키워드 형식 → 키워드 제거 (긴 단어부터)
+    clean_name = re.sub(r'(조회해줘|조회해|알려줘|찾아줘|보여줘|주가|조회|얼마|시세|가격|현재가|보여|줘|알려|찾아|해)', ' ', clean_name)
+    clean_name = " ".join(clean_name.split()).strip()  # 연속 공백 제거
 
-    # 3) 시간/팩트/채팅 기록 준비
+    if clean_name and len(clean_name) >= 2 and not re.match(r'^[a-zA-Z가-힣]{1,2}$', clean_name):
+        price = korea_invest_stock(clean_name)
+        if price:
+            return price, None
+
+    # 3) 시간/채팅 기록 준비
     now = datetime.datetime.now(pytz.timezone('Asia/Seoul'))
     current_time_str = now.strftime("%Y년 %m월 %d일 %p %I:%M")
-    my_facts = get_verified_facts(session_id)
-    fact_str = f"[사용자 핵심 정보]\\n{my_facts}\\n\\n" if my_facts else ""
+    fact_str = ""
 
     # 3-0) RAG 지식 베이스에서 유사 응답 패턴 검색 → 컨텍스트 주입
     try:
@@ -183,6 +162,16 @@ def ask_ai(session_id, user_input):
             a = past_messages[i + 1].removeprefix("AI: ")
             hist_msgs.append({"role": "user", "content": u})
             hist_msgs.append({"role": "assistant", "content": a})
+
+    # 3-0-5) 검색 쿼리 정제 (정치/과거 컨텍스트 제거)
+    _query_for_search = user_input
+    if any(k in user_input.lower() for k in ["뉴스", "요약", "기사", "뭐가"]):
+        # 검색 용도 쿼리: 핵심 키워드만 추출 (트럼프, 이란 같은 과거 컨텍스트 제거)
+        _noise_words = ["트럼프", "이란", "미국", "중국", "전쟁", "협상"]
+        _query_for_search = re.sub(r'(' + '|'.join(_noise_words) + ')', '', user_input).strip()
+        if not _query_for_search or len(_query_for_search) < 2:
+            _query_for_search = user_input
+        logger.info("검색 쿼리 정제: '%s' → '%s'", user_input, _query_for_search)
 
     # 3-1) DB/로컬 데이터 키워드 감지 → 컨텍스트 주입
     _u = re.sub(r'\s+', '', user_input).lower()
@@ -328,7 +317,7 @@ def ask_ai(session_id, user_input):
         if fnb:
             extra_data.append("📈 외국인/기관 순매수:\n" + fnb)
 
-    # 5) LLM 호출 — 모든 검색/뉴스/주가는 Ollama가 도구로 직접 판단
+    # 5) LLM 호출 — 뉴스/요약 요청은 특별 처리
     try:
         ctx = ""
         if fact_str:
@@ -336,8 +325,25 @@ def ask_ai(session_id, user_input):
         if extra_data:
             ctx += "[참고 데이터]\n" + "\n".join(extra_data) + "\n\n"
 
-        prompt = f"{ctx}현재 시각: {current_time_str}\n질문: {user_input}"
-        answer = call_qwen(prompt, history_messages=hist_msgs)
+        # 뉴스/요약 요청 감지 → 명시적 요약 지시
+        _is_news = any(k in user_input.lower() for k in ["뉴스", "요약", "기사", "뭐가"])
+        if _is_news:
+            prompt = f"""{ctx}현재 시각: {current_time_str}
+
+사용자 요청: {user_input}
+
+**반드시 다음 형식으로만 답변하세요:**
+📰 [기사제목]
+→ 핵심 내용 (1줄)
+
+📰 [기사제목]
+→ 핵심 내용 (1줄)
+
+절대금지: 기사 원문 복사, 긴 설명, 무관한 내용"""
+            answer = call_qwen(prompt, history_messages=hist_msgs, system="뉴스 요약 전문가. 절대로 기사를 그대로 복사하지 말고, 반드시 핵심만 1줄로 요약해서 답변.")
+        else:
+            prompt = f"{ctx}현재 시각: {current_time_str}\n질문: {user_input}"
+            answer = call_qwen(prompt, history_messages=hist_msgs)
 
         # 6) LLM 응답에 6자리 종목코드 언급 + 주가 질문이면 자동 재조회
         if any(k in user_input for k in ["주가", "가격", "얼마", "시세"]):
@@ -364,10 +370,6 @@ def ask_ai(session_id, user_input):
     history.append(f"Human: {user_input}")
     history.append(f"AI: {answer}")
 
-    threading.Thread(target=check_and_store_fact, args=(session_id, user_input, answer)).start()
     threading.Thread(target=learn_from_response, args=(user_input, answer)).start()
-
-    if any(k in answer for k in ["원", "$", "매수"]):
-        threading.Thread(target=save_fact_to_db, args=(answer,)).start()
 
     return answer, image_path

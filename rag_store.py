@@ -119,13 +119,59 @@ def store_trade(ticker: str, name: str, action: str, price: float,
 
 # -------------------------
 # 관련 기억 검색
+def _search_oracle_news_fallback(query: str, n_results: int = 3) -> list:
+    """Oracle DB에서 키워드 직접 검색 (Chroma 결과 부족 시 fallback)."""
+    try:
+        from db_utils import get_db_pool
+        pool = get_db_pool()
+        if not pool:
+            return []
+        # 쿼리에서 핵심 키워드 추출 (2글자 이상 명사 위주)
+        import re
+        keywords = [w for w in re.split(r'[\s,./]', query) if len(w) >= 2]
+        if not keywords:
+            return []
+        # 상위 2개 키워드로 LIKE 검색
+        kws = keywords[:2]
+        with pool.acquire() as conn:
+            with conn.cursor() as cur:
+                where_clauses = " OR ".join(
+                    f"INSTR(TO_CHAR(headlines), :kw{i}) > 0" for i, _ in enumerate(kws)
+                )
+                bind = {f"kw{i}": kw for i, kw in enumerate(kws)}
+                bind["n"] = n_results * 3  # 중복 고려해 넉넉히
+                cur.execute(f"""
+                    SELECT SUBSTR(TO_CHAR(headlines), 1, 300), run_time FROM daily_news
+                    WHERE {where_clauses}
+                    ORDER BY run_time DESC
+                    FETCH FIRST :n ROWS ONLY
+                """, bind)
+                rows = cur.fetchall()
+        seen = set()
+        result_list = []
+        for text, run_time in rows:
+            dedup_key = text[:60]
+            if dedup_key not in seen:
+                seen.add(dedup_key)
+                date_str = str(run_time)[:10]
+                result_list.append(f"[뉴스 {date_str}] {text}")
+            if len(result_list) >= n_results:
+                break
+        return result_list
+    except Exception as e:
+        logger.debug("Oracle fallback 검색 실패: %s", e)
+        return []
+
+
 def search_memory(query: str, n_results: int = 3, collection: str = "both") -> str:
-    """질문과 유사한 기억을 Chroma에서 검색해서 반환. 순매수/스캔 관련 질문은 scan_memory 우선."""
+    """
+    질문과 유사한 기억 검색.
+    1차: Oracle DB 키워드 검색 (정확도 우선)
+    2차: Chroma 벡터 검색 보완 (의미론적 유사도, 엄격한 임계값 적용)
+    순매수/스캔 관련 질문은 scan_memory 우선.
+    """
     try:
         _, news_col, trade_col = _get_client()
-        emb = _embed(query)
-        if not emb:
-            return ""
         results = []
 
         # 순매수/스캔/신호 관련 질문이면 scan_memory 먼저
@@ -136,14 +182,29 @@ def search_memory(query: str, n_results: int = 3, collection: str = "both") -> s
                 results.append(scan_result)
 
         if collection in ("both", "news"):
-            r = news_col.query(query_embeddings=[emb], n_results=n_results)
-            for doc, meta in zip(r["documents"][0], r["metadatas"][0]):
-                results.append(f"[뉴스 {meta.get('date','')}] {doc}")
+            # 1차: Oracle DB 키워드 검색 (항상 실행)
+            oracle_results = _search_oracle_news_fallback(query, n_results=n_results)
+            results.extend(oracle_results)
+
+            # 2차: Chroma 벡터 검색 (Oracle 결과가 부족하고 임베딩 가능할 때)
+            if len(results) < n_results and news_col.count() > 0:
+                emb = _embed(query)
+                if emb:
+                    # 엄격한 임계값: 실측 최소 거리 ~180, 관련 없음 ~350
+                    SIMILARITY_THRESHOLD = 230
+                    n_fetch = min(n_results * 2, news_col.count())
+                    r = news_col.query(query_embeddings=[emb], n_results=n_fetch)
+                    existing_texts = {res[10:60] for res in results}
+                    for doc, meta, dist in zip(r["documents"][0], r["metadatas"][0], r["distances"][0]):
+                        logger.debug("RAG 벡터 유사도: %.1f | %s...", dist, doc[:40])
+                        if dist < SIMILARITY_THRESHOLD and doc[0:50] not in existing_texts:
+                            results.append(f"[뉴스 {meta.get('date','')}] {doc}")
+
         if collection in ("both", "trade"):
-            r = trade_col.query(query_embeddings=[emb], n_results=n_results)
-            for doc, meta in zip(r["documents"][0], r["metadatas"][0]):
-                results.append(f"[매매기록] {doc}")
-        return "\n".join(results) if results else ""
+            # 거래 기록은 분석용 배경 정보로만 활용 (직접 노출 안 함)
+            pass
+
+        return "\n".join(results[:n_results]) if results else ""
     except Exception as e:
         logger.error("RAG 검색 실패: %s", e)
         return ""
@@ -152,7 +213,7 @@ def search_memory(query: str, n_results: int = 3, collection: str = "both") -> s
 # -------------------------
 # Oracle DB 뉴스 일괄 임베딩 (초기 로딩 / 주기적 업데이트)
 def sync_news_from_db(limit: int = 30) -> int:
-    """Oracle DB daily_news에서 최신 뉴스를 가져와 RAG에 저장."""
+    """Oracle DB daily_news에서 경제/시장/기술 뉴스만 가져와 RAG에 저장."""
     try:
         from db_utils import get_db_pool
         pool = get_db_pool()
@@ -161,23 +222,32 @@ def sync_news_from_db(limit: int = 30) -> int:
         stored = 0
         with pool.acquire() as conn:
             with conn.cursor() as cur:
-                cur.execute(
-                    "SELECT headlines, run_time FROM daily_news "
-                    "ORDER BY run_time DESC FETCH FIRST :n ROWS ONLY",
-                    {"n": limit}
-                )
+                # ECONOMY/MARKET/TECH/COMPANY 카테고리, 길이 필터, non-news 제외
+                cur.execute("""
+                    SELECT headlines, run_time FROM daily_news
+                    WHERE category IN ('ECONOMY', 'ECONOMIC', 'MARKET', 'TECH', 'COMPANY')
+                      AND LENGTH(TO_CHAR(headlines)) > 15
+                      AND LENGTH(TO_CHAR(headlines)) < 500
+                      AND INSTR(TO_CHAR(headlines), '방송') = 0
+                      AND INSTR(TO_CHAR(headlines), '구해줘') = 0
+                      AND INSTR(TO_CHAR(headlines), '예능') = 0
+                      AND INSTR(TO_CHAR(headlines), '스캔') = 0
+                      AND INSTR(TO_CHAR(headlines), '워치리스트') = 0
+                      AND INSTR(TO_CHAR(headlines), '매수 신호') = 0
+                      AND SUBSTR(TO_CHAR(headlines), 1, 2) != '• '
+                    ORDER BY run_time DESC
+                    FETCH FIRST :n ROWS ONLY
+                """, {"n": limit})
                 rows = cur.fetchall()
         for headlines, run_time in rows:
             date_str = str(run_time)[:10]
             # Oracle LOB 타입 처리
             if hasattr(headlines, "read"):
                 headlines = headlines.read()
-            # 헤드라인은 • 로 구분된 여러 줄
-            for line in str(headlines).split("\n"):
-                line = line.strip().lstrip("•").strip()
-                if len(line) > 10:
-                    if store_news(line, date_str):
-                        stored += 1
+            text = str(headlines).strip()
+            if len(text) > 15:
+                if store_news(text, date_str):
+                    stored += 1
         logger.info("뉴스 RAG 동기화 완료: %d건 신규 저장", stored)
         return stored
     except Exception as e:

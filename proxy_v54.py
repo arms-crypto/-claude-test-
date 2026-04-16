@@ -488,6 +488,47 @@ if __name__ == "__main__":
     # 3) 자동 보고서 스케줄러 스레드 실행
     threading.Thread(target=auto_report_scheduler, daemon=True).start()
 
+    # 3-1) 월간 리뷰 스케줄러 (매월 1일 09:00 KST)
+    def _monthly_review_scheduler():
+        """매월 1일 09:00 KST에 월간 리뷰 + 학습 실행."""
+        import pytz
+        import datetime as dt
+        tz = pytz.timezone("Asia/Seoul")
+
+        last_run_day = None
+        while True:
+            try:
+                now = dt.datetime.now(tz)
+                # 조건: day=1, hour=9, minute=0~1 (1분 윈도우)
+                # last_run_day로 중복 실행 방지
+                if (now.day == 1 and now.hour == 9 and
+                    now.minute <= 1 and last_run_day != now.day):
+
+                    logger.info("[월간리뷰] 매월 1일 09:00 — monthly_review() + monthly_learn() 시작")
+
+                    try:
+                        import sector_params
+                        review_result = sector_params.monthly_review()
+                        logger.info("[월간리뷰] ✅ monthly_review 완료: %s", review_result.get("status"))
+
+                        learn_result = sector_params.monthly_learn()
+                        logger.info("[월간리뷰] ✅ monthly_learn 완료: %s", learn_result.get("status"))
+
+                        last_run_day = now.day  # 오늘은 더 이상 실행 안 함
+                    except Exception as e:
+                        logger.error("[월간리뷰] 실행 중 에러: %s", e, exc_info=True)
+                else:
+                    # 매월 1일이 아니면 last_run_day 리셋
+                    if now.day != 1:
+                        last_run_day = None
+
+            except Exception as e:
+                logger.error("[월간리뷰] 스케줄러 에러: %s", e)
+
+            time.sleep(60)  # 1분마다 체크
+
+    threading.Thread(target=_monthly_review_scheduler, daemon=True).start()
+
     # 4) 30초 포트폴리오 자동매매 스레드 실행
     threading.Thread(target=auto_trade_loop, daemon=True).start()
 

@@ -18,7 +18,7 @@ import requests
 import pytz
 
 import config
-from db_utils import get_db_pool
+from db_utils import get_db_pool, save_fact_to_db
 from stock_data import (
     stock_price_overseas, korea_invest_stock, naver_news,
     get_foreign_net_buy, _get_today_institutional_net_buy
@@ -43,7 +43,8 @@ def _send_long(base_url: str, chat_id: str, text: str, proxies: dict = None):
                       proxies=proxies, timeout=10)
 
 MARKET_REPORT_PATH = "/home/ubuntu/.openclaw/workspace-research/data/market_report.txt"
-PORTFOLIO_DB_PATH = "/home/ubuntu/-claude-test-/mock_trading/portfolio.db"
+PORTFOLIO_DB_PATH    = "/home/ubuntu/-claude-test-/mock_trading/portfolio.db"
+PORTFOLIO_KY_DB_PATH = "/home/ubuntu/-claude-test-/mock_trading/portfolio_ky.db"
 
 TRADING_SYSTEM_PROMPT = """당신은 주식 매매비서입니다. 다음 규칙을 엄격히 따르세요.
 
@@ -418,6 +419,8 @@ def auto_report_scheduler():
                         news_data.append(nv)
                     if news_data:
                         news_text = "\n".join(news_data[:2])
+                        # Oracle DB에 원본 뉴스 저장 (RAG용)
+                        save_fact_to_db(news_text[:1000], category="MARKET")
                         summary = call_mistral_only(
                             f"다음 뉴스를 3줄로 요약해줘:\n\n{news_text}",
                             system="뉴스 요약 전문가. 핵심만 3줄 한국어로."
@@ -458,41 +461,70 @@ def auto_report_scheduler():
                             inst = "⚠️ 기관 순매수 데이터 없음 (DB 미수집)"
                     _send(inst)
 
-                    # 당일 청산 손익 통계
-                    try:
-                        import sqlite3 as _sq3
-                        today_str = now.strftime('%Y-%m-%d')
-                        con = _sq3.connect(PORTFOLIO_DB_PATH)
-                        sell_rows = con.execute(
-                            "SELECT pnl FROM trades WHERE action='SELL' AND created_at >= ? AND pnl IS NOT NULL",
-                            [today_str]
-                        ).fetchall()
-                        con.close()
-                        if sell_rows:
-                            pnls      = [r[0] for r in sell_rows]
-                            wins      = sum(1 for p in pnls if p > 0)
-                            avg_pnl   = sum(pnls) / len(pnls)
-                            stat_line = (f"📊 오늘 청산 {len(pnls)}건 | "
-                                         f"승률 {wins}/{len(pnls)} ({wins/len(pnls)*100:.0f}%) | "
-                                         f"평균손익 {avg_pnl:+.1f}%")
-                        else:
-                            stat_line = "📊 오늘 청산: 없음"
-                    except Exception:
-                        stat_line = ""
+                    # ── 계좌별 당일 청산 통계 헬퍼 ──────────────────────────
+                    def _get_stat(db_path, today_str):
+                        try:
+                            import sqlite3 as _sq3
+                            con = _sq3.connect(db_path)
+                            rows = con.execute(
+                                "SELECT pnl FROM trades WHERE action='SELL' "
+                                "AND created_at >= ? AND pnl IS NOT NULL",
+                                [today_str]
+                            ).fetchall()
+                            # 현재 보유 평가손익
+                            holdings = con.execute(
+                                "SELECT ticker, qty, avg_price FROM portfolio"
+                            ).fetchall()
+                            cash_row = con.execute(
+                                "SELECT value FROM account WHERE key='cash'"
+                            ).fetchone()
+                            con.close()
+                            pnls = [r[0] for r in rows]
+                            stat = ""
+                            if pnls:
+                                wins = sum(1 for p in pnls if p > 0)
+                                stat = (f"청산 {len(pnls)}건 | "
+                                        f"승률 {wins}/{len(pnls)} ({wins/len(pnls)*100:.0f}%) | "
+                                        f"평균 {sum(pnls)/len(pnls):+.1f}%")
+                            else:
+                                stat = "청산: 없음"
+                            cash = int(float(cash_row[0])) if cash_row else 0
+                            return stat, cash, len(holdings)
+                        except Exception:
+                            return "통계 조회 실패", 0, 0
 
-                    trade_part = ""
-                    if config._daily_trade_log:
-                        trade_part = ("📋 오늘 자동매매 내역:\n"
-                                      + "\n".join(config._daily_trade_log)
-                                      + (f"\n\n{stat_line}" if stat_line else ""))
-                    else:
-                        trade_part = f"📋 오늘 자동매매: 없음\n{stat_line}" if stat_line else "📋 오늘 자동매매: 없음"
+                    today_str = now.strftime('%Y-%m-%d')
+                    stat_mock, cash_mock, hold_mock = _get_stat(PORTFOLIO_DB_PATH, today_str)
+                    stat_ky,   cash_ky,   hold_ky   = _get_stat(PORTFOLIO_KY_DB_PATH, today_str)
+
+                    # ── 가상계좌 파트 ────────────────────────────────────────
+                    mock_lines = config._daily_trade_log[:]
                     config._daily_trade_log.clear()
+                    mock_header = (f"🔵 [트레이너 44197559] 보유 {hold_mock}종목 | 현금 {cash_mock:,}원\n"
+                                   f"   {stat_mock}")
+                    if mock_lines:
+                        mock_part = mock_header + "\n" + "\n".join(mock_lines)
+                    else:
+                        mock_part = mock_header
+
+                    # ── KY 실전계좌 파트 ─────────────────────────────────────
+                    ky_lines = config._daily_trade_log_ky[:]
+                    config._daily_trade_log_ky.clear()
+                    ky_header = (f"🟡 [KY 실전계좌 44384407] 보유 {hold_ky}종목 | 현금 {cash_ky:,}원\n"
+                                 f"   {stat_ky}")
+                    if ky_lines:
+                        ky_part = ky_header + "\n" + "\n".join(ky_lines)
+                    else:
+                        ky_part = ky_header
+
+                    trade_part = f"📋 오늘 자동매매 내역\n\n{mock_part}\n\n{ky_part}"
 
                     px = perplexica_search("오늘 증시 마감 시황 뉴스")
                     nv = naver_news("증시 마감 시황")
                     news_src = px if (px and "찾지 못" not in px) else (nv or "")
                     if news_src:
+                        # Oracle DB에 원본 뉴스 저장 (RAG용)
+                        save_fact_to_db(news_src[:1000], category="MARKET")
                         news_summary = call_mistral_only(
                             f"다음 증시 뉴스를 2줄로 요약:\n\n{news_src}",
                             system="증시 뉴스 요약 전문가. 핵심만 2줄 한국어로."
@@ -505,6 +537,7 @@ def auto_report_scheduler():
             if now.hour == 0 and now.minute == 0:
                 last_run_time = None
                 config._daily_trade_log.clear()
+                config._daily_trade_log_ky.clear()
                 # 자정: 오늘 cash → prev_day_cash 저장 (다음날 보수적 운영 판단용)
                 try:
                     import sqlite3 as _sq3

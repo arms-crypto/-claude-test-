@@ -14,6 +14,7 @@ collect_smart_flows(), get_smart_recommendations()
 import os
 import re
 import json
+import threading
 
 # 비전 분석 후처리 — 베이스 모델 환각 교정 (선행스팬1 없음)
 _RE_SPAN1 = re.compile(r'선행스팬\s*1')
@@ -32,7 +33,23 @@ from db_utils import get_db_pool
 from stock_data import _naver_net_buy_list, get_stock_code_from_db
 from llm_client import call_mistral_only
 
+try:
+    import pc_director
+except ImportError:
+    pc_director = None
+
+try:
+    from auxiliary_indicator_evaluator import evaluate_auxiliary_strength, calculate_composite_reliability
+except ImportError:
+    def evaluate_auxiliary_strength(*args, **kwargs):
+        return {"total_strength": 0, "evaluation": "알 수 없음"}
+    def calculate_composite_reliability(*args, **kwargs):
+        return 50
+
 logger = config.logger
+
+# 학습데이터 파일 쓰기 락 — _call_pc_async 복수 스레드가 동시에 파일을 덮어쓰는 것 방지
+_learning_data_lock = threading.Lock()
 
 
 # ── 싱글턴/알림 헬퍼 ────────────────────────────────────────────────────────
@@ -46,6 +63,11 @@ _auto_mt_ky_inst = None
 
 
 def _get_auto_mt():
+    """가상 매매 엔진(MockTrading) 싱글턴 인스턴스 반환.
+
+    Returns:
+        MockTrading: 가상 포트폴리오 관리 인스턴스 (portfolio.db 사용)
+    """
     if config._auto_mt_inst is None:
         from mock_trading.mock_trading import MockTrading
         config._auto_mt_inst = MockTrading()
@@ -53,6 +75,11 @@ def _get_auto_mt():
 
 
 def _get_auto_mt_ky():
+    """실전 KY 계좌 매매 엔진(MockTrading) 싱글턴 인스턴스 반환.
+
+    Returns:
+        MockTrading: 실전 KY 포트폴리오 관리 인스턴스 (portfolio_ky.db 사용, REAL_TRADE=True)
+    """
     global _auto_mt_ky_inst
     if _auto_mt_ky_inst is None:
         from mock_trading.mock_trading import MockTrading
@@ -232,7 +259,14 @@ def _ichimoku_signal(df) -> bool:
 
 
 def _ma_signals(df) -> dict:
-    """이동평균선 정배열 신호. MA5/20/60/120 값과 정배열 여부 반환."""
+    """이동평균선(5/20/60/120) 정배열 신호 계산.
+
+    Args:
+        df: pandas DataFrame with 'close' column
+
+    Returns:
+        dict: {'ma5', 'ma20', 'ma60', 'ma120', '정배열'(MA5>20>60), '가격위치'(가격>MA20)}
+    """
     result = {"ma5": None, "ma20": None, "ma60": None, "ma120": None,
               "정배열": False, "가격위치": False}
     if df is None or len(df) < 5:
@@ -394,6 +428,14 @@ def calculate_chart_signals(code: str, scan_mode: bool = False) -> dict | None:
 
 
 def chart_buy_signal(code: str) -> bool:
+    """차트 신호 기반 매수 신호 판정 (12신호 중 6개 이상).
+
+    Args:
+        code (str): 종목코드
+
+    Returns:
+        bool: 매수 신호 여부 (buy_count >= 6/12)
+    """
     sig = calculate_chart_signals(code)
     return sig is not None and sig["buy_count"] >= 6  # /12 기준 50%+
 
@@ -421,7 +463,7 @@ def is_nxt_hours() -> bool:
 # ── 모의 매도/매수 래퍼 ─────────────────────────────────────────────────────
 
 def sell_mock(code: str, qty: int, reason: str = "") -> str:
-    """MockTrading.sell 래퍼. qty=None 이면 전량. KY 계좌도 미러 매도."""
+    """트레이너 계좌 매도 래퍼. qty=None 이면 전량."""
     mt     = _get_auto_mt()
     pool   = get_db_pool()
     result = mt.sell(code, qty, oracle_pool=pool)
@@ -433,21 +475,26 @@ def sell_mock(code: str, qty: int, reason: str = "") -> str:
         update_method_trust("종합_매매기법", correct)
     except Exception:
         pass
-
-    # KY 계좌 미러 매도
-    try:
-        mt_ky  = _get_auto_mt_ky()
-        res_ky = mt_ky.sell(code, qty)
-        logger.info("[KY] SELL %s → %s", code, res_ky[:60])
-        _tg_notify_ky(f"📉 [KY 자동매도]\n{res_ky}")
-    except Exception:
-        logger.exception("[KY] SELL 미러 실패: %s", code)
-
     return result
 
 
+def sell_ky(code: str, qty: int, reason: str = "") -> str:
+    """KY 실전계좌 매도 래퍼. qty=None 이면 전량."""
+    try:
+        mt_ky  = _get_auto_mt_ky()
+        res_ky = mt_ky.sell(code, qty)
+        logger.info("[KY] SELL %s qty=%s %s → %s", code, qty, reason, res_ky[:60])
+        _tg_notify_ky(f"📉 [KY 자동매도]\n{res_ky}")
+        time_str = datetime.datetime.now(pytz.timezone("Asia/Seoul")).strftime("%H:%M:%S")
+        config._daily_trade_log_ky.append(f"{time_str} 📉 매도 {code} → {res_ky[:50]}")
+        return res_ky
+    except Exception:
+        logger.exception("[KY] SELL 실패: %s", code)
+        return f"❌ KY 매도 오류: {code}"
+
+
 def buy_mock(code: str, amount: int, sig: dict = None) -> str:
-    """MockTrading.buy 래퍼. amount = 매수금액(원), sig = 차트신호 dict. KY 계좌도 미러 매수."""
+    """트레이너 계좌 매수 래퍼. amount = 매수금액(원)."""
     mt   = _get_auto_mt()
     pool = get_db_pool()
     kwargs = {}
@@ -457,21 +504,27 @@ def buy_mock(code: str, amount: int, sig: dict = None) -> str:
         kwargs["macd_hist"]   = sig.get("macd_hist")
     result = mt.buy(code, amount, oracle_pool=pool, **kwargs)
     logger.info("[자동매매] BUY  %s %d원 → %s", code, amount, result[:60])
-
-    # KY 계좌 미러 매수 (잔고 기반 금액 별도 계산)
-    try:
-        mt_ky   = _get_auto_mt_ky()
-        ky_cash = mt_ky.cash
-        ky_used = len(mt_ky._get_holdings())
-        ky_remain = max(1, 7 - ky_used)
-        ky_amount = max(50_000, min(5_000_000, int(ky_cash / ky_remain)))
-        res_ky = mt_ky.buy(code, ky_amount, **kwargs)
-        logger.info("[KY] BUY  %s %d원 → %s", code, ky_amount, res_ky[:60])
-        _tg_notify_ky(f"📈 [KY 자동매수]\n{res_ky}")
-    except Exception:
-        logger.exception("[KY] BUY 미러 실패: %s", code)
-
     return result
+
+
+def buy_ky(code: str, amount: int, sig: dict = None) -> str:
+    """KY 실전계좌 매수 래퍼. amount = 매수금액(원)."""
+    kwargs = {}
+    if sig:
+        kwargs["buy_signals"] = sig.get("buy_count")
+        kwargs["rsi"]         = sig.get("rsi")
+        kwargs["macd_hist"]   = sig.get("macd_hist")
+    try:
+        mt_ky  = _get_auto_mt_ky()
+        res_ky = mt_ky.buy(code, amount, **kwargs)
+        logger.info("[KY] BUY  %s %d원 → %s", code, amount, res_ky[:60])
+        _tg_notify_ky(f"📈 [KY 자동매수]\n{res_ky}")
+        time_str = datetime.datetime.now(pytz.timezone("Asia/Seoul")).strftime("%H:%M:%S")
+        config._daily_trade_log_ky.append(f"{time_str} 📈 매수 {code} {amount:,}원 → {res_ky[:50]}")
+        return res_ky
+    except Exception:
+        logger.exception("[KY] BUY 실패: %s", code)
+        return f"❌ KY 매수 오류: {code}"
 
 
 def smart_buy_amount(code: str) -> int:
@@ -483,7 +536,7 @@ def smart_buy_amount(code: str) -> int:
     최소 50,000원 / 최대 5,000,000원 클램프.
     """
     import sqlite3 as _sqlite3
-    from mock_trading.kis_client import get_price
+    from mock_trading.kis_client import get_current_price as get_price
     MAX_SLOTS = 7
     cash = 0
     conservative = False
@@ -536,6 +589,135 @@ def smart_buy_amount(code: str) -> int:
 
     logger.info("smart_buy_amount %s: 예수금%d%s ÷ 슬롯%d = %d원",
                 code, int(cash), "(보수적)" if conservative else "", remain, amount)
+    return amount
+
+
+# ── 계좌 레지스트리 + 공통 매수/매도 헬퍼 ───────────────────────────────────
+
+# 계좌 설정 목록 — 새 계좌 추가 시 여기에만 추가하면 됨
+# 반드시 함수 정의 후에 위치 (Python 모듈 로드 순서)
+_ACCOUNTS = [
+    {
+        "id":               "trainer",
+        "label":            "🔵 트레이너",
+        "db_path":          os.path.join(os.path.dirname(__file__), "mock_trading", "portfolio.db"),
+        "get_mt":           _get_auto_mt,
+        "notify":           _tg_notify,
+        "log_attr":         "_daily_trade_log",
+        "last_trades_attr": "_auto_last_trades",
+        "max_slots":        7,
+    },
+    {
+        "id":               "ky",
+        "label":            "🟡 KY",
+        "db_path":          _KY_DB_PATH,
+        "get_mt":           _get_auto_mt_ky,
+        "notify":           _tg_notify_ky,
+        "log_attr":         "_daily_trade_log_ky",
+        "last_trades_attr": "_auto_last_trades_ky",
+        "max_slots":        7,
+    },
+]
+
+
+def _sell_for_account(acc: dict, code: str, qty, reason: str = "") -> str:
+    """계좌별 공통 매도 로직."""
+    mt = acc["get_mt"]()
+    if acc["id"] == "trainer":
+        result = mt.sell(code, qty, oracle_pool=get_db_pool())
+        try:
+            from learn_chart_method import update_method_trust
+            correct = "익절" in reason or "목표" in reason
+            update_method_trust("종합_매매기법", correct)
+        except Exception:
+            pass
+    else:
+        result = mt.sell(code, qty)
+        acc["notify"](f"📉 [{acc['label']} 자동매도]\n{result}")
+
+    label    = acc["label"]
+    time_str = datetime.datetime.now(pytz.timezone("Asia/Seoul")).strftime("%H:%M:%S")
+    logger.info("[%s] SELL %s qty=%s %s → %s", label, code, qty, reason, result[:60])
+    getattr(config, acc["log_attr"]).append(f"{time_str} 📉 매도 {code} → {result[:50]}")
+    return result
+
+
+def _buy_for_account(acc: dict, code: str, amount: int, sig: dict = None) -> str:
+    """계좌별 공통 매수 로직."""
+    mt     = acc["get_mt"]()
+    kwargs = {}
+    if sig:
+        kwargs["buy_signals"] = sig.get("buy_count")
+        kwargs["rsi"]         = sig.get("rsi")
+        kwargs["macd_hist"]   = sig.get("macd_hist")
+
+    if acc["id"] == "trainer":
+        result = mt.buy(code, amount, oracle_pool=get_db_pool(), **kwargs)
+    else:
+        result = mt.buy(code, amount, **kwargs)
+        acc["notify"](f"📈 [{acc['label']} 자동매수]\n{result}")
+
+    label    = acc["label"]
+    time_str = datetime.datetime.now(pytz.timezone("Asia/Seoul")).strftime("%H:%M:%S")
+    logger.info("[%s] BUY  %s %d원 → %s", label, code, amount, result[:60])
+    getattr(config, acc["log_attr"]).append(f"{time_str} 📈 매수 {code} {amount:,}원 → {result[:50]}")
+    return result
+
+
+def _smart_buy_amount_for_account(acc: dict, code: str) -> int:
+    """계좌별 공통 매수 금액 계산."""
+    import sqlite3 as _sqlite3
+    from mock_trading.kis_client import get_current_price as get_price
+    MAX_SLOTS  = acc.get("max_slots", 7)
+    db_path    = acc["db_path"]
+    cash       = 0
+    conservative = False
+
+    try:
+        con      = _sqlite3.connect(db_path)
+        row      = con.execute("SELECT value FROM account WHERE key='cash'").fetchone()
+        prev_row = con.execute("SELECT value FROM account WHERE key='prev_day_cash'").fetchone()
+        con.close()
+        if row:
+            cash = float(row[0])
+        if prev_row and cash > 0:
+            prev_cash = float(prev_row[0])
+            if prev_cash > 0 and cash < prev_cash * 0.95:
+                conservative = True
+    except Exception:
+        logger.warning("[%s] _smart_buy_amount_for_account: DB 읽기 실패", acc["label"])
+
+    if cash <= 0:
+        try:
+            if acc["id"] == "trainer":
+                from mock_trading.kis_client import get_balance
+            else:
+                from mock_trading.kis_client_ky import get_balance
+            bal  = get_balance()
+            cash = bal.get("cash", 0)
+        except Exception:
+            pass
+
+    remain = 1
+    try:
+        used   = len(acc["get_mt"]()._get_holdings())
+        remain = max(1, MAX_SLOTS - used)
+    except Exception:
+        pass
+
+    if cash <= 0:
+        cash = 1_000_000
+
+    effective_cash = cash * 0.7 if conservative else cash
+    amount = int(effective_cash / remain)
+    amount = max(50_000, min(5_000_000, amount))
+
+    price = get_price(code) or 0
+    if price > 0 and amount < price:
+        amount = price
+
+    logger.info("[%s] 매수금액 %s: 예수금%d%s ÷ 슬롯%d = %d원",
+                acc["label"], code, int(cash), "(보수적)" if conservative else "", remain, amount)
     return amount
 
 
@@ -771,6 +953,7 @@ def select_volume_smart_chart() -> list:
         vol_tag = " [거래량상위]" if code in vol_set else ""
         sig["name"] = name
         sig["vol_tag"] = vol_tag
+        sig["sector"] = _CODE_TO_SECTOR.get(code, "전체")  # PC LLM 전략 검증용
         return (code, sig)
 
     results = []
@@ -841,6 +1024,190 @@ def _sig_changed(code: str, new_sig: dict) -> str | None:
     return ", ".join(changes) if changes else None
 
 
+def _log_pc_learning_data(code: str, name: str, prev_count: int, new_count: int, min_signal: int, signals: dict = None):
+    """PC LLM의 분석 결과를 학습 이력 파일에 저장 (신호 조합 + 보조 지표 강도 포함)."""
+    try:
+        _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+        learning_path = os.path.join(_BASE_DIR, "pc_learning_history.json")
+
+        # 기존 데이터 로드
+        learning_data = []
+        if os.path.exists(learning_path):
+            try:
+                with open(learning_path, 'r', encoding='utf-8') as f:
+                    learning_data = json.load(f)
+                    if not isinstance(learning_data, list):
+                        learning_data = []
+            except:
+                learning_data = []
+
+        # 신호 조합 계산 (월/주/일봉 강도)
+        signals = signals or {}
+        m_ichimoku = signals.get('월봉_일목균형표', False)
+        w_ichimoku = signals.get('주봉_일목균형표', False)
+        d_ichimoku = signals.get('일봉_일목균형표', False)
+
+        m_strength = sum([
+            signals.get('월봉_일목균형표', False),
+            signals.get('월봉_ADX', False),
+            signals.get('월봉_RSI', False),
+            signals.get('월봉_MACD', False)
+        ])
+        w_strength = sum([
+            signals.get('주봉_일목균형표', False),
+            signals.get('주봉_ADX', False),
+            signals.get('주봉_RSI', False),
+            signals.get('주봉_MACD', False)
+        ])
+        d_strength = sum([
+            signals.get('일봉_일목균형표', False),
+            signals.get('일봉_ADX', False),
+            signals.get('일봉_RSI', False),
+            signals.get('일봉_MACD', False)
+        ])
+
+        def classify_strength(count):
+            return "strong" if count >= 3 else "weak"
+
+        signal_combo = f"{classify_strength(m_strength)}/{classify_strength(w_strength)}/{classify_strength(d_strength)}"
+
+        # 보조 지표 강도 평가 (타임프레임별)
+        auxiliary_strengths = {
+            "월": evaluate_auxiliary_strength("월봉",
+                                              signals.get("월봉_adx_val"),
+                                              signals.get("월봉_rsi_val"),
+                                              signals.get("월봉_macd_val")),
+            "주": evaluate_auxiliary_strength("주봉",
+                                              signals.get("주봉_adx_val"),
+                                              signals.get("주봉_rsi_val"),
+                                              signals.get("주봉_macd_val")),
+            "일": evaluate_auxiliary_strength("일봉",
+                                              signals.get("일봉_adx_val"),
+                                              signals.get("일봉_rsi_val"),
+                                              signals.get("일봉_macd_val"))
+        }
+
+        # 종합 신뢰도 계산 (메인 일목 + 보조 지표)
+        ichimoku_present = m_ichimoku or w_ichimoku or d_ichimoku
+        reliability_score = calculate_composite_reliability(ichimoku_present, auxiliary_strengths)
+
+        # 신규 항목 추가
+        today = datetime.datetime.now(pytz.timezone("Asia/Seoul")).date().isoformat()
+        entry = {
+            "code": code,
+            "name": name,
+            "date": today,
+            "signal_shift": f"{prev_count}→{new_count} ({'+' if new_count > prev_count else ''}{new_count - prev_count})",
+            "pc_min_signal_suggestion": min_signal,
+            "signal_combo": signal_combo,  # 신호 조합 (예: strong/strong/weak)
+            "signal_strengths": {  # 간단한 신호 강도
+                "monthly": m_strength,
+                "weekly": w_strength,
+                "daily": d_strength
+            },
+            "auxiliary_strengths": {  # 보조 지표 상세 강도
+                "월": {
+                    "adx": auxiliary_strengths["월"].get("adx_strength", 0),
+                    "rsi": auxiliary_strengths["월"].get("rsi_strength", 0),
+                    "macd": auxiliary_strengths["월"].get("macd_strength", 0),
+                    "total": auxiliary_strengths["월"].get("total_strength", 0)
+                },
+                "주": {
+                    "adx": auxiliary_strengths["주"].get("adx_strength", 0),
+                    "rsi": auxiliary_strengths["주"].get("rsi_strength", 0),
+                    "macd": auxiliary_strengths["주"].get("macd_strength", 0),
+                    "total": auxiliary_strengths["주"].get("total_strength", 0)
+                },
+                "일": {
+                    "adx": auxiliary_strengths["일"].get("adx_strength", 0),
+                    "rsi": auxiliary_strengths["일"].get("rsi_strength", 0),
+                    "macd": auxiliary_strengths["일"].get("macd_strength", 0),
+                    "total": auxiliary_strengths["일"].get("total_strength", 0)
+                }
+            },
+            "reliability_score": reliability_score,  # 종합 신뢰도 (0-100)
+            "timestamp": datetime.datetime.now(pytz.timezone("Asia/Seoul")).isoformat()
+        }
+
+        # 파일 append + 저장 — 복수 _call_pc_async 스레드 동시 쓰기 방지
+        with _learning_data_lock:
+            # 락 안에서 최신 파일 다시 읽기 (다른 스레드가 이미 썼을 수 있음)
+            if os.path.exists(learning_path):
+                try:
+                    with open(learning_path, 'r', encoding='utf-8') as f:
+                        fresh = json.load(f)
+                        if isinstance(fresh, list):
+                            learning_data = fresh
+                except Exception:
+                    pass
+            learning_data.append(entry)
+            learning_data = learning_data[-500:]
+            with open(learning_path, 'w', encoding='utf-8') as f:
+                json.dump(learning_data, f, ensure_ascii=False, indent=2)
+
+    except Exception as e:
+        logger.warning("학습데이터 저장 실패: %s", e)
+
+
+def _monitor_signal_shifts():
+    """
+    보유 종목의 신호 변화 감지 — PC LLM이 학습데이터로 사용.
+    의미 있는 변화(≥2 신호 변화)만 PC에 호출.
+    PC 없을 때(pc_director=None)도 신호 변화 패턴은 학습데이터로 기록한다.
+    """
+    if not is_trading_hours():
+        return
+
+    try:
+        for code, name, qty, avg_price in _get_auto_mt()._get_holdings():
+            with config._auto_lock:
+                prev = config._pending_buys.get(code, {})
+
+            if not prev:
+                continue
+
+            sig = calculate_chart_signals(code, scan_mode=True)
+            if not sig:
+                continue
+
+            prev_count = prev.get("buy_count", 0)
+            new_count = sig.get("buy_count", 0)
+            delta = new_count - prev_count
+
+            # 의미 있는 변화: ±2 이상
+            if abs(delta) >= 2:
+                logger.info("🔍 신호 변화 감지: %s(%s) %d→%d", name, code, prev_count, new_count)
+
+                # 캐시 업데이트 (락으로 보호)
+                with config._auto_lock:
+                    if code in config._pending_buys:
+                        config._pending_buys[code]["buy_count"] = new_count
+
+                signals = sig.get('signals', {})
+
+                if pc_director:
+                    # PC LLM에서 min_signal 추천받기 (비동기)
+                    def _call_pc_async(c=code, n=name, pc=prev_count, nc=new_count, s=signals):
+                        try:
+                            min_signal = pc_director.analyze_signal_shift(c, n, pc, nc, s)
+                            if min_signal is not None:
+                                logger.info("💡 PC제안: %s min_signal=%d → 학습데이터 축적", n, min_signal)
+                                _log_pc_learning_data(c, n, pc, nc, min_signal, s)
+                        except Exception as e:
+                            logger.debug("PC 분석 실패: %s", e)
+
+                    threading.Thread(target=_call_pc_async, daemon=True).start()
+                else:
+                    # PC 없어도 신호 변화 패턴 기록 (min_signal=0 → PC 제안 없음 표시)
+                    def _log_async(c=code, n=name, pc=prev_count, nc=new_count, s=signals):
+                        _log_pc_learning_data(c, n, pc, nc, 0, s)
+
+                    threading.Thread(target=_log_async, daemon=True).start()
+
+    except Exception:
+        logger.debug("신호 변화 감지 실패")
+
+
 def _check_pending_buys():
     """
     BUY 결정 후 신호 변화 감시 — auto_trade_cycle 매 사이클 호출.
@@ -871,22 +1238,26 @@ def _check_pending_buys():
                    f"Ollama 재판단: {decision['action']} [{decision.get('trade_type','')}]\n"
                    f"이유: {decision.get('reason','')}")
             logger.info(msg)  # 텔레그램 실시간 알림 비활성화 — 17시 일괄 보고로 대체
-            # 신호 스냅샷 갱신
-            config._pending_buys[code]["signals"] = new_sig.get("signals", {})
-            config._pending_buys[code]["macd_hist"] = new_sig.get("macd_hist", 0)
+            # 신호 스냅샷 갱신 (락으로 보호)
+            with config._auto_lock:
+                if code in config._pending_buys:
+                    config._pending_buys[code]["signals"] = new_sig.get("signals", {})
+                    config._pending_buys[code]["macd_hist"] = new_sig.get("macd_hist", 0)
             if decision["action"] == "SKIP":
                 expired.append(code)  # SKIP 전환 시 감시 종료
         except Exception:
             logger.exception("_check_pending_buys 오류: %s", code)
-    for code in expired:
-        config._pending_buys.pop(code, None)
+    with config._auto_lock:
+        for code in expired:
+            config._pending_buys.pop(code, None)
 
 
 # ── Ollama 매도 판단 ─────────────────────────────────────────────────────────
 
 def _ollama_sell_decision(code: str, name: str, pnl: float, qty: int,
                           avg_price: float, current: float,
-                          trade_type: str = "스윙") -> dict:
+                          trade_type: str = "스윙",
+                          last_trades: dict = None) -> dict:
     """
     Ollama에게 매도 여부 + 다음 확인 시각 판단 요청.
     trade_type: "단타"(당일청산, 익절+2%/손절-1%) | "스윙"(익절+5%/손절-2%)
@@ -910,9 +1281,12 @@ def _ollama_sell_decision(code: str, name: str, pnl: float, qty: int,
     except Exception:
         pass
 
+    if last_trades is None:
+        last_trades = config._auto_last_trades
+
     hold_days = 0
     try:
-        d = config._auto_last_trades.get(code, {}).get("date")
+        d = last_trades.get(code, {}).get("date")
         if d:
             hold_days = (datetime.datetime.now(pytz.timezone("Asia/Seoul")).date()
                          - datetime.date.fromisoformat(d)).days
@@ -1008,199 +1382,296 @@ def _ollama_sell_decision(code: str, name: str, pnl: float, qty: int,
 
 def auto_trade_cycle():
     """
-    30초마다 실행:
+    30초마다 실행. 등록된 모든 계좌를 독립적으로 처리.
     1. 장외시간 즉시 리턴
-    2. 보유종목 → Ollama 매도판단 (변동성+차트+PnL 종합)
-    3. 신규매수: 거래량∩순매수→차트2/4 상위 7종목 × smart_buy_amount(예수금비례)
+    2. 각 계좌 보유종목 → Ollama 매도판단 (변동성+차트+PnL 종합)
+    3. 각 계좌 신규매수: 거래량∩순매수→차트 ≥6/12 상위 7종목 × 계좌별 예수금비례
     """
     if not config._auto_enabled or not is_trading_hours():
         return
 
+    # 신호 변화 감지 (PC LLM이 학습데이터로 분석)
+    _monitor_signal_shifts()
+
     # BUY 결정 후 신호 변화 즉시 감시
     _check_pending_buys()
 
-    from mock_trading.kis_client import get_price
+    from mock_trading.kis_client import get_current_price as get_price, REAL_TRADE, get_balance
     kst_now  = datetime.datetime.now(pytz.timezone("Asia/Seoul"))
     time_str = kst_now.strftime("%H:%M:%S")
     today    = kst_now.date().isoformat()
+    all_bought = []
 
-    # ── 1. 보유종목 관리 ─────────────────────────────────────────────
-    try:
-        from mock_trading.kis_client import REAL_TRADE, get_balance
-        holdings = _get_auto_mt()._get_holdings()
+    # ── 신규매수 후보 (공통 1회 조회 — 비싼 연산) ────────────────────
+    # 09:00~09:10 KIS API 불안정 구간 — 신규매수만 차단 (매도/HOLD는 정상)
+    can_buy = not (kst_now.hour == 9 and kst_now.minute < 10)
+    new_targets = []
+    if can_buy:
+        try:
+            new_targets = select_volume_smart_chart()
+        except Exception:
+            logger.exception("신규 후보 탐색 실패")
 
-        # 실전 매매 시 KIS API 실제 평균단가로 덮어쓰기
-        # portfolio.db와 실제 체결 단가가 다를 수 있음 (분할매수/정정 등)
-        if REAL_TRADE:
-            try:
-                kis_bal = get_balance()
-                kis_avg = {h["code"]: h["avg_price"] for h in kis_bal.get("holdings", [])}
-                holdings = [
-                    (code, name, qty, kis_avg.get(code, avg_price))
-                    for code, name, qty, avg_price in holdings
-                ]
-                logger.debug("실전 평균단가 적용: %s", kis_avg)
-            except Exception as _be:
-                logger.warning("KIS 평균단가 조회 실패, DB값 사용: %s", _be)
+    # ── 계좌별 루프 ──────────────────────────────────────────────────
+    for acc in _ACCOUNTS:
+        last_trades = getattr(config, acc["last_trades_attr"])
+        trade_log   = getattr(config, acc["log_attr"])
 
-        for code, name, qty, avg_price in holdings:
-            try:
-                current = get_price(code)
-                if not current:
-                    continue
-                pnl = (current - avg_price) / avg_price * 100
-
-                last       = config._auto_last_trades.get(code, {})
-                next_check = last.get("next_check")
-                if next_check and kst_now < next_check:
-                    remain = int((next_check - kst_now).total_seconds() / 60)
-                    logger.debug("⏭ %s(%s) 스킵 — 다음확인 %d분 후", name, code, remain)
-                    continue
-
-                trade_type  = config._auto_last_trades.get(code, {}).get("trade_type", "스윙")
-
-                # 단타 15:10 강제 청산
-                if trade_type == "단타" and kst_now.hour == 15 and kst_now.minute >= 10:
-                    result = sell_mock(code, None, reason="단타 장마감 강제청산")
-                    logger.info("🔔 단타 강제청산 %s(%s): %+.1f%%", name, code, pnl)
-                    config._daily_trade_log.append(
-                        f"{time_str} 🔔 단타강제청산 {name}({code}) {pnl:+.1f}%")
-                    config._auto_last_trades[code] = {"time": time_str, "action": "SELL_ALL", "pnl": pnl}
-                    continue
-
-                decision    = _ollama_sell_decision(code, name, pnl, qty, avg_price, current,
-                                                    trade_type=trade_type)
-                action      = decision["action"]
-                ratio       = decision.get("ratio", 0.3)
-                reason      = decision.get("reason", "")
-                check_after = decision.get("check_after", 15)
-                next_dt     = kst_now + datetime.timedelta(minutes=check_after)
-
-                if action == "SELL_PARTIAL":
-                    sell_qty = max(1, int(qty * ratio))
-                    # 남은 수량이 1주 이하면 전량 매도 (수수료 낭비 방지)
-                    if sell_qty >= qty or (qty - sell_qty) <= 1:
-                        action   = "SELL_ALL"
-                        sell_qty = qty
-                    result   = sell_mock(code, sell_qty if action == "SELL_PARTIAL" else None, reason=f"Ollama: {reason}")
-                    emoji    = "🤑" if pnl >= 0 else "🟡"
-                    logger.info("%s 부분매도 %s(%s): %+.1f%% %d주 [%s]",
-                                emoji, name, code, pnl, sell_qty, reason)
-                    config._daily_trade_log.append(
-                        f"{time_str} {emoji} 부분매도 {name}({code}) {pnl:+.1f}% {sell_qty}주\n  └ {reason}")
-                    config._auto_last_trades[code] = {"time": time_str, "action": "SELL_PARTIAL",
-                                               "pnl": pnl, "next_check": next_dt}
-
-                elif action == "SELL_ALL":
-                    result = sell_mock(code, None, reason=f"Ollama: {reason}")
-                    emoji  = "🔴" if pnl < 0 else "💰"
-                    logger.info("%s 전량매도 %s(%s): %+.1f%% [%s]",
-                                emoji, name, code, pnl, reason)
-                    config._daily_trade_log.append(
-                        f"{time_str} {emoji} 전량매도 {name}({code}) {pnl:+.1f}%\n  └ {reason}")
-                    config._auto_last_trades[code] = {"time": time_str, "action": "SELL_ALL",
-                                               "pnl": pnl, "next_check": None}
-
-                else:  # HOLD
-                    logger.info("⏸ HOLD %s(%s): %+.1f%% → %d분 후 재확인 [%s]",
-                                name, code, pnl, check_after, reason)
-                    config._auto_last_trades[code] = {**last, "next_check": next_dt}
-            except Exception:
-                logger.exception("보유종목 처리 오류: %s", code)
-    except Exception:
-        logger.exception("holdings 조회 실패")
+        # ── 1. 보유종목 관리 ─────────────────────────────────────────
         holdings = []
+        try:
+            holdings = acc["get_mt"]()._get_holdings()
 
-    # ── 2. 신규 매수 (최대 7종목) ────────────────────────────────────
-    # 09:00~09:10 KIS API 불안정 구간 — 신규 매수만 차단 (매도/HOLD는 정상 동작)
-    if kst_now.hour == 9 and kst_now.minute < 10:
-        logger.info("⏳ 09:10 이전 신규매수 대기 중 (KIS API 안정화)")
-        return
+            # 트레이너 실전 매매 시 KIS API 평균단가 덮어쓰기
+            if acc["id"] == "trainer" and REAL_TRADE:
+                try:
+                    kis_bal = get_balance()
+                    kis_avg = {h["code"]: h["avg_price"] for h in kis_bal.get("holdings", [])}
+                    holdings = [
+                        (code, name, qty, kis_avg.get(code, avg_price))
+                        for code, name, qty, avg_price in holdings
+                    ]
+                except Exception as _be:
+                    logger.warning("[%s] KIS 평균단가 조회 실패: %s", acc["label"], _be)
 
-    try:
-        new_targets = select_volume_smart_chart()
-        bought = []
-        held_codes = {c for c, *_ in holdings}  # 현재 보유 종목 — 재매수 방어
-        for code, sig in new_targets:
-            last = config._auto_last_trades.get(code, {})
-            # 현재 보유 중인 종목 건너뜀 (전날부터 보유 포함)
-            if code in held_codes:
-                continue
-            # 당일 이미 매수했거나 매도한 종목 건너뜀
-            if last.get("date") == today and last.get("action") in ("BUY", "SELL_ALL", "SELL_PARTIAL"):
-                continue
-            try:
-                amount = smart_buy_amount(code)
-                result = buy_mock(code, amount, sig=sig)
-                if "❌" in result:
-                    logger.warning("매수 실패 %s: %s", code, result[:60])
+            for code, name, qty, avg_price in holdings:
+                try:
+                    current = get_price(code)
+                    if not current:
+                        continue
+                    pnl = (current - avg_price) / avg_price * 100
+
+                    last       = last_trades.get(code, {})
+                    next_check = last.get("next_check")
+                    if next_check and kst_now < next_check:
+                        remain = int((next_check - kst_now).total_seconds() / 60)
+                        logger.debug("⏭ [%s] %s(%s) 스킵 — 다음확인 %d분 후",
+                                     acc["label"], name, code, remain)
+                        continue
+
+                    trade_type = last_trades.get(code, {}).get("trade_type", "스윙")
+
+                    # 단타 15:10 강제 청산 (평일만)
+                    if (trade_type == "단타" and kst_now.weekday() < 5
+                            and kst_now.hour == 15 and kst_now.minute >= 10):
+                        result = _sell_for_account(acc, code, None, reason="단타 장마감 강제청산")
+                        logger.info("🔔 [%s] 단타 강제청산 %s(%s): %+.1f%%",
+                                    acc["label"], name, code, pnl)
+                        trade_log.append(
+                            f"{time_str} 🔔 단타강제청산 {name}({code}) {pnl:+.1f}%")
+                        last_trades[code] = {"time": time_str, "action": "SELL_ALL", "pnl": pnl}
+                        continue
+
+                    decision    = _ollama_sell_decision(code, name, pnl, qty, avg_price, current,
+                                                        trade_type=trade_type,
+                                                        last_trades=last_trades)
+                    action      = decision["action"]
+                    ratio       = decision.get("ratio", 0.3)
+                    reason      = decision.get("reason", "")
+                    check_after = decision.get("check_after", 15)
+                    next_dt     = kst_now + datetime.timedelta(minutes=check_after)
+
+                    if action == "SELL_PARTIAL":
+                        sell_qty = max(1, int(qty * ratio))
+                        # 남은 수량이 1주 이하면 전량 매도 (수수료 낭비 방지)
+                        if sell_qty >= qty or (qty - sell_qty) <= 1:
+                            action   = "SELL_ALL"
+                            sell_qty = qty
+                        result = _sell_for_account(
+                            acc, code,
+                            sell_qty if action == "SELL_PARTIAL" else None,
+                            reason=f"Ollama: {reason}"
+                        )
+                        emoji = "🤑" if pnl >= 0 else "🟡"
+                        logger.info("%s [%s] 부분매도 %s(%s): %+.1f%% %d주",
+                                    emoji, acc["label"], name, code, pnl, sell_qty)
+                        trade_log.append(
+                            f"{time_str} {emoji} 부분매도 {name}({code}) {pnl:+.1f}% {sell_qty}주\n"
+                            f"  └ {reason}")
+                        last_trades[code] = {"time": time_str, "action": "SELL_PARTIAL",
+                                             "pnl": pnl, "next_check": next_dt}
+
+                    elif action == "SELL_ALL":
+                        result = _sell_for_account(acc, code, None, reason=f"Ollama: {reason}")
+                        emoji  = "🔴" if pnl < 0 else "💰"
+                        logger.info("%s [%s] 전량매도 %s(%s): %+.1f%%",
+                                    emoji, acc["label"], name, code, pnl)
+                        trade_log.append(
+                            f"{time_str} {emoji} 전량매도 {name}({code}) {pnl:+.1f}%\n  └ {reason}")
+                        last_trades[code] = {"time": time_str, "action": "SELL_ALL",
+                                             "pnl": pnl, "next_check": None}
+
+                    else:  # HOLD
+                        logger.info("⏸ [%s] HOLD %s(%s): %+.1f%% → %d분 후 재확인",
+                                    acc["label"], name, code, pnl, check_after)
+                        last_trades[code] = {**last, "next_check": next_dt}
+
+                except Exception:
+                    logger.exception("[%s] 보유종목 처리 오류: %s", acc["label"], code)
+
+        except Exception:
+            logger.exception("[%s] holdings 조회 실패", acc["label"])
+
+        # ── 2. 신규 매수 ─────────────────────────────────────────────
+        if not can_buy:
+            logger.info("⏳ [%s] 09:10 이전 신규매수 대기", acc["label"])
+            continue
+
+        if not new_targets:
+            continue
+
+        try:
+            bought     = []
+            held_codes = {c for c, *_ in holdings}
+            for code, sig in new_targets:
+                last = last_trades.get(code, {})
+                if code in held_codes:
                     continue
-                trade_type = sig.get("trade_type", "스윙")
-                name = sig.get("name", code)
-                config._auto_last_trades[code] = {
-                    "time": time_str, "action": "BUY", "date": today,
-                    "signals": sig["buy_count"], "rsi": sig["rsi"],
-                    "trade_type": trade_type,
-                }
-                # 실제 매수 성공 후에만 신호 감시 등록
-                config._pending_buys[code] = {
-                    "name": name,
-                    "signals": sig.get("signals", {}),
-                    "buy_count": sig["buy_count"],
-                    "macd_hist": sig["macd_hist"],
-                    "time": kst_now,
-                    "trade_type": trade_type,
-                }
-                bought.append(code)
-                logger.info("🚀 신규매수 %s(%s) [%s]: %d원", name, code, trade_type, amount)
-                config._daily_trade_log.append(
-                    f"{time_str} 🟢 신규매수 {name}({code}) [{trade_type}] {amount:,}원\n"
-                    f"  └ RSI={sig['rsi']} MACD={sig['macd_hist']} "
-                    f"ADX={sig.get('adx','?')} 신호={sig['buy_count']}/12"
-                )
-            except Exception:
-                logger.exception("신규매수 오류: %s", code)
-    except Exception:
-        logger.exception("신규 후보 탐색 실패")
-        bought = []
+                if last.get("date") == today and last.get("action") in ("BUY", "SELL_ALL", "SELL_PARTIAL"):
+                    continue
 
-    logger.info("[자동매매 %s] 보유:%d  신규매수:%s",
-                time_str, len(holdings), bought or "없음")
+                sector   = sig.get("sector", "")
+                approved, reason = _validate_trade_with_strategy(code, sig, sector)
+                if not approved:
+                    logger.info("⛔ [%s] %s(%s) 거부: %s",
+                                acc["label"], sig.get("name", code), code, reason)
+                    continue
+
+                try:
+                    amount = _smart_buy_amount_for_account(acc, code)
+                    result = _buy_for_account(acc, code, amount, sig=sig)
+                    if "❌" in result:
+                        logger.warning("[%s] 매수 실패 %s: %s", acc["label"], code, result[:60])
+                        continue
+                    trade_type = sig.get("trade_type", "스윙")
+                    name       = sig.get("name", code)
+                    last_trades[code] = {
+                        "time": time_str, "action": "BUY", "date": today,
+                        "signals": sig["buy_count"], "rsi": sig["rsi"],
+                        "trade_type": trade_type,
+                    }
+                    # 신호 감시 등록은 트레이너만 (PC LLM 학습용)
+                    if acc["id"] == "trainer":
+                        config._pending_buys[code] = {
+                            "name": name,
+                            "signals": sig.get("signals", {}),
+                            "buy_count": sig["buy_count"],
+                            "macd_hist": sig["macd_hist"],
+                            "time": kst_now,
+                            "trade_type": trade_type,
+                        }
+                    bought.append(code)
+                    all_bought.append(code)
+                    logger.info("🚀 [%s] 신규매수 %s(%s) [%s]: %d원 [%s]",
+                                acc["label"], name, code, trade_type, amount, reason)
+                    trade_log.append(
+                        f"{time_str} 🟢 신규매수 {name}({code}) [{trade_type}] {amount:,}원\n"
+                        f"  └ RSI={sig['rsi']} MACD={sig['macd_hist']} "
+                        f"ADX={sig.get('adx','?')} 신호={sig['buy_count']}/12\n"
+                        f"  └ {reason}"
+                    )
+                except Exception:
+                    logger.exception("[%s] 신규매수 오류: %s", acc["label"], code)
+
+        except Exception:
+            logger.exception("[%s] 신규매수 처리 실패", acc["label"])
+
+    logger.info("[자동매매 %s] 신규매수:%s", time_str, all_bought or "없음")
+    return all_bought  # auto_trade_loop에서 신규매수 여부 판단용
 
 
 # ── 30초 schedule 루프 ───────────────────────────────────────────────────────
 
 def _restore_today_trades():
-    """서버 재시작 시 당일 매수 기록을 portfolio.db에서 복원 → 중복매수 방지."""
+    """서버 재시작 시 당일 매수 기록을 각 계좌 DB에서 복원 → 중복매수 방지."""
     import sqlite3 as _sqlite3
-    db_path = os.path.join(os.path.dirname(__file__), "mock_trading", "portfolio.db")
     today = datetime.datetime.now(pytz.timezone("Asia/Seoul")).date().isoformat()
+    for acc in _ACCOUNTS:
+        db_path     = acc["db_path"]
+        last_trades = getattr(config, acc["last_trades_attr"])
+        try:
+            con = _sqlite3.connect(db_path)
+            rows = con.execute(
+                "SELECT ticker, name, action, created_at FROM trades "
+                "WHERE action IN ('BUY','SELL') AND created_at >= ? ORDER BY created_at ASC",
+                [today]
+            ).fetchall()
+            con.close()
+            for ticker, name, action, created_at in rows:
+                db_action = "BUY" if action == "BUY" else "SELL_ALL"
+                if ticker not in last_trades or db_action == "SELL_ALL":
+                    last_trades[ticker] = {
+                        "action": db_action, "date": today,
+                        "time": created_at[11:19] if len(created_at) > 10 else "",
+                        "trade_type": "스윙",
+                    }
+            if rows:
+                logger.info("[%s] 당일 매매 복원: %d건", acc["label"], len(rows))
+        except Exception:
+            logger.exception("[%s] _restore_today_trades 실패", acc["label"])
+
+
+def _validate_trade_with_strategy(code: str, sig: dict, sector: str = "") -> tuple[bool, str]:
+    """
+    PC LLM 전략(관리자)에 따라 이 매수/매도가 승인되는지 검증.
+
+    Returns:
+        (is_approved, reason)
+    """
+    if not pc_director:
+        return True, "pc_director 미활성화"
+
     try:
-        con = _sqlite3.connect(db_path)
-        rows = con.execute(
-            "SELECT ticker, name, action, created_at FROM trades "
-            "WHERE action IN ('BUY','SELL') AND created_at >= ? ORDER BY created_at ASC",
-            [today]
-        ).fetchall()
-        con.close()
-        for ticker, name, action, created_at in rows:
-            db_action = "BUY" if action == "BUY" else "SELL_ALL"
-            if ticker not in config._auto_last_trades or db_action == "SELL_ALL":
-                config._auto_last_trades[ticker] = {
-                    "action": db_action, "date": today,
-                    "time": created_at[11:19] if len(created_at) > 10 else "",
-                    "trade_type": "스윙",
-                }
-        if rows:
-            logger.info("당일 매매 복원: %d건", len(rows))
+        strategy = pc_director.get_current_strategy()
+        if strategy["status"] != "ready":
+            return True, f"전략 상태: {strategy['status']}"
+
+        buy_count = sig.get("buy_count", 0)
+
+        # 1) 위험도 기반 신호 임계값
+        risk_to_min_signal = {"low": 7, "normal": 6, "high": 5}
+        min_signal_required = risk_to_min_signal.get(strategy.get("risk_level", "normal"), 6)
+
+        # 2) 업종별 오버라이드 확인
+        if sector and sector in strategy.get("min_signal_override", {}):
+            min_signal_required = strategy["min_signal_override"][sector]
+
+        if buy_count < min_signal_required:
+            return False, f"신호 {buy_count}/12 < 필요신호 {min_signal_required}/12 (PC전략)"
+
+        # 3) 업종 포커스 확인 (optional, 엄격하지 않음 — 강제는 아님)
+        focus = strategy.get("focus_sectors", [])
+        if focus and sector and sector not in focus:
+            logger.debug("⚠️ %s: 포커스 업종 외 (%s) — 진행", sector, focus)
+
+        return True, f"PC전략 승인 (신호{buy_count}≥{min_signal_required})"
+    except Exception as e:
+        logger.debug("전략 검증 실패: %s", e)
+        return True, "전략 검증 오류 (진행)"
+
+
+def _log_pc_stats():
+    """📊 PC 호출 통계 로깅 (매시간)"""
+    if not pc_director:
+        return
+    try:
+        stats = pc_director.get_pc_stats()
+        logger.info(
+            "📊 PC 효율 통계: 신호변화 호출=%d건, 평균분석시간=%.2f초, "
+            "누적시간=%.1f초, 상태=%s",
+            stats["signal_shift_calls"],
+            stats["avg_analysis_time_sec"],
+            stats["total_time_sec"],
+            stats["status"]
+        )
     except Exception:
-        logger.exception("_restore_today_trades 실패")
+        logger.debug("PC 통계 로깅 실패")
 
 
 def _log_holdings_status():
     """매시 정각 보유종목 수익률을 로그 파일에 기록 — 장중 에이전트가 읽을 수 있게."""
     import sqlite3 as _sqlite3
-    from mock_trading.kis_client import get_price
+    from mock_trading.kis_client import get_current_price as get_price
     kst_now  = datetime.datetime.now(pytz.timezone("Asia/Seoul"))
     log_path = os.path.join(os.path.dirname(__file__), "inspect_reports", "holdings_hourly.log")
     try:
@@ -1221,6 +1692,13 @@ def _log_holdings_status():
         if holdings:
             lines.append(f"  평균수익률: {total_pnl_pct/len(holdings):+.1f}%")
         os.makedirs(os.path.dirname(log_path), exist_ok=True)
+        # 파일 크기 제한: 10,000줄 초과 시 앞 절반 삭제 (무한 증가 방지)
+        if os.path.exists(log_path):
+            with open(log_path, "r", encoding="utf-8") as f:
+                existing = f.readlines()
+            if len(existing) > 10000:
+                with open(log_path, "w", encoding="utf-8") as f:
+                    f.writelines(existing[-5000:])
         with open(log_path, "a", encoding="utf-8") as f:
             f.write("\n".join(lines) + "\n")
         logger.info("holdings_hourly.log 기록 완료: %d종목", len(holdings))
@@ -1229,24 +1707,57 @@ def _log_holdings_status():
 
 
 def auto_trade_loop():
-    """30초 간격 자동매매 루프 — daemon 스레드"""
+    """자동매매 루프 — daemon 스레드
+    - 신규매수 기회 있을 때: 30초 간격 (활성)
+    - 신규매수 기회 없을 때: 5분 간격 (효율화, 매도만 모니터링)
+    - PC LLM(관리자)이 당일 전략을 지시, Python(작업자)이 실행
+    """
     _restore_today_trades()
-    logger.info("자동매매 루프 시작 (30초 간격, 장중 KST만 실행)")
+
+    # PC LLM 디렉터 스레드 시작 (백그라운드에서 매일 09:00에 당일 전략 수립)
+    if pc_director:
+        try:
+            t = threading.Thread(target=pc_director.director_scheduler, daemon=True)
+            t.start()
+            logger.info("🎯 PC LLM 디렉터 스레드 시작 (관리자 역할)")
+        except Exception as e:
+            logger.warning("PC LLM 디렉터 시작 실패: %s", e)
+
+    logger.info("자동매매 루프 시작 (적응형 간격: 신규기회 있을 때 30초, 없을 때 5분)")
+    logger.info("구조: PC LLM(관리자) → 전략 지시 → Python(작업자) → 실행")
     last_hourly_log = None
+    no_buy_opportunity_count = 0  # 신규매수 기회 없음 연속 카운트
+
     while True:
         try:
-            auto_trade_cycle()
+            bought = auto_trade_cycle()
             kst_now = datetime.datetime.now(pytz.timezone("Asia/Seoul"))
             if is_trading_hours():
-                # 매시 정각 보유종목 로그
+                # 매시 정각 보유종목 로그 + PC 효율 통계
                 if kst_now.minute == 0 and last_hourly_log != kst_now.hour:
                     _log_holdings_status()
+                    _log_pc_stats()  # 📊 PC 부하 모니터링
                     last_hourly_log = kst_now.hour
+
+            # 효율화: 신규매수 기회 체크
+            if not bought:  # 신규매수 없음
+                no_buy_opportunity_count += 1
+            else:
+                no_buy_opportunity_count = 0  # 매수 발생 시 리셋
+
         except Exception:
             logger.exception("auto_trade_cycle 예외")
 
+        # 적응형 sleep: 신규매수 기회 없으면 5분, 있으면 30초
         import time
-        time.sleep(30)
+        if no_buy_opportunity_count >= 2:  # 2회 연속 기회 없음 = 5분으로 전환
+            sleep_sec = 300
+            if no_buy_opportunity_count == 2:
+                logger.info("💤 신규매수 기회 없음 → 효율화: 30초 → 5분 간격으로 전환 (매도만 모니터링)")
+        else:
+            sleep_sec = 30
+
+        time.sleep(sleep_sec)
 
 
 def smart_wakeup_monitor():
@@ -1315,7 +1826,8 @@ def smart_wakeup_monitor():
                 reason = "\n".join(triggers)
                 logger.info("스마트 웨이크업 트리거: %s", reason)
                 send_wol()
-                _tg_notify(f"🌟 [스마트 웨이크업]\n{reason}\n→ PC 깨우는 중...")
+                # _tg_notify(f"🌟 [스마트 웨이크업]\n{reason}\n→ PC 깨우는 중...")  # 신호 메시지 제거
+                # → 매매 완료 메시지만 수신
 
         except Exception:
             logger.exception("smart_wakeup_monitor 오류")

@@ -138,9 +138,37 @@ def _price_naver(code: str) -> int:
     return None
 
 
+def _price_unified(code: str) -> int:
+    """KIS 통합시세 조회 (FID_COND_MRKT_DIV_CODE='UN' — KRX+NXT 통합)."""
+    token = get_token()
+    if not token:
+        return None
+    headers = {
+        "authorization": f"Bearer {token}",
+        "appkey": APP_KEY,
+        "appsecret": APP_SECRET,
+        "tr_id": "FHKST01010100",
+    }
+    try:
+        r = requests.get(
+            f"{KIS_URL}/uapi/domestic-stock/v1/quotations/inquire-price",
+            params={"FID_COND_MRKT_DIV_CODE": "UN", "FID_INPUT_ISCD": code},
+            headers=headers,
+            timeout=8,
+            proxies={"http": None, "https": None},
+        )
+        r.raise_for_status()
+        out = r.json().get("output", {})
+        if out and out.get("stck_prpr"):
+            return int(out["stck_prpr"])
+    except Exception:
+        logger.debug("KIS(KY) 통합시세 조회 실패: %s", code)
+    return None
+
+
 def get_price(code: str) -> int:
-    """KIS → Yahoo → Naver 순 폴백. 실패 시 None 반환."""
-    return _price_kis(code) or _price_yahoo(code) or _price_naver(code)
+    """KIS KRX → NXT → Naver 순 폴백. 실패 시 None 반환."""
+    return _price_kis(code) or get_nxt_price(code) or _price_naver(code)
 
 
 def get_nxt_price(code: str) -> int:
@@ -172,8 +200,16 @@ def get_nxt_price(code: str) -> int:
 
 
 def get_best_price(code: str) -> int:
-    """KRX → NXT → Yahoo → Naver 순 폴백."""
-    return _price_kis(code) or get_nxt_price(code) or _price_yahoo(code) or _price_naver(code)
+    """KRX → NXT → Naver 순 폴백."""
+    return _price_kis(code) or get_nxt_price(code) or _price_naver(code)
+
+
+def get_current_price(code: str) -> int:
+    """통합시세 우선 현재가 조회.
+    1순위: KIS 통합시세 (UN — KRX+NXT 자동 선택)
+    2순위: KRX / 3순위: NXT / 4순위: Naver
+    """
+    return _price_unified(code) or _price_kis(code) or get_nxt_price(code) or _price_naver(code)
 
 
 _nxt_support_cache: dict = {}
@@ -446,3 +482,105 @@ def get_minute_ohlcv(code: str, interval: int = 1, count: int = 60) -> list:
     except Exception:
         logger.exception("KIS(KY) 분봉 조회 실패: %s", code)
         return []
+
+
+# ────────────────────────────────────────────────────────────────────────
+# 코드 해석 함수 (kis_client.py와 동일)
+# ────────────────────────────────────────────────────────────────────────
+
+def _name_by_pykrx(code: str) -> str:
+    """pykrx로 단일 종목명 조회."""
+    try:
+        from pykrx import stock as _px
+        return _px.get_market_ticker_name(code)
+    except Exception:
+        return None
+
+
+def _code_by_pykrx(name: str) -> tuple:
+    """pykrx로 종목명 → (code, name) (폴백용). 전체 스캔이라 느림."""
+    try:
+        from pykrx import stock as _px
+        import datetime as _dt
+        today = _dt.date.today().strftime("%Y%m%d")
+        for market in ("KOSPI", "KOSDAQ"):
+            try:
+                ticker_list = _px.get_market_ticker_list(today, market=market)
+                if not ticker_list:
+                    logger.warning(f"pykrx: {market} 종목 리스트 공 (API 비정상)")
+                    continue
+                for code in ticker_list:
+                    try:
+                        n = _px.get_market_ticker_name(code)
+                        if n and name in n:
+                            return code, n
+                    except Exception as e:
+                        # 개별 종목 조회 실패는 무시하고 계속
+                        pass
+            except (requests.exceptions.JSONDecodeError, Exception) as e:
+                logger.warning(f"pykrx {market} 조회 실패: {type(e).__name__} — 다음 마켓 시도")
+                continue
+    except Exception as e:
+        logger.warning(f"pykrx 폴백 실패: {e}")
+    return None, None
+
+
+def resolve_code(name_or_code: str) -> tuple:
+    """
+    종목명 또는 6자리 코드 → (code, display_name).
+    Naver 실패 시 pykrx 폴백.
+    실패 시 (None, name_or_code) 반환.
+    """
+    s = name_or_code.strip()
+    if len(s) == 6 and s.isdigit():
+        # 1차: 네이버 금융에서 종목명 조회
+        try:
+            r = requests.get(
+                f"https://finance.naver.com/item/main.naver?code={s}",
+                headers={"User-Agent": "Mozilla/5.0"},
+                timeout=8,
+                proxies={"http": None, "https": None},
+            )
+            from bs4 import BeautifulSoup as _BS
+            soup = _BS(r.text, "html.parser")
+            title = soup.select_one(".wrap_company h2 a")
+            if title and title.text.strip():
+                return s, title.text.strip()
+        except Exception:
+            pass
+        # 2차 폴백: pykrx
+        name = _name_by_pykrx(s)
+        return s, (name or s)
+
+    # 종목명 → 코드: 1차 네이버 검색
+    try:
+        r = requests.get(
+            f"https://search.naver.com/search.naver?query={s}+주가",
+            headers={"User-Agent": "Mozilla/5.0"},
+            timeout=8,
+            proxies={"http": None, "https": None},
+        )
+        soup = BeautifulSoup(r.text, "html.parser")
+        link = soup.select_one('a[href*="finance.naver.com/item/main"]')
+        if link and "code=" in link["href"]:
+            code = link["href"].split("code=")[1].split("&")[0]
+            try:
+                rn = requests.get(
+                    f"https://finance.naver.com/item/main.naver?code={code}",
+                    headers={"User-Agent": "Mozilla/5.0"},
+                    timeout=8,
+                    proxies={"http": None, "https": None},
+                )
+                sn = BeautifulSoup(rn.text, "html.parser")
+                title = sn.select_one(".wrap_company h2 a")
+                display = title.text.strip() if (title and title.text.strip()) else s
+            except Exception:
+                display = s
+            return code, display
+    except Exception:
+        pass
+    # 2차 폴백: pykrx 전체 스캔
+    code, name = _code_by_pykrx(s)
+    if code:
+        return code, name
+    return None, s

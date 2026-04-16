@@ -38,7 +38,6 @@ CONFIG = {
     'log_file': '/home/ubuntu/-claude-test-/proxy_v54.log',
     'check_interval': 15,  # 15초마다 체크
     'error_threshold': 3,  # 3번 연속 에러 시 알림
-    'lm_studio_url': 'http://221.144.111.116:8000/v1/models',
     'proxy_health_url': 'http://localhost:11435/health',
     'telegram_token': os.getenv('TELEGRAM_TOKEN_RAW'),
     'chat_id': '8448138406',
@@ -91,39 +90,6 @@ def send_telegram(message: str, parse_mode: str = "HTML"):
         logger.error(f"텔레그램 전송 오류: {e}")
         return False
 
-def check_lm_studio():
-    """LM Studio (Gemma 4) 헬스 체크"""
-    try:
-        start = time.time()
-        r = requests.get(CONFIG['lm_studio_url'], timeout=5)
-        elapsed = time.time() - start
-
-        if r.status_code == 200:
-            error_tracker.reset('lm_studio_down')
-            if elapsed > 2:  # 응답이 느린 경우
-                logger.warning(f"⚠️ LM Studio 응답 느림: {elapsed:.1f}s")
-                if error_tracker.should_alert('lm_studio_slow'):
-                    send_telegram(f"⚠️ LM Studio 응답 느림: {elapsed:.1f}초")
-            return True
-        else:
-            logger.error(f"❌ LM Studio HTTP {r.status_code}")
-            error_tracker.increment('lm_studio_down')
-            if error_tracker.errors['lm_studio_down'] >= 2:
-                if error_tracker.should_alert('lm_studio_error'):
-                    send_telegram(f"❌ LM Studio 오류: HTTP {r.status_code}")
-            return False
-    except requests.Timeout:
-        logger.error("❌ LM Studio 타임아웃")
-        error_tracker.increment('lm_studio_timeout')
-        if error_tracker.errors['lm_studio_timeout'] >= 2:
-            if error_tracker.should_alert('lm_studio_timeout'):
-                send_telegram("❌ LM Studio 타임아웃 (연결 불가)")
-        return False
-    except Exception as e:
-        logger.error(f"❌ LM Studio 체크 실패: {e}")
-        if error_tracker.should_alert('lm_studio_exception'):
-            send_telegram(f"❌ LM Studio 예외: {str(e)[:100]}")
-        return False
 
 def check_proxy_health():
     """proxy_v54 헬스 체크"""
@@ -324,7 +290,6 @@ def generate_status_report():
 
     # 각 체크 결과
     checks = [
-        ("LM Studio", check_lm_studio()),
         ("Proxy 서버", check_proxy_health()),
         ("Oracle DB", check_oracle_db()),
         ("자동매매", check_auto_trading()),
@@ -354,7 +319,6 @@ def main_loop():
             check_count += 1
 
             # 1차 체크: 빠른 것들 (매번)
-            check_lm_studio()
             check_proxy_health()
             monitor_log_file()
             check_system_resources()

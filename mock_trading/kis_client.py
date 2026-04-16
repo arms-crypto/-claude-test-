@@ -41,6 +41,7 @@ def _load_token_from_file():
 
 
 def _save_token_to_file():
+    """KIS 토큰을 파일에 캐시 저장. 서버 재시작 후 재발급 없이 재사용."""
     try:
         with open(_TOKEN_FILE, "w") as f:
             json.dump({"token": _token_cache["token"], "expires_at": _token_cache["expires_at"]}, f)
@@ -52,6 +53,11 @@ _load_token_from_file()  # 모듈 로드 시 파일에서 복구
 
 
 def get_token() -> str:
+    """KIS OAuth2 토큰 발급/캐시 조회. 캐시 유효하면 즉시 반환, 만료 시 재발급.
+
+    Returns:
+        str: KIS OAuth2 토큰, 발급 실패 시 None
+    """
     now = time.time()
     # 락 없이 먼저 캐시 확인 (빠른 경로)
     if _token_cache["token"] and now < _token_cache["expires_at"]:
@@ -82,6 +88,14 @@ def get_token() -> str:
 
 
 def _price_kis(code: str) -> int:
+    """KIS API로 현재 주가 조회 (KRX 종목).
+
+    Args:
+        code (str): 종목코드 (6자리)
+
+    Returns:
+        int: 현재가, 조회 실패 시 None
+    """
     token = get_token()
     if not token:
         return None
@@ -110,6 +124,14 @@ def _price_kis(code: str) -> int:
 
 
 def _price_yahoo(code: str) -> int:
+    """yfinance로 한국 주식 현재가 조회 (Yahoo Finance).
+
+    Args:
+        code (str): 종목코드 (6자리)
+
+    Returns:
+        int: 현재가, 조회 실패 시 None
+    """
     try:
         stock = yf.Ticker(f"{code}.KS")
         hist = stock.history(period="1d")
@@ -128,6 +150,14 @@ def _price_yahoo(code: str) -> int:
 
 
 def _price_naver(code: str) -> int:
+    """네이버 금융에서 한국 주식 현재가 조회 (웹 크롤링).
+
+    Args:
+        code (str): 종목코드 (6자리)
+
+    Returns:
+        int: 현재가, 조회 실패 시 None
+    """
     try:
         r = requests.get(
             f"https://finance.naver.com/item/main.naver?code={code}",
@@ -144,9 +174,39 @@ def _price_naver(code: str) -> int:
     return None
 
 
+def _price_unified(code: str) -> int:
+    """KIS 통합시세 조회 (FID_COND_MRKT_DIV_CODE='UN' — KRX+NXT 통합).
+    정규장/비정규장 구분 없이 현재 체결가 반환. 실패 시 None.
+    """
+    token = get_token()
+    if not token:
+        return None
+    headers = {
+        "authorization": f"Bearer {token}",
+        "appkey": APP_KEY,
+        "appsecret": APP_SECRET,
+        "tr_id": "FHKST01010100",
+    }
+    try:
+        r = requests.get(
+            f"{KIS_URL}/uapi/domestic-stock/v1/quotations/inquire-price",
+            params={"FID_COND_MRKT_DIV_CODE": "UN", "FID_INPUT_ISCD": code},
+            headers=headers,
+            timeout=8,
+            proxies={"http": None, "https": None},
+        )
+        r.raise_for_status()
+        out = r.json().get("output", {})
+        if out and out.get("stck_prpr"):
+            return int(out["stck_prpr"])
+    except Exception:
+        logger.debug("KIS 통합시세 조회 실패: %s", code)
+    return None
+
+
 def get_price(code: str) -> int:
-    """KIS → Yahoo → Naver 순 폴백. 실패 시 None 반환."""
-    return _price_kis(code) or _price_yahoo(code) or _price_naver(code)
+    """KIS KRX → NXT → Naver 순 폴백. 실패 시 None 반환."""
+    return _price_kis(code) or get_nxt_price(code) or _price_naver(code)
 
 
 def get_nxt_price(code: str) -> int:
@@ -181,8 +241,18 @@ def get_nxt_price(code: str) -> int:
 
 
 def get_best_price(code: str) -> int:
-    """KRX → NXT → Yahoo → Naver 순 폴백 (장중/야간 모두 대응)."""
-    return _price_kis(code) or get_nxt_price(code) or _price_yahoo(code) or _price_naver(code)
+    """KRX → NXT → Naver 순 폴백."""
+    return _price_kis(code) or get_nxt_price(code) or _price_naver(code)
+
+
+def get_current_price(code: str) -> int:
+    """통합시세 우선 현재가 조회.
+    1순위: KIS 통합시세 (UN — KRX+NXT 자동 선택, 장중/비정규장 무관)
+    2순위: KRX 시세
+    3순위: NXT 시세
+    4순위: Naver 금융
+    """
+    return _price_unified(code) or _price_kis(code) or get_nxt_price(code) or _price_naver(code)
 
 
 # NXT 지원 여부 캐시 (종목코드 → True/False)
@@ -199,6 +269,14 @@ def is_nxt_supported(code: str) -> bool:
 
 
 def _order_headers(tr_id: str) -> dict:
+    """KIS 주문 API 헤더 생성 (인증 + 거래ID).
+
+    Args:
+        tr_id (str): KIS 거래ID (e.g., 'TTTC0802U' 매수, 'TTTC0801U' 매도)
+
+    Returns:
+        dict: Authorization/AppKey/AppSecret/tr_id 포함 헤더
+    """
     token = get_token()
     return {
         "authorization": f"Bearer {token}",
@@ -492,12 +570,24 @@ def _code_by_pykrx(name: str) -> tuple:
         import datetime as _dt
         today = _dt.date.today().strftime("%Y%m%d")
         for market in ("KOSPI", "KOSDAQ"):
-            for code in _px.get_market_ticker_list(today, market=market):
-                n = _px.get_market_ticker_name(code)
-                if n and name in n:
-                    return code, n
-    except Exception:
-        pass
+            try:
+                ticker_list = _px.get_market_ticker_list(today, market=market)
+                if not ticker_list:
+                    logger.warning(f"pykrx: {market} 종목 리스트 공 (API 비정상)")
+                    continue
+                for code in ticker_list:
+                    try:
+                        n = _px.get_market_ticker_name(code)
+                        if n and name in n:
+                            return code, n
+                    except Exception as e:
+                        # 개별 종목 조회 실패는 무시하고 계속
+                        pass
+            except (requests.exceptions.JSONDecodeError, Exception) as e:
+                logger.warning(f"pykrx {market} 조회 실패: {type(e).__name__} — 다음 마켓 시도")
+                continue
+    except Exception as e:
+        logger.warning(f"pykrx 폴백 실패: {e}")
     return None, None
 
 

@@ -36,20 +36,42 @@ def get_db_pool():
     return config.pool
 
 
-def save_fact_to_db(content: str):
+_CATEGORY_RULES = [
+    ("TECH",    ["반도체", "AI", "인공지능", "엔비디아", "삼성전자", "SK하이닉스", "배터리",
+                 "전기차", "테슬라", "로봇", "소프트웨어", "IT", "플랫폼", "클라우드",
+                 "Reuters", "CNBC", "MarketWatch", "Yahoo Finance"]),
+    ("COMPANY", ["삼성", "LG", "현대", "SK", "카카오", "네이버", "포스코", "롯데",
+                 "한화", "두산", "KT", "기업", "실적", "영업이익", "적자", "흑자"]),
+    ("ECONOMY", ["금리", "환율", "달러", "인플레이션", "연준", "FOMC", "GDP", "CPI",
+                 "무역", "관세", "트럼프", "국채", "원자재", "유가", "금값", "경제"]),
+    ("MARKET",  ["코스피", "코스닥", "나스닥", "S&P", "증시", "주가", "주식",
+                 "외국인", "기관", "매수", "매도", "시황", "장마감", "장중"]),
+]
+
+def _auto_classify(text: str) -> str:
+    """키워드 기반 자동 카테고리 분류."""
+    for category, keywords in _CATEGORY_RULES:
+        if any(k in text for k in keywords):
+            return category
+    return "MARKET"
+
+
+def save_fact_to_db(content: str, category: str = None):
+    """Oracle daily_news에 뉴스 저장. category=None이면 자동 분류."""
     p = get_db_pool()
     if not p:
         logger.warning("DB 풀 없음: save_fact_to_db 스킵")
         return
+    resolved_category = category if category else _auto_classify(content)
     try:
         with p.acquire() as conn:
             with conn.cursor() as cur:
                 cur.execute(
-                    "INSERT INTO daily_news (headlines, run_time) VALUES (:1, CURRENT_TIMESTAMP)",
-                    [str(content)[:1000]]
+                    "INSERT INTO daily_news (headlines, category, run_time) VALUES (:1, :2, CURRENT_TIMESTAMP)",
+                    [str(content)[:1000], resolved_category]
                 )
                 conn.commit()
-                logger.info("DB에 팩트 저장 완료")
+                logger.info("DB 뉴스 저장 완료 (category=%s)", resolved_category)
     except Exception:
         logger.exception("DB 저장 오류")
 

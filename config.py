@@ -39,8 +39,8 @@ PERPLEXICA_URL = "http://localhost:3001"    # Perplexica Backend API
 # -------------------------
 # 원격 Ollama 설정
 REMOTE_OLLAMA_IP  = "221.144.111.116"
-QWEN_URL          = f"http://{REMOTE_OLLAMA_IP}:11434/api/chat"
-QWEN_MODEL        = "mistral-small3.1:24b"   # PC Ollama 실제 모델명
+QWEN_URL          = f"http://{REMOTE_OLLAMA_IP}:8000/v1/chat/completions"
+QWEN_MODEL        = "google_gemma-4-26b-a4b-it"   # PC Ollama 실제 모델명
 MISTRAL_MAX_RETRY = 3
 
 # -------------------------
@@ -60,8 +60,10 @@ pool = None  # 오라클 DB 풀
 # -------------------------
 # 자동매매 전역 상태
 _auto_enabled = True           # 서비스 시작 시 자동매매 ON (재시작 시 자동 활성화)
-_daily_trade_log: list = []    # 당일 매매 내역 누적 → 장마감 보고서에 포함
+_daily_trade_log: list    = []  # 당일 매매 내역 누적 (가상계좌) → 18:00 보고서
+_daily_trade_log_ky: list = []  # 당일 매매 내역 누적 (KY 실전계좌) → 18:00 보고서
 _auto_lock    = threading.Lock()
-_auto_last_trades: dict = {}   # code → {action, date, signals, rsi}
+_auto_last_trades:    dict = {}  # code → {action, date, signals, rsi}  (트레이너 계좌)
+_auto_last_trades_ky: dict = {}  # code → {action, date, signals, rsi}  (KY 실전계좌)
 _pending_buys:     dict = {}   # code → {name, signals, time} — BUY 결정 후 신호 변화 감시용
 _auto_mt_inst = None           # MockTrading 싱글턴

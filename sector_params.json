@@ -1,114 +1,114 @@
 {
   "반도체": {
-    "min_signal": 10,
+    "min_signal": 4,
     "require_both": false,
-    "max_atr_pct": 10.0,
-    "hold_days": 60,
-    "note": "신호≥10일 때 승률이 64%로 가장 높고, 6개월 보유 시 평균 수익률이 24.4%로 가장 높음"
-  },
-  "방산": {
-    "min_signal": 6,
-    "require_both": false,
-    "max_atr_pct": 15.0,
-    "hold_days": 20,
-    "note": "신호≥6 기준 6개월 보유 시 승률 76% 및 평균 수익률 34.3%"
-  },
-  "자동차": {
-    "min_signal": 7,
-    "require_both": false,
-    "max_atr_pct": 10.0,
-    "hold_days": 90,
-    "note": "신호≥7 기준 3개월 보유 시 승률 57%로 가장 높음"
-  },
-  "2차전지": {
-    "min_signal": 12,
-    "require_both": false,
-    "max_atr_pct": 10.0,
-    "hold_days": 20,
-    "note": "신호≥12 기준 3개월 후 승률 63%로 가장 높음"
-  },
-  "바이오": {
-    "min_signal": 6,
-    "require_both": true,
-    "max_atr_pct": 10.0,
-    "hold_days": 180,
-    "note": "신호≥6 기준 6개월 보유 시 승률 54% 및 평균 수익률 16.2%"
-  },
-  "IT플랫폼": {
-    "min_signal": 6,
-    "require_both": true,
-    "max_atr_pct": 10.0,
-    "hold_days": 180,
-    "note": "신호≥6 기준 6개월 보유 시 승률 49% 및 평균 수익률 +3.9%"
-  },
-  "금융": {
-    "min_signal": 6,
-    "require_both": false,
-    "max_atr_pct": 15.0,
-    "hold_days": 60,
-    "note": "신호≥6 기준 6개월 보유 시 승률 68% 및 평균 수익률 12.0%"
-  },
-  "철강/소재": {
-    "min_signal": 6,
-    "require_both": false,
-    "max_atr_pct": 10.0,
-    "hold_days": 180,
-    "note": "신호≥6 기준 6개월 보유 시 승률 52% 및 평균 수익률 13.8%"
-  },
-  "건설": {
-    "min_signal": 10,
-    "require_both": false,
-    "max_atr_pct": 10.0,
-    "hold_days": 20,
-    "note": "신호≥10일 때 승률 39%에 평균수익 +10.1%로 가장 높음"
-  },
-  "에너지": {
-    "min_signal": 6,
-    "require_both": false,
-    "max_atr_pct": 10.0,
-    "hold_days": 180,
-    "note": "신호≥6 기준 6개월 보유 시 승률 50% 이상"
-  },
-  "조선/해운": {
-    "min_signal": 6,
-    "require_both": false,
-    "max_atr_pct": 15.0,
-    "hold_days": 180,
-    "note": "6개월 보유 시 승률 59% 이상"
-  },
-  "반도체장비/소재": {
-    "min_signal": 12,
-    "require_both": false,
-    "max_atr_pct": 10.0,
-    "hold_days": 180,
-    "note": "신호≥12 기준 3개월 후 승률이 64%로 가장 높음"
-  },
-  "게임/엔터": {
-    "min_signal": 10,
-    "require_both": false,
-    "max_atr_pct": 10.0,
-    "hold_days": 180,
-    "note": "신호≥10일 때 승률 54%로 가장 높음, 6개월 보유 시 평균 수익률 6.3%로 가장 높음"
-  },
-  "유통/소비": {
-    "min_signal": 11,
-    "require_both": false,
-    "max_atr_pct": 10.0,
+    "max_atr_pct": 8.0,
     "hold_days": 10,
-    "note": "신호≥11일 때 승률이 56%로 가장 높고 평균수익도 +3.6%로 높음"
-  },
-  "통신": {
-    "min_signal": 6,
-    "require_both": false,
-    "max_atr_pct": 10.0,
-    "hold_days": 180,
-    "note": "신호≥6 기준 6개월 보유 시 승률 66% 및 평균 수익률 7.0%"
+    "note": "PC학습 4 (신뢰도78점, 3건) — 2026-04-14",
+    "updated_at": "2026-04-14T20:50:04"
   },
   "ETF": {
     "min_signal": 6,
     "require_both": false,
-    "max_atr_pct": 10.0,
-    "hold_days": 60,
-    "note": "신호≥6 기준 3개월 보유 시 승률 64% 및 평균 수익률 10.1%"
+    "max_atr_pct": 8.0,
+    "hold_days": 10,
+    "note": "기본값",
+    "updated_at": "2026-04-15T09:42:24"
+  },
+  "통신": {
+    "min_signal": 6,
+    "require_both": false,
+    "max_atr_pct": 8.0,
+    "hold_days": 10,
+    "note": "기본값",
+    "updated_at": "2026-04-15T09:42:32"
+  },
+  "에너지": {
+    "min_signal": 6,
+    "require_both": false,
+    "max_atr_pct": 8.0,
+    "hold_days": 10,
+    "note": "기본값",
+    "updated_at": "2026-04-15T09:42:32"
+  },
+  "금융": {
+    "min_signal": 6,
+    "require_both": false,
+    "max_atr_pct": 8.0,
+    "hold_days": 10,
+    "note": "기본값",
+    "updated_at": "2026-04-15T09:42:57"
+  },
+  "IT플랫폼": {
+    "min_signal": 6,
+    "require_both": false,
+    "max_atr_pct": 8.0,
+    "hold_days": 10,
+    "note": "기본값",
+    "updated_at": "2026-04-15T09:45:26"
+  },
+  "방산": {
+    "min_signal": 6,
+    "require_both": false,
+    "max_atr_pct": 8.0,
+    "hold_days": 10,
+    "note": "기본값",
+    "updated_at": "2026-04-15T09:45:26"
+  },
+  "건설": {
+    "min_signal": 6,
+    "require_both": false,
+    "max_atr_pct": 8.0,
+    "hold_days": 10,
+    "note": "기본값",
+    "updated_at": "2026-04-15T09:45:26"
+  },
+  "자동차": {
+    "min_signal": 6,
+    "require_both": false,
+    "max_atr_pct": 8.0,
+    "hold_days": 10,
+    "note": "기본값",
+    "updated_at": "2026-04-15T09:45:36"
+  },
+  "조선/해운": {
+    "min_signal": 6,
+    "require_both": false,
+    "max_atr_pct": 8.0,
+    "hold_days": 10,
+    "note": "기본값",
+    "updated_at": "2026-04-15T09:45:43"
+  },
+  "바이오": {
+    "min_signal": 6,
+    "require_both": false,
+    "max_atr_pct": 8.0,
+    "hold_days": 10,
+    "note": "기본값",
+    "updated_at": "2026-04-15T09:45:50"
+  },
+  "게임/엔터": {
+    "min_signal": 6,
+    "require_both": false,
+    "max_atr_pct": 8.0,
+    "hold_days": 10,
+    "note": "기본값",
+    "updated_at": "2026-04-15T09:45:53"
+  },
+  "철강/소재": {
+    "min_signal": 6,
+    "require_both": false,
+    "max_atr_pct": 8.0,
+    "hold_days": 10,
+    "note": "기본값",
+    "updated_at": "2026-04-15T09:46:00"
+  },
+  "2차전지": {
+    "min_signal": 6,
+    "require_both": false,
+    "max_atr_pct": 8.0,
+    "hold_days": 10,
+    "note": "기본값",
+    "updated_at": "2026-04-15T09:46:10"
   }
 }

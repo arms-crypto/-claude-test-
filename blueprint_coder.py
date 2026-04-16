@@ -27,7 +27,7 @@ logging.basicConfig(
 logger = logging.getLogger("blueprint_coder")
 
 OLLAMA_PC   = "http://221.144.111.116:11434/api/chat"
-MODEL_PC    = "mistral-small3.1:24b"
+MODEL_PC    = "google_gemma-4-26b-a4b-it"
 MAX_RETRIES = 2   # 리뷰 실패 시 최대 재구현 횟수
 
 # ── CLAUDE.md 로드 ─────────────────────────────────────────────────────────────

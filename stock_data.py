@@ -142,6 +142,7 @@ _OVERSEAS_MAP = {
     "줌": "ZM", "스포티파이": "SPOT", "우버": "UBER", "에어비앤비": "ABNB",
     "쇼피파이": "SHOP", "스퀘어": "SQ", "페이팔": "PYPL", "비자": "V",
     "버크셔": "BRK-B", "존슨앤존슨": "JNJ", "화이자": "PFE", "모더나": "MRNA",
+    "오라클": "ORCL",
     # 지수/ETF
     "다우": "^DJI", "나스닥": "^IXIC", "S&P": "^GSPC", "sp500": "^GSPC",
     "QQQ": "QQQ", "SPY": "SPY",
@@ -149,6 +150,9 @@ _OVERSEAS_MAP = {
     "비트코인": "BTC-USD", "이더리움": "ETH-USD", "리플": "XRP-USD",
     "솔라나": "SOL-USD", "도지코인": "DOGE-USD",
 }
+
+# 역매핑: 티커 → 회사명
+_SYMBOL_TO_NAME = {v: k for k, v in _OVERSEAS_MAP.items()}
 
 
 def stock_price_overseas(query: str) -> str:
@@ -187,16 +191,45 @@ def stock_price_overseas(query: str) -> str:
         if not symbol:
             return None
 
-        t = yf.Ticker(symbol)
-        price = t.fast_info.last_price
-        if not price:
-            hist = yf.download(symbol, period="1d", progress=False, auto_adjust=True)
+        price = None
+
+        # 신선한 세션으로 데이터 조회 (캐시 우회)
+        try:
+            session = requests.Session()
+            session.headers.update({"User-Agent": "Mozilla/5.0"})
+            hist = yf.download(symbol, period="5d", progress=False, auto_adjust=True, session=session)
             if not hist.empty:
+                # 가장 최근 종가 (오늘 또는 마지막 거래일)
                 price = float(hist["Close"].iloc[-1])
+        except Exception as e:
+            logger.debug("download 실패 (%s): %s", symbol, str(e))
+            pass
+
+        # 폴백: history 직접 호출
+        if not price:
+            try:
+                t = yf.Ticker(symbol)
+                hist = t.history(period="1d")
+                if not hist.empty:
+                    price = float(hist["Close"].iloc[-1])
+            except Exception as e:
+                logger.debug("history 실패 (%s): %s", symbol, str(e))
+                pass
+
+        # 최후 폴백: fast_info (실시간성 낮음, 주의)
+        if not price:
+            try:
+                t = yf.Ticker(symbol)
+                price = t.fast_info.last_price
+            except Exception as e:
+                logger.debug("fast_info 실패 (%s): %s", symbol, str(e))
+                pass
 
         if price:
             currency = "₩" if symbol.endswith(".KS") else "$"
-            return f"🌍 {symbol} 현재가: {currency}{price:,.2f}"
+            # 회사명 찾기
+            company_name = _SYMBOL_TO_NAME.get(symbol, symbol)
+            return f"{company_name} {symbol} 현재가: {currency}{price:,.2f}"
         return None
     except Exception:
         logger.exception("stock_price_overseas 예외: %s", query)
@@ -318,42 +351,45 @@ popular_stocks = {
 
 def korea_invest_stock(query: str) -> str:
     q = query.strip()
-    logger.info("korea_invest_stock 호출: %s", q)
+    # 입력 정제 — 불필요한 한글/기호 제거 (긴 단어부터 제거)
+    q = re.sub(r'(조회해줘|조회해|알려줘|찾아줘|보여줘|주가|조회|얼마|시세|가격|현재가|보여|줘|알려|찾아|해)', ' ', q)
+    q = " ".join(q.split()).strip()  # 연속 공백 제거
+    logger.info("korea_invest_stock 호출 (정제후): %s", q)
 
-    # 1) 6자리 코드 직접 입력
+    # 1) 6자리 코드 직접 입력 — 네이버(실시간) → KIS → yfinance
     if len(q) == 6 and q.isdigit():
-        price = get_yahoo_price(q) or get_price_by_code(q) or get_naver_price(q)
+        price = get_naver_price(q) or get_price_by_code(q) or get_yahoo_price(q)
         if price:
             save_stock_code_to_db("코드직입력", q)
-            return f"✅ `{q}` 현재가: {price} (직입력)"
+            return f"{q} 현재가: {price}"
         return f"❌ `{q}`: 가격 조회 실패"
 
-    # 2) DB 우선 (Yahoo 우선)
+    # 2) DB 우선 (네이버 → KIS → yfinance 순서)
     code = get_stock_code_from_db(q)
     if code:
-        price = get_yahoo_price(code) or get_price_by_code(code) or get_naver_price(code)
+        price = get_naver_price(code) or get_price_by_code(code) or get_yahoo_price(code)
         if price:
-            return f"**{q}: {price}** (DB)"
+            return f"{q} {code} 현재가: {price}"
         for attempt in range(2):
             time.sleep(0.3)
-            price = get_yahoo_price(code) or get_price_by_code(code) or get_naver_price(code)
+            price = get_naver_price(code) or get_price_by_code(code) or get_yahoo_price(code)
             if price:
-                return f"**{q}: {price}** (DB, retry)"
+                return f"{q} {code} 현재가: {price}"
         return f"🚨 '{q}' 코드({code}) 가격 조회 실패. 새 종목코드(6자리)를 알려주세요!"
 
-    # 3) 인기종목 폴백
+    # 3) 인기종목 폴백 (네이버 → KIS → yfinance)
     for name, code in popular_stocks.items():
         if name.lower() in q.lower():
-            price = get_yahoo_price(code) or get_naver_price(code)
+            price = get_naver_price(code) or get_price_by_code(code) or get_yahoo_price(code)
             if price:
                 save_stock_code_to_db(name, code)
-                return f"**{name}: {price}** (폴백)"
-    # 4) 네이버 자동 학습
+                return f"{name} {code} 현재가: {price}"
+    # 4) 네이버 자동 학습 (네이버 → KIS → yfinance)
     code = naver_search_code(q)
     if code:
         save_stock_code_to_db(q, code)
-        price = get_yahoo_price(code) or get_price_by_code(code) or get_naver_price(code)
+        price = get_naver_price(code) or get_price_by_code(code) or get_yahoo_price(code)
         if price:
-            return f"**{q}: {price}** (신학습)"
+            return f"{q} {code} 현재가: {price}"
         return f"✅ {q} 코드 학습완료: `{code}` (가격 조회 실패)"
     return None  # 종목 미인식 — ask_ai가 LLM 직접 호출하도록 None 반환

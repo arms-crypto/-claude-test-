@@ -17,7 +17,7 @@ os.chdir("/home/ubuntu/-claude-test-")
 
 # ── 설정 ─────────────────────────────────────────────────────────────────────
 OLLAMA_URL  = "http://221.144.111.116:11434/api/chat"
-MODEL       = "mistral-small3.1:24b"
+MODEL       = "google_gemma-4-26b-a4b-it"
 TG_TOKEN    = "8707168013:AAH5yIsoaLoxcA0Lthiw7RaIzD1YcJx8cc8"
 CHAT_ID     = "8448138406"
 NO_PROXY    = {"http": None, "https": None}

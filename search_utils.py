@@ -17,8 +17,8 @@ logger = config.logger
 _perplexica_provider_cache = {"ollama_id": None, "trans_id": None}
 
 
-def searxng_search(query: str, categories: str = "general", max_results: int = 5, time_range: str = None) -> list:
-    """SearXNG에서 실시간 검색 결과를 가져온다."""
+def searxng_search(query: str, categories: str = "general", max_results: int = 3, time_range: str = None) -> list:
+    """SearXNG에서 실시간 검색 결과를 가져온다. (기본 Top-3 제한, 구분자 포함)"""
     try:
         params = {"q": query, "format": "json", "categories": categories, "language": "ko-KR"}
         if time_range:
@@ -31,14 +31,15 @@ def searxng_search(query: str, categories: str = "general", max_results: int = 5
         r.raise_for_status()
         data = r.json()
         results = data.get("results", [])[:max_results]
-        return [
-            {
+        # 각 기사 사이에 명확한 구분자 추가 (청크 오염 방지)
+        formatted = []
+        for item in results:
+            formatted.append({
                 "title": item.get("title", ""),
                 "url": item.get("url", ""),
-                "content": item.get("content", ""),
-            }
-            for item in results
-        ]
+                "content": f"[ARTICLE_START]\n{item.get('content', '')}\n[ARTICLE_END]",
+            })
+        return formatted
     except Exception:
         logger.exception("SearXNG 검색 실패: %s", query)
         return []

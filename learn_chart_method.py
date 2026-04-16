@@ -55,7 +55,7 @@ def _ask_ollama(prompt: str) -> str:
     for url in [OLLAMA_URL, LOCAL_URL]:
         try:
             r = requests.post(url, json={
-                "model": "mistral-small3.1:24b" if "11434" in url and "111.116" in url else "gemma3:4b",
+                "model": "google_gemma-4-26b-a4b-it" if "11434" in url and "111.116" in url else "gemma3:4b",
                 "messages": [{"role": "user", "content": prompt}],
                 "stream": False,
                 "options": {"temperature": 0.3}
