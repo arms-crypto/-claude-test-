@@ -1188,7 +1188,7 @@ def call_mistral_only(prompt: str, system: str = _TOOL_SYSTEM, use_tools: bool =
     last_exc = None
     for attempt in range(1, config.MISTRAL_MAX_RETRY + 1):
         try:
-            r = requests.post("http://221.144.111.116:8000/v1/chat/completions", json=payload, timeout=(1, 300))
+            r = requests.post("http://221.144.111.116:8000/v1/chat/completions", json=payload, timeout=(5, 300))
             r.raise_for_status()
             data = r.json()
             # OpenAI 호환 응답 형식: {"choices": [{"message": {"content": "..."}}]}
@@ -1223,7 +1223,7 @@ def call_mistral_only(prompt: str, system: str = _TOOL_SYSTEM, use_tools: bool =
                     "temperature": 0.7,
                     "max_tokens": 3000,
                 }
-                r2 = requests.post("http://221.144.111.116:8000/v1/chat/completions", json=payload2, timeout=(1, 300))
+                r2 = requests.post("http://221.144.111.116:8000/v1/chat/completions", json=payload2, timeout=(5, 300))
                 r2.raise_for_status()
                 msg = (r2.json().get("choices") or [{}])[0].get("message", {})
                 continue
