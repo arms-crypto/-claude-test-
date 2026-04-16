@@ -371,6 +371,41 @@ def get_balance() -> dict:
         return {"cash": 0, "holdings": []}
 
 
+def _get_ohlcv_pykrx(code: str, period: str = "D", count: int = 60) -> list:
+    """pykrx로 OHLCV 조회 (KIS 레이트리밋 초과 시 폴백)."""
+    try:
+        import datetime
+        from pykrx import stock as _px
+        today = datetime.date.today().strftime("%Y%m%d")
+        days_back = {"D": count * 2, "W": count * 10, "M": count * 35}.get(period, count * 2)
+        from_date = (datetime.date.today() - datetime.timedelta(days=days_back)).strftime("%Y%m%d")
+        if period == "D":
+            df = _px.get_market_ohlcv_by_date(from_date, today, code)
+        elif period == "W":
+            df = _px.get_market_ohlcv_by_date(from_date, today, code, freq="W")
+        else:  # M
+            df = _px.get_market_ohlcv_by_date(from_date, today, code, freq="M")
+        if df is None or df.empty:
+            return []
+        result = []
+        for idx, row in df.iterrows():
+            try:
+                result.append({
+                    "date":   idx.strftime("%Y%m%d"),
+                    "open":   int(row.get("시가", row.get("Open", 0))),
+                    "high":   int(row.get("고가", row.get("High", 0))),
+                    "low":    int(row.get("저가", row.get("Low", 0))),
+                    "close":  int(row.get("종가", row.get("Close", 0))),
+                    "volume": int(row.get("거래량", row.get("Volume", 0))),
+                })
+            except Exception:
+                pass
+        return result[-count:]
+    except Exception as e:
+        logger.warning("pykrx(KY) OHLCV 폴백 실패: %s %s — %s", code, period, e)
+        return []
+
+
 def get_ohlcv(code: str, period: str = "D", count: int = 60) -> list:
     """
     KIS API 차트 데이터 조회.
@@ -422,8 +457,8 @@ def get_ohlcv(code: str, period: str = "D", count: int = 60) -> list:
         result.reverse()
         return result[-count:]
     except Exception:
-        logger.exception("KIS(KY) OHLCV 조회 실패: %s %s", code, period)
-        return []
+        logger.warning("KIS(KY) OHLCV 조회 실패: %s %s — pykrx 폴백 시도", code, period)
+        return _get_ohlcv_pykrx(code, period, count)
 
 
 def get_minute_ohlcv(code: str, interval: int = 1, count: int = 60) -> list:
