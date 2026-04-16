@@ -237,12 +237,18 @@ def _order_headers(tr_id: str) -> dict:
 def buy_stock(code: str, qty: int, price: int = 0) -> dict:
     """
     매수 주문 — REAL_TRADE=True, 실제 주문 전송.
+    - 정규장 (09:00~15:30): TTTC0802U
+    - NXT 시간 (08:00~09:00, 15:30~20:00): TTTT0802U (NXT 지원 종목만)
     price=0 → 시장가, price>0 → 지정가
     """
     from auto_trader import is_nxt_hours as _is_nxt_hours
-    if _is_nxt_hours() and not is_nxt_supported(code):
+    nxt_time = _is_nxt_hours()
+
+    if nxt_time and not is_nxt_supported(code):
         logger.warning("KIS(KY) NXT 시간 KRX전용 종목 매수 차단: %s", code)
         return {"success": False, "order_no": "", "msg": "NXT 미지원 종목 — KRX 시간에만 거래 가능"}
+
+    tr_id = "TTTT0802U" if nxt_time else "TTTC0802U"
 
     try:
         body = {
@@ -256,7 +262,7 @@ def buy_stock(code: str, qty: int, price: int = 0) -> dict:
         r = requests.post(
             f"{KIS_URL}/uapi/domestic-stock/v1/trading/order-cash",
             json=body,
-            headers=_order_headers("TTTC0802U"),
+            headers=_order_headers(tr_id),
             timeout=10,
             proxies={"http": None, "https": None},
         )
@@ -264,7 +270,7 @@ def buy_stock(code: str, qty: int, price: int = 0) -> dict:
         data = r.json()
         if data.get("rt_cd") == "0":
             order_no = data.get("output", {}).get("ODNO", "")
-            logger.info("KIS(KY) 실전 매수 완료 %s %d주 주문번호:%s", code, qty, order_no)
+            logger.info("KIS(KY) 실전 매수 완료 %s %d주 [%s] 주문번호:%s", code, qty, tr_id, order_no)
             return {"success": True, "order_no": order_no, "msg": data.get("msg1", "")}
         else:
             logger.error("KIS(KY) 실전 매수 실패 %s: %s", code, data.get("msg1", ""))
@@ -277,8 +283,13 @@ def buy_stock(code: str, qty: int, price: int = 0) -> dict:
 def sell_stock(code: str, qty: int, price: int = 0) -> dict:
     """
     매도 주문 — REAL_TRADE=True, 실제 주문 전송.
+    - 정규장 (09:00~15:30): TTTC0801U
+    - NXT 시간 (08:00~09:00, 15:30~20:00): TTTT0801U
     price=0 → 시장가, price>0 → 지정가
     """
+    from auto_trader import is_nxt_hours as _is_nxt_hours
+    tr_id = "TTTT0801U" if _is_nxt_hours() else "TTTC0801U"
+
     try:
         body = {
             "CANO":           ACCOUNT_NO,
@@ -291,7 +302,7 @@ def sell_stock(code: str, qty: int, price: int = 0) -> dict:
         r = requests.post(
             f"{KIS_URL}/uapi/domestic-stock/v1/trading/order-cash",
             json=body,
-            headers=_order_headers("TTTC0801U"),
+            headers=_order_headers(tr_id),
             timeout=10,
             proxies={"http": None, "https": None},
         )
@@ -299,7 +310,7 @@ def sell_stock(code: str, qty: int, price: int = 0) -> dict:
         data = r.json()
         if data.get("rt_cd") == "0":
             order_no = data.get("output", {}).get("ODNO", "")
-            logger.info("KIS(KY) 실전 매도 완료 %s %d주 주문번호:%s", code, qty, order_no)
+            logger.info("KIS(KY) 실전 매도 완료 %s %d주 [%s] 주문번호:%s", code, qty, tr_id, order_no)
             return {"success": True, "order_no": order_no, "msg": data.get("msg1", "")}
         else:
             logger.error("KIS(KY) 실전 매도 실패 %s: %s", code, data.get("msg1", ""))
