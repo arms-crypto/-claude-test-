@@ -448,7 +448,7 @@ def is_trading_hours() -> bool:
     if now.weekday() >= 5:
         return False
     m = now.hour * 60 + now.minute
-    return (8 * 60) <= m <= (20 * 60)
+    return (8 * 60) <= m < (20 * 60)
 
 
 def is_nxt_hours() -> bool:
@@ -457,7 +457,7 @@ def is_nxt_hours() -> bool:
     if now.weekday() >= 5:
         return False
     m = now.hour * 60 + now.minute
-    return (8 * 60) <= m < (9 * 60) or (15 * 60 + 30) <= m <= (20 * 60)
+    return (8 * 60) <= m < (9 * 60) or (15 * 60 + 30) <= m < (20 * 60)
 
 
 # ── 모의 매도/매수 래퍼 ─────────────────────────────────────────────────────
