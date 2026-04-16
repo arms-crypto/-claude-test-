@@ -1,10 +1,14 @@
 # 프로젝트 컨텍스트
 
-## 협업 구조 (Claude + Mistral)
-- **Mistral (pc_worker.py)** — 읽기 전용 분석 전담: 버그 후보 추출, 코드 리뷰, 리서치
-  - 도구: `read_file`, `bash(조회)`, `report` 만 허용
-  - 실행: `python3 pc_worker.py "분석 지시"` → `/tmp/pc_worker_last_report.txt` 결과 저장
-- **Claude** — 보고받은 내용 검토 후 실제 파일 수정
+## 협업 구조 (Claude + Qwen)
+- **Qwen (서버보수에이전트.py)** — 서버 보수 협업 전담: 로그 분석, 버그 후보 추출, 코드 리뷰
+  - LM Studio `qwen3.5-27b-claude-4.6-opus-reasoning-distilled` (포트 8000)
+  - worker 봇(@OpenClaz_pc_bot) 토큰으로 텔레그램 수신
+  - 도구: `read_file`, `bash(조회)` 내장 (파일 수정/서비스 재시작 금지)
+  - 실행: `python3 서버보수에이전트.py` → 텔레그램으로 직접 보고
+  - 종료: `/exit` 입력
+- **Claude** — Qwen 보고 검토 후 실제 파일 수정
+- **OpenClaw** — research/trading 에이전트만 운영 (worker 봇 비활성화됨)
 
 ## 핵심 파일
 - `proxy_v54.py` — 메인 서버 (Flask 11435, 텔레그램 봇 2개 + 자동매매)
