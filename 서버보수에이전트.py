@@ -31,6 +31,59 @@ LM_STUDIO_URL = "http://221.144.111.116:8000/v1/chat/completions"
 QWEN_MODEL    = "qwen3.5-27b-claude-4.6-opus-reasoning-distilled-heretic-v2-i1"
 WORKSPACE     = "/home/ubuntu/-claude-test-"
 TASK_PORT     = 8001
+WOL_MAC       = "3C:7C:3F:F2:B0:41"
+WOL_IP        = "221.144.111.116"
+PC_HOST       = "221.144.111.116"
+PC_PORT       = 8000
+
+
+def send_wol():
+    """PC Wake on LAN — 라우터 SSH ether-wake (1순위) + UDP 직접 (2순위)."""
+    # 1순위: 라우터 SSH ether-wake
+    try:
+        result = subprocess.run(
+            ["ssh", "-o", "ConnectTimeout=5", "-o", "StrictHostKeyChecking=no",
+             "-p", "2222", "-i", "/home/ubuntu/.ssh/id_rsa",
+             f"qflavor12@{WOL_IP}",
+             f"ether-wake -i br0 {WOL_MAC}"],
+            capture_output=True, timeout=10
+        )
+        if result.returncode == 0:
+            logger.info("WoL ether-wake 전송 완료")
+            return True
+        logger.warning("ether-wake 실패: %s", result.stderr.decode()[:100])
+    except Exception as e:
+        logger.warning("라우터 SSH WoL 실패: %s", e)
+
+    # 2순위: UDP 직접 전송
+    try:
+        import socket
+        _mac = WOL_MAC.replace(":", "")
+        magic = bytes.fromhex("F" * 12 + _mac * 16)
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+            for _ in range(5):
+                s.sendto(magic, (WOL_IP, 9))
+        logger.info("WoL UDP 전송 완료")
+        return True
+    except Exception as e:
+        logger.error("WoL UDP 실패: %s", e)
+    return False
+
+
+def wait_for_pc(timeout_sec: int = 120) -> bool:
+    """PC LM Studio 응답 대기 (최대 timeout_sec초)."""
+    import socket as _sock
+    deadline = time.time() + timeout_sec
+    while time.time() < deadline:
+        try:
+            with _sock.create_connection((PC_HOST, PC_PORT), timeout=3):
+                logger.info("PC LM Studio 응답 확인")
+                return True
+        except Exception:
+            time.sleep(5)
+    logger.warning("PC LM Studio 응답 없음 (%d초 대기)", timeout_sec)
+    return False
 
 def _load_system_prompt() -> str:
     claude_md_path = os.path.join(WORKSPACE, "CLAUDE.md")
@@ -60,19 +113,18 @@ def _load_system_prompt() -> str:
 
 ## 2. 특정 텍스트 교체 [★ 최우선 — 파일 일부만 바꿀 때 반드시 사용]
 
-### 2-A. 단순 텍스트 (따옴표 없을 때)
-<replace_text path="/home/ubuntu/-claude-test-/파일경로" old="바꿀 원본 텍스트" new="새 텍스트"/>
+⚠️ 반드시 아래 태그 형식만 사용 (속성 방식 old="..." 절대 금지 — 파싱 오류 발생)
 
-### 2-B. ⚠️ old/new 내용에 따옴표(", ')가 포함될 때 — 반드시 태그 형식 사용
 <replace_text path="/home/ubuntu/-claude-test-/파일경로"><old>
-바꿀 원본 텍스트 (따옴표 "포함" 가능)
+바꿀 원본 텍스트
+(따옴표 "포함" 자유롭게 사용 가능)
 </old><new>
-새 텍스트 ("따옴표" 자유롭게 사용)
+새 텍스트
+("따옴표" 자유롭게 사용)
 </new></replace_text>
 
-## 3. bash (조회 + sed -i 허용)
+## 3. bash (조회 전용 — 파일 수정 금지)
 <bash>grep -n "변수명" /home/ubuntu/-claude-test-/파일경로</bash>
-<bash>sed -i 's/이전값/새값/' /home/ubuntu/-claude-test-/파일경로</bash>
 
 ## 4. 전체 파일 쓰기 [전체 내용을 알 때만]
 <write_file path="/home/ubuntu/-claude-test-/파일경로">
@@ -82,7 +134,7 @@ def _load_system_prompt() -> str:
 # 파일 수정 최적 워크플로우
 ## 파일 일부 수정 (권장 순서):
 1. grep으로 해당 줄 정확한 텍스트 확인: <bash>grep -n "키워드" /경로</bash>
-2. replace_text로 교체: <replace_text path="..." old="정확한텍스트" new="새텍스트"/>
+2. replace_text 태그 형식으로 교체 (반드시 <old>...</old><new>...</new> 사용)
 3. 완료 보고
 
 ## 긴 파일 읽기 (200줄 초과 시):
@@ -411,6 +463,16 @@ def call_qwen(user_msg: str, session_id: str = "default") -> str:
                              "content": f"[도구 결과: {tool_name}]\n{tool_result}\n\n{next_step}"})
 
         except Exception as e:
+            err_str = str(e).lower()
+            if any(k in err_str for k in ["connect", "timeout", "refused", "remotedisconnected"]) and _round == 0:
+                logger.warning("PC 연결 실패 → WoL 전송 후 재시도")
+                tg_send("⚠️ PC 연결 실패 → WoL 전송 중...")
+                send_wol()
+                if wait_for_pc(120):
+                    tg_send("✅ PC 응답 확인 — Qwen 재호출")
+                    continue
+                else:
+                    tg_send("❌ PC 120초 내 응답 없음")
             logger.error("Qwen 호출 실패: %s", e)
             return f"⚠️ Qwen 연결 실패: {e}"
     else:
@@ -566,6 +628,29 @@ def _call_qwen_direct(user_msg: str, session_id: str) -> str:
         content = re.sub(r'<(read_file|write_file|replace_text|bash)[^>]*/?>.*?(?:</\1>|(?=\n\n))', '', content, flags=re.DOTALL).strip()
         return content or "⚠️ 응답 없음"
     except Exception as e:
+        err_str = str(e).lower()
+        if any(k in err_str for k in ["connect", "timeout", "refused", "remotedisconnected"]):
+            logger.warning("직접 호출 PC 연결 실패 → WoL 전송 후 1회 재시도")
+            tg_send("⚠️ PC 연결 실패 → WoL 전송 중...")
+            send_wol()
+            if wait_for_pc(120):
+                tg_send("✅ PC 응답 확인 — 재호출")
+                try:
+                    r2 = requests.post(
+                        LM_STUDIO_URL,
+                        json={"model": QWEN_MODEL, "messages": messages,
+                              "temperature": 0.3, "max_tokens": 4096},
+                        timeout=(5, 600),
+                    )
+                    r2.raise_for_status()
+                    content2 = (r2.json().get("choices") or [{}])[0].get("message", {}).get("content", "").strip()
+                    content2 = re.sub(r'<(read_file|write_file|replace_text|bash)[^>]*/?>.*?(?:</\1>|(?=\n\n))', '', content2, flags=re.DOTALL).strip()
+                    return content2 or "⚠️ 응답 없음"
+                except Exception as e2:
+                    logger.error("직접 호출 재시도 실패: %s", e2)
+                    return f"⚠️ 연결 실패(재시도): {e2}"
+            else:
+                tg_send("❌ PC 120초 내 응답 없음")
         logger.error("직접 호출 실패: %s", e)
         return f"⚠️ 연결 실패: {e}"
 

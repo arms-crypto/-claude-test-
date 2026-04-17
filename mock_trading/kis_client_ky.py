@@ -251,7 +251,7 @@ def get_available_amount(code: str, price: int = 0) -> int:
         r = requests.get(
             f"{KIS_URL}/uapi/domestic-stock/v1/trading/inquire-psbl-order",
             params=params,
-            headers=_query_headers("TTTC8908R"),
+            headers=_order_headers("TTTC8908R"),
             timeout=5,
             proxies={"http": None, "https": None},
         )
@@ -322,7 +322,7 @@ def sell_stock(code: str, qty: int, price: int = 0) -> dict:
     price=0 → 시장가, price>0 → 지정가
     """
     from auto_trader import is_nxt_hours as _is_nxt_hours
-    tr_id = "TTTT0801U" if _is_nxt_hours() else "TTTC0801U"
+    tr_id = "TTTT0801U" if (_is_nxt_hours() and is_nxt_supported(code)) else "TTTC0801U"
 
     try:
         body = {

@@ -46,8 +46,19 @@ curl -s -X POST http://127.0.0.1:8001/task \
 - `call_qwen()` / `_call_qwen_direct()` 모두 `timeout=(5, 600)` — 최대 10분
 - LM Studio 추론 시간 로그의 87895초 등 비정상 수치는 카운터 버그 — 무시
 
-### 다음 단계 (미구현)
-- **Claude-Qwen 1:1 협업 채널** — 태스크 서버(8001)에 `/result` GET 엔드포인트 추가, `_process_task()` 완료 시 결과 저장 → Claude가 사용자 없이 직접 결과 수신 후 후속 작업 지시
+### Qwen 보고서 피드백 (2026-04-17)
+| 항목 | Qwen 주장 | 실제 상황 | 결론 |
+|------|-----------|-----------|------|
+| **Offset 구현** | "구현 안됨" | ✅ 이미 완벽 구현됨 | ❌ 무시 (Qwen 환각) |
+| **replace_text 파싱** | "안정화 필요" | ⚠️ 인라인 방식 버그 + 태그 방식 \n 문제 | ✅ **내일 수정 예정** |
+| **Bash 화이트리스트** | "안전성을 위해 도입" | ❌ 과유불급, 핵심 명령 막힘 | ❌ 무시 (블랙리스트 유지) |
+
+### 내일 작업: replace_text 파서 안정화 (llm_client.py)
+```python
+# llm_client.py _run_tool() — 약 310-340줄 수정
+if "<old>" in content and "</old>" in content:
+    old_match = re.search(r"<old>(.*?)</old>", content, re.DOTALL)
+    new_match = re.search(r"<new>(.*?)- **Claude-Qwen 1:1 협업 채널** — 태스크 서버(8001)에 `/result` GET 엔드포인트 추가, `_process_task()` 완료 시 결과 저장 → Claude가 사용자 없이 직접 결과 수신 후 후속 작업 지시
 
 ### 한글 파일명 주의
 - bash `ls` 결과에서 한글 파일명 깨짐 방지: `env LC_ALL=en_US.UTF-8 ls`
