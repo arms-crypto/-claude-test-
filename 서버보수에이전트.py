@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 WORKER_TOKEN  = os.environ.get("WORKER_BOT_TOKEN", "8634656301:AAGt2g90XCsYoOWedumeBNLHaFpESapq33w")
 CHAT_ID       = os.environ.get("WORKER_CHAT_ID", "8448138406")
 LM_STUDIO_URL = "http://221.144.111.116:8000/v1/chat/completions"
-QWEN_MODEL    = "qwen3.5-27b-claude-4.6-opus-reasoning-distilled"
+QWEN_MODEL    = "qwen3.5-27b-claude-4.6-opus-reasoning-distilled-heretic-v2-i1"
 WORKSPACE     = "/home/ubuntu/-claude-test-"
 TASK_PORT     = 8001
 
@@ -586,15 +586,36 @@ def _route_qwen(text: str, session_id: str) -> str:
         return call_qwen(text, session_id=session_id)
 
 
-def _process_task(task_text: str):
-    """백그라운드에서 Qwen 호출 후 텔레그램으로 결과 전송."""
+# ── 태스크 결과 저장 (Claude-Qwen 1:1 협업 채널) ─────────────────────────────
+_task_results: list = []          # 최근 결과 저장 (최대 10개)
+_task_results_lock = threading.Lock()
+
+
+def _store_result(task_id: str, task_text: str, reply: str):
+    with _task_results_lock:
+        _task_results.append({
+            "id": task_id,
+            "task": task_text[:200],
+            "result": reply,
+            "timestamp": time.time(),
+            "done": True,
+        })
+        if len(_task_results) > 10:
+            _task_results.pop(0)
+
+
+def _process_task(task_text: str, task_id: str = ""):
+    """백그라운드에서 Qwen 호출 후 텔레그램 + 결과 저장."""
     import uuid
-    session_id = "task_" + uuid.uuid4().hex[:8]
-    logger.info("[Claude→Qwen] 작업 수신 [%s]: %s", session_id, task_text[:80])
+    if not task_id:
+        task_id = "task_" + uuid.uuid4().hex[:8]
+    session_id = task_id
+    logger.info("[Claude→Qwen] 작업 수신 [%s]: %s", task_id, task_text[:80])
     tg_send(f"📋 Claude 작업지시 수신:\n{task_text[:200]}\n\n⏳ 처리 중...")
     reply = _route_qwen(task_text, session_id)
+    _store_result(task_id, task_text, reply)
     tg_send(f"✅ 작업 완료:\n{reply}")
-    logger.info("[Claude→Qwen] 작업 완료 [%s]: %d chars", session_id, len(reply))
+    logger.info("[Claude→Qwen] 작업 완료 [%s]: %d chars", task_id, len(reply))
 
 
 class TaskHandler(BaseHTTPRequestHandler):
@@ -614,11 +635,49 @@ class TaskHandler(BaseHTTPRequestHandler):
                 self.wfile.write(b'{"error": "task field required"}')
                 return
             # 백그라운드 처리 (응답 먼저 반환)
-            threading.Thread(target=_process_task, args=(task,), daemon=True).start()
+            import uuid as _uuid
+            task_id = "task_" + _uuid.uuid4().hex[:8]
+            threading.Thread(target=_process_task, args=(task, task_id), daemon=True).start()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
-            self.wfile.write(json.dumps({"status": "accepted", "task": task[:100]}).encode())
+            self.wfile.write(json.dumps({"status": "accepted", "task_id": task_id, "task": task[:100]}).encode())
+        except Exception as e:
+            self.send_response(500)
+            self.end_headers()
+            self.wfile.write(json.dumps({"error": str(e)}).encode())
+
+    def do_GET(self):
+        """Claude가 Qwen 결과를 직접 조회하는 엔드포인트."""
+        try:
+            if self.path == "/result":
+                # 최신 결과 1개
+                with _task_results_lock:
+                    result = _task_results[-1] if _task_results else None
+                self.send_response(200 if result else 204)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps(result or {}).encode())
+            elif self.path == "/results":
+                # 전체 결과 목록
+                with _task_results_lock:
+                    results = list(_task_results)
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps(results).encode())
+            elif self.path.startswith("/result/"):
+                # 특정 task_id 조회: /result/task_abc12345
+                target_id = self.path[len("/result/"):]
+                with _task_results_lock:
+                    found = next((r for r in _task_results if r["id"] == target_id), None)
+                self.send_response(200 if found else 404)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps(found or {"error": "not found"}).encode())
+            else:
+                self.send_response(404)
+                self.end_headers()
         except Exception as e:
             self.send_response(500)
             self.end_headers()

@@ -735,6 +735,17 @@ def _smart_buy_amount_for_account(acc: dict, code: str) -> int:
     if price > 0 and amount < price:
         amount = price
 
+    # KY 계좌: KIS API 실제 주문가능금액으로 상한 적용
+    if acc["id"] == "ky":
+        try:
+            from mock_trading.kis_client_ky import get_available_amount
+            avail = get_available_amount(code, price)
+            if avail > 0 and amount > avail:
+                logger.warning("[%s] 주문가능금액 초과 조정: %d → %d원", acc["label"], amount, avail)
+                amount = avail
+        except Exception:
+            pass
+
     logger.info("[%s] 매수금액 %s: 예수금%d%s ÷ 슬롯%d = %d원",
                 acc["label"], code, int(cash), "(보수적)" if conservative else "", remain, amount)
     return amount

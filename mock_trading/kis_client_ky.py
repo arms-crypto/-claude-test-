@@ -234,6 +234,40 @@ def _order_headers(tr_id: str) -> dict:
     }
 
 
+def get_available_amount(code: str, price: int = 0) -> int:
+    """KIS API로 실제 주문가능금액 조회 (TTTC8908R).
+    반환: 주문가능현금(원), 실패 시 0
+    """
+    try:
+        params = {
+            "CANO":         ACCOUNT_NO,
+            "ACNT_PRDT_CD": ACCOUNT_CD,
+            "PDNO":         code,
+            "ORD_UNPR":     str(price) if price > 0 else "0",
+            "ORD_DVSN":     "01",   # 시장가
+            "CMA_EVLU_AMT_ICLD_YN": "N",
+            "OVRS_ICLD_YN": "N",
+        }
+        r = requests.get(
+            f"{KIS_URL}/uapi/domestic-stock/v1/trading/inquire-psbl-order",
+            params=params,
+            headers=_query_headers("TTTC8908R"),
+            timeout=5,
+            proxies={"http": None, "https": None},
+        )
+        r.raise_for_status()
+        data = r.json()
+        if data.get("rt_cd") == "0":
+            amt = int(data.get("output", {}).get("ord_psbl_cash", 0))
+            logger.info("KIS(KY) 주문가능금액 %s: %d원", code, amt)
+            return amt
+        logger.warning("KIS(KY) 주문가능금액 조회 실패 %s: %s", code, data.get("msg1", ""))
+        return 0
+    except Exception:
+        logger.exception("KIS(KY) 주문가능금액 조회 예외: %s", code)
+        return 0
+
+
 def buy_stock(code: str, qty: int, price: int = 0) -> dict:
     """
     매수 주문 — REAL_TRADE=True, 실제 주문 전송.
@@ -248,7 +282,7 @@ def buy_stock(code: str, qty: int, price: int = 0) -> dict:
         logger.warning("KIS(KY) NXT 시간 KRX전용 종목 매수 차단: %s", code)
         return {"success": False, "order_no": "", "msg": "NXT 미지원 종목 — KRX 시간에만 거래 가능"}
 
-    tr_id = "TTTT0802U" if nxt_time else "TTTC0802U"
+    tr_id = "TTTT0802U" if (nxt_time and is_nxt_supported(code)) else "TTTC0802U"
 
     try:
         body = {
