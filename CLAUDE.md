@@ -11,6 +11,45 @@
 - **Claude (설계자)** — 설계·아키텍처 결정, Qwen 수정 결과 검토 후 git commit
 - **OpenClaw** — research/trading 에이전트만 운영 (worker 봇 비활성화됨)
 
+## Qwen 사용 가이드 (서버보수에이전트.py)
+
+### 내부 호출 경로 2가지
+| 경로 | 함수 | 도구 루프 | 언제 |
+|------|------|---------|------|
+| 도구 루프 있음 | `call_qwen()` | ✅ XML 태그 실행됨 | 수정 작업, 코드블록 없는 일반 질문 |
+| 도구 루프 없음 | `_call_qwen_direct()` | ❌ 텍스트만 반환 | 파일 첨부된 분석, 코드블록 포함 메시지 |
+
+**핵심**: 메시지에 코드블록(```)이 있으면 `has_code=True` → `_call_qwen_direct()` → 실제 파일 수정 불가
+
+### 수정 작업 지시 규칙
+- ✅ **코드블록 없이** 텍스트로만 수정 내용 기술
+- ✅ "read_file과 replace_text 도구로 직접 수정해줘" 명시
+- ❌ 지시문에 ``` 코드블록 포함 금지 → _call_qwen_direct로 라우팅되어 수정 안 됨
+
+### 수정 완료 확인 방법
+```bash
+# .bak 백업 파일 생성 여부 (수정됐으면 반드시 생김)
+ls -la /home/ubuntu/-claude-test-/파일명.py.bak
+
+# 수정 내용 grep 확인
+grep -n "수정된_키워드" /home/ubuntu/-claude-test-/파일명.py
+```
+
+### Claude → Qwen 태스크 서버
+```bash
+curl -s -X POST http://127.0.0.1:8001/task \
+  -H "Content-Type: application/json" \
+  -d '{"task": "수정 지시 내용 (코드블록 없이)"}'
+```
+
+### Qwen 타임아웃 설정
+- `call_qwen()` / `_call_qwen_direct()` 모두 `timeout=(5, 600)` — 최대 10분
+- LM Studio 추론 시간 로그의 87895초 등 비정상 수치는 카운터 버그 — 무시
+
+### 한글 파일명 주의
+- bash `ls` 결과에서 한글 파일명 깨짐 방지: `env LC_ALL=en_US.UTF-8 ls`
+- Qwen regex `[\w]+\.py` → 한글 파일명 못 잡음 → `[\w\uAC00-\uD7A3]+\.py` 사용
+
 ## 핵심 파일
 - `proxy_v54.py` — 메인 서버 (Flask 11435, 텔레그램 봇 2개 + 자동매매)
 - `ai_chat.py` — ask_ai() 핵심 로직 (봇1 메시지 처리)

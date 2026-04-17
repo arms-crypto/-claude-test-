@@ -51,6 +51,13 @@ logger = config.logger
 # 학습데이터 파일 쓰기 락 — _call_pc_async 복수 스레드가 동시에 파일을 덮어쓰는 것 방지
 _learning_data_lock = threading.Lock()
 
+# PC LLM 호출 제어
+_pc_call_cooldown: dict = {}          # code → last_call (datetime)
+_pc_daily_calls: int = 0              # 오늘 PC 호출 횟수
+_pc_daily_calls_date: str = ""        # 날짜 기반 초기화용 (YYYY-MM-DD)
+PC_MAX_DAILY_CALLS: int = 30          # 일일 최대 호출 횟수
+PC_SIGNAL_THRESHOLD: int = 2          # 신호 변화 최소 임계값 (절대값)
+
 
 # ── 싱글턴/알림 헬퍼 ────────────────────────────────────────────────────────
 
@@ -406,10 +413,22 @@ def calculate_chart_signals(code: str, scan_mode: bool = False) -> dict | None:
 
     rsi_val   = signals.get("일봉_rsi_val")
     macd_hist = signals.get("일봉_macd_val")
+
+    # 거래량 비율: 당일 거래량 / 20일 평균 거래량
+    volume_ratio = 1.0
+    if 'df_d' in locals() and df_d is not None and len(df_d) >= 20:
+        try:
+            vol_ma20 = df_d['volume'].rolling(20).mean().iloc[-1]
+            if vol_ma20 and vol_ma20 > 0:
+                volume_ratio = float(df_d['volume'].iloc[-1]) / float(vol_ma20)
+        except Exception:
+            pass
+
     return {
         "signals":        signals,
         "buy_count":      buy_count,       # 스윙 판단 /12
         "minute_count":   minute_count,    # 단타 타이밍 참고 /4
+        "volume_ratio":   round(volume_ratio, 2),  # 당일거래량 / 20일평균거래량
         "df_daily":       df_d if 'df_d' in locals() else None,  # 차트 PNG 생성용
         "sig_ichimoku":   signals.get("주봉_일목균형표", False),
         "sig_d_ichimoku": signals.get("일봉_일목균형표", False),
@@ -1149,18 +1168,69 @@ def _log_pc_learning_data(code: str, name: str, prev_count: int, new_count: int,
         logger.warning("학습데이터 저장 실패: %s", e)
 
 
+def _get_pc_cooldown_min() -> int:
+    """장 시간대별 쿨다운 반환 (분).
+    장 초반(08:30~09:15): 10분 — 변동성 빠르게 포착
+    오전장(09:15~11:30): 15분
+    이후(11:30~20:00):   30분
+    """
+    kst = datetime.datetime.now(pytz.timezone("Asia/Seoul"))
+    t = kst.time()
+    if datetime.time(8, 30) <= t < datetime.time(9, 15):
+        return 10
+    if datetime.time(9, 15) <= t < datetime.time(11, 30):
+        return 15
+    return 30
+
+
 def _monitor_signal_shifts():
     """
     보유 종목의 신호 변화 감지 — PC LLM이 학습데이터로 사용.
-    의미 있는 변화(≥2 신호 변화)만 PC에 호출.
-    PC 없을 때(pc_director=None)도 신호 변화 패턴은 학습데이터로 기록한다.
+    개선사항:
+      1. 가변 쿨다운: 장 초반 10분 / 오전장 15분 / 이후 30분
+      2. 날짜 기반 일일 호출 수 자동 초기화
+      3. 쿨다운 dict 만료 항목 자동 정리 (메모리 누수 방지)
+      4. 복합 필터: 신호 변화 + 거래량 동반 여부
     """
+    global _pc_call_cooldown, _pc_daily_calls, _pc_daily_calls_date
+
     if not is_trading_hours():
         return
 
+    # ── 날짜 기반 일일 호출 수 초기화 (락 적용) ────────────────────────────
+    kst_now = datetime.datetime.now(pytz.timezone("Asia/Seoul"))
+    today_str = kst_now.date().isoformat()
+    with config._auto_lock:
+        if _pc_daily_calls_date != today_str:
+            _pc_daily_calls = 0
+            _pc_daily_calls_date = today_str
+            logger.debug("PC 일일 호출 카운터 초기화 (%s)", today_str)
+        if _pc_daily_calls >= PC_MAX_DAILY_CALLS:
+            logger.debug("PC 일일 최대 호출 도달 (%d/%d)", _pc_daily_calls, PC_MAX_DAILY_CALLS)
+            return
+
+    # ── 만료된 쿨다운 항목 정리 (락 적용, max 60분) ─────────────────────────
+    with config._auto_lock:
+        cutoff = kst_now - datetime.timedelta(minutes=65)  # 최대 쿨다운 60분 + 여유
+        expired_codes = [c for c, t in _pc_call_cooldown.items() if t < cutoff]
+        for c in expired_codes:
+            del _pc_call_cooldown[c]
+
+    cooldown_min = _get_pc_cooldown_min()
+
     try:
         for code, name, qty, avg_price in _get_auto_mt()._get_holdings():
+            if _pc_daily_calls >= PC_MAX_DAILY_CALLS:
+                break
+
+            # ── 쿨다운 체크 + pending_buys 읽기 (단일 락으로 TOCTOU 방지) ──
             with config._auto_lock:
+                last_call = _pc_call_cooldown.get(code)
+                if last_call:
+                    elapsed_min = (kst_now - last_call).total_seconds() / 60
+                    if elapsed_min < cooldown_min:
+                        logger.debug("PC 쿨다운 중: %s (%.1f분 / %d분)", name, elapsed_min, cooldown_min)
+                        continue
                 prev = config._pending_buys.get(code, {})
 
             if not prev:
@@ -1174,35 +1244,49 @@ def _monitor_signal_shifts():
             new_count = sig.get("buy_count", 0)
             delta = new_count - prev_count
 
-            # 의미 있는 변화: ±2 이상
-            if abs(delta) >= 2:
-                logger.info("🔍 신호 변화 감지: %s(%s) %d→%d", name, code, prev_count, new_count)
+            # ── 기본 임계값 필터 ───────────────────────────────────────────
+            if abs(delta) < PC_SIGNAL_THRESHOLD:
+                continue
 
-                # 캐시 업데이트 (락으로 보호)
-                with config._auto_lock:
-                    if code in config._pending_buys:
-                        config._pending_buys[code]["buy_count"] = new_count
+            # ── 복합 필터: 거래량 동반 여부 ────────────────────────────────
+            # 신호가 하락 방향(-2 이하)이면 거래량 없어도 경보 가치 있음
+            # 신호가 상승 방향(+2 이상)이면 거래량 동반 시에만 PC 호출 (노이즈 감소)
+            volume_ratio = sig.get("volume_ratio", 1.0)  # 현재거래량 / 평균거래량
+            if delta > 0 and volume_ratio < 0.8:
+                logger.debug("📊 신호↑ but 거래량 미동반 (ratio=%.2f) — PC 호출 스킵: %s", volume_ratio, name)
+                continue
 
-                signals = sig.get('signals', {})
+            logger.info("🔍 신호 변화 감지: %s(%s) %d→%d (거래량비율=%.2f)",
+                        name, code, prev_count, new_count, volume_ratio)
 
-                if pc_director:
-                    # PC LLM에서 min_signal 추천받기 (비동기)
-                    def _call_pc_async(c=code, n=name, pc=prev_count, nc=new_count, s=signals):
-                        try:
-                            min_signal = pc_director.analyze_signal_shift(c, n, pc, nc, s)
-                            if min_signal is not None:
-                                logger.info("💡 PC제안: %s min_signal=%d → 학습데이터 축적", n, min_signal)
-                                _log_pc_learning_data(c, n, pc, nc, min_signal, s)
-                        except Exception as e:
-                            logger.debug("PC 분석 실패: %s", e)
+            # ── 캐시 업데이트 ──────────────────────────────────────────────
+            with config._auto_lock:
+                if code in config._pending_buys:
+                    config._pending_buys[code]["buy_count"] = new_count
 
-                    threading.Thread(target=_call_pc_async, daemon=True).start()
-                else:
-                    # PC 없어도 신호 변화 패턴 기록 (min_signal=0 → PC 제안 없음 표시)
-                    def _log_async(c=code, n=name, pc=prev_count, nc=new_count, s=signals):
-                        _log_pc_learning_data(c, n, pc, nc, 0, s)
+            signals = sig.get('signals', {})
 
-                    threading.Thread(target=_log_async, daemon=True).start()
+            # ── 쿨다운 기록 & 일일 카운터 증가 (락 적용) ──────────────────
+            with config._auto_lock:
+                _pc_call_cooldown[code] = kst_now
+                _pc_daily_calls += 1
+
+            if pc_director:
+                def _call_pc_async(c=code, n=name, pc=prev_count, nc=new_count, s=signals):
+                    try:
+                        min_signal = pc_director.analyze_signal_shift(c, n, pc, nc, s)
+                        if min_signal is not None:
+                            logger.info("💡 PC제안: %s min_signal=%d → 학습데이터 축적", n, min_signal)
+                            _log_pc_learning_data(c, n, pc, nc, min_signal, s)
+                    except Exception as e:
+                        logger.debug("PC 분석 실패: %s", e)
+
+                threading.Thread(target=_call_pc_async, daemon=True).start()
+            else:
+                def _log_async(c=code, n=name, pc=prev_count, nc=new_count, s=signals):
+                    _log_pc_learning_data(c, n, pc, nc, 0, s)
+
+                threading.Thread(target=_log_async, daemon=True).start()
 
     except Exception:
         logger.debug("신호 변화 감지 실패")

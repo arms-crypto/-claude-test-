@@ -25,8 +25,8 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ── 설정 ──────────────────────────────────────────────────────────────────────
-WORKER_TOKEN  = "8634656301:AAGt2g90XCsYoOWedumeBNLHaFpESapq33w"
-CHAT_ID       = "8448138406"
+WORKER_TOKEN  = os.environ.get("WORKER_BOT_TOKEN", "8634656301:AAGt2g90XCsYoOWedumeBNLHaFpESapq33w")
+CHAT_ID       = os.environ.get("WORKER_CHAT_ID", "8448138406")
 LM_STUDIO_URL = "http://221.144.111.116:8000/v1/chat/completions"
 QWEN_MODEL    = "qwen3.5-27b-claude-4.6-opus-reasoning-distilled"
 WORKSPACE     = "/home/ubuntu/-claude-test-"
@@ -45,9 +45,11 @@ def _load_system_prompt() -> str:
     return """너는 서버 보수 협업 조수(assistant)다. 반드시 한국어로 답변한다.
 
 # 작업 환경
-WORKSPACE = /home/ubuntu/-claude-test-
+⚠️ WORKSPACE 경로 (정확히 복사해서 사용): /home/ubuntu/-claude-test-
+⚠️ 주의: 끝에 하이픈(-)이 있음. /home/ubuntu/-claude-test 와 다름!
 모든 파일 경로는 이 WORKSPACE 기준으로 절대경로 사용:
   예) /home/ubuntu/-claude-test-/mock_trading/kis_client.py
+  예) /home/ubuntu/-claude-test-/auto_trader.py
 
 # 도구 사용법 (XML 태그 방식)
 
@@ -57,7 +59,16 @@ WORKSPACE = /home/ubuntu/-claude-test-
 <read_file path="/home/ubuntu/-claude-test-/파일경로" limit_lines="30" offset="20"/>  ← 21~50줄
 
 ## 2. 특정 텍스트 교체 [★ 최우선 — 파일 일부만 바꿀 때 반드시 사용]
+
+### 2-A. 단순 텍스트 (따옴표 없을 때)
 <replace_text path="/home/ubuntu/-claude-test-/파일경로" old="바꿀 원본 텍스트" new="새 텍스트"/>
+
+### 2-B. ⚠️ old/new 내용에 따옴표(", ')가 포함될 때 — 반드시 태그 형식 사용
+<replace_text path="/home/ubuntu/-claude-test-/파일경로"><old>
+바꿀 원본 텍스트 (따옴표 "포함" 가능)
+</old><new>
+새 텍스트 ("따옴표" 자유롭게 사용)
+</new></replace_text>
 
 ## 3. bash (조회 + sed -i 허용)
 <bash>grep -n "변수명" /home/ubuntu/-claude-test-/파일경로</bash>
@@ -107,7 +118,7 @@ SYSTEM_PROMPT = _load_system_prompt()
 # ── 도구 호출 파싱 (XML 태그 우선, JSON 폴백) ────────────────────────────────
 def _parse_tool_call(content: str) -> dict | None:
     # read_file: <read_file path="..." limit_lines="50" offset="0"/>
-    m = re.search(r'<read_file\s+([^/>]+)', content)
+    m = re.search(r'<read_file\s+([^>]+?)(?:\s*/>|>)', content)
     if m:
         attrs = m.group(1)
         path  = re.search(r'path=["\']([^"\']+)["\']', attrs)
@@ -122,11 +133,20 @@ def _parse_tool_call(content: str) -> dict | None:
             return result
 
     # replace_text: <replace_text path="..." old="..." new="..."/>  ← 핵심 도구
-    m = re.search(r'<replace_text\s+path=["\']([^"\']+)["\']\s+old=["\']([^"\']*)["\']'
-                  r'\s+new=["\']([^"\']*)["\']', content)
-    if m:
-        return {"tool": "replace_text", "path": m.group(1), "old": m.group(2), "new": m.group(3)}
-    # 멀티라인 old/new 지원
+    # 1단계: path 속성만 추출
+    m_path = re.search(r'<replace_text\s+path=["\']([^"\']+)["\']', content)
+    if m_path:
+        path_val = m_path.group(1)
+        tag_start = m_path.start()
+        # 2단계: old= 와 new= 값을 re.DOTALL + [\s\S]*? 로 추출 (이스케이프/줄바꿈 포함)
+        m_old_new = re.search(
+            r'old=["\'](\\.+?|[\s\S]*?)["\'][\s\S]*?new=["\'](\\.+?|[\s\S]*?)["\']',
+            content[tag_start:], re.DOTALL
+        )
+        if m_old_new:
+            return {"tool": "replace_text", "path": path_val,
+                    "old": m_old_new.group(1), "new": m_old_new.group(2)}
+    # 멀티라인 old/new 태그 형식 지원
     m = re.search(r'<replace_text\s+path=["\']([^"\']+)["\']>(.*?)<old>(.*?)</old>\s*<new>(.*?)</new>.*?</replace_text>',
                   content, re.DOTALL)
     if m:
@@ -172,10 +192,16 @@ def _run_tool(tool_call: dict) -> str:
                 chunk = lines[start:end]
                 return f"[줄 {start+1}~{min(end, total)}/{total}]\n" + "".join(chunk)
             if total > 200:
-                return f"[앞부분 생략, 마지막 200줄 — 앞부분은 limit_lines/offset 사용]\n" + "".join(lines[-200:])
+                return f"[앞 200줄만 표시 (총 {total}줄) — 더 보려면 limit_lines/offset 사용]\n" + "".join(lines[:200])
             return "".join(lines)
+        except FileNotFoundError:
+            return f"❌ 파일 없음: {path}"
+        except PermissionError:
+            return f"❌ 권한 없음: {path}"
+        except UnicodeDecodeError:
+            return f"❌ 인코딩 오류 (UTF-8 필요): {path}"
         except Exception as e:
-            return f"파일 읽기 실패: {e}"
+            return f"❌ 파일 읽기 실패: {type(e).__name__}: {e}"
 
     elif tool == "bash":
         cmd = tool_call.get("cmd", "")
@@ -187,10 +213,12 @@ def _run_tool(tool_call: dict) -> str:
         try:
             result = subprocess.run(
                 cmd, shell=True, capture_output=True, text=True,
-                timeout=15, cwd=WORKSPACE
+                encoding="utf-8", errors="replace",
+                timeout=15, cwd=WORKSPACE,
+                env={**os.environ, "LANG": "en_US.UTF-8", "LC_ALL": "en_US.UTF-8"}
             )
-            out = result.stdout[-3000:] if result.stdout else ""
-            err = result.stderr[-1000:] if result.stderr else ""
+            out = result.stdout[:6000] if result.stdout else ""
+            err = result.stderr[:1000] if result.stderr else ""
             return (out + ("\n[stderr]\n" + err if err else "")).strip() or "(출력 없음)"
         except subprocess.TimeoutExpired:
             return "명령 타임아웃 (15초)"
@@ -208,8 +236,12 @@ def _run_tool(tool_call: dict) -> str:
         try:
             with open(path, encoding="utf-8") as f:
                 content = f.read()
+        except FileNotFoundError:
+            return f"❌ 파일 없음: {path}"
+        except PermissionError:
+            return f"❌ 권한 없음: {path}"
         except Exception as e:
-            return f"파일 읽기 실패: {e}"
+            return f"❌ 파일 읽기 실패: {type(e).__name__}: {e}"
         if old_str not in content:
             # 폴백 1: 주석 제거 후 코드 부분만 매칭
             old_code = old_str.split('#')[0].rstrip()
@@ -231,11 +263,13 @@ def _run_tool(tool_call: dict) -> str:
             else:
                 return f"교체 실패: '{old_str[:80]}' 를 파일에서 찾을 수 없음"
         backup_path = path + ".bak"
-        with open(backup_path, "w", encoding="utf-8") as f:
-            f.write(content)
-        new_content = content.replace(old_str, new_str, 1)
-        with open(path, "w", encoding="utf-8") as f:
-            f.write(new_content)
+        lock = get_file_lock(path)
+        with lock:
+            with open(backup_path, "w", encoding="utf-8") as f:
+                f.write(content)
+            new_content = content.replace(old_str, new_str, 1)
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(new_content)
         return f"✅ 교체 완료: {path}\n'{old_str[:60]}' → '{new_str[:60]}'\n백업: {backup_path}"
 
     elif tool == "write_file":
@@ -246,20 +280,22 @@ def _run_tool(tool_call: dict) -> str:
         if not path.startswith("/"):
             return f"절대경로 필요: {path}"
         backup_path = path + ".bak"
-        try:
-            with open(path) as f:
-                old_content = f.read()
-            with open(backup_path, "w") as f:
-                f.write(old_content)
-        except FileNotFoundError:
-            old_content = ""
-        except Exception as e:
-            return f"백업 실패: {e}"
-        try:
-            with open(path, "w") as f:
-                f.write(content)
-        except Exception as e:
-            return f"파일 쓰기 실패: {e}"
+        lock = get_file_lock(path)
+        with lock:
+            try:
+                with open(path) as f:
+                    old_content = f.read()
+                with open(backup_path, "w") as f:
+                    f.write(old_content)
+            except FileNotFoundError:
+                old_content = ""
+            except Exception as e:
+                return f"백업 실패: {e}"
+            try:
+                with open(path, "w") as f:
+                    f.write(content)
+            except Exception as e:
+                return f"파일 쓰기 실패: {e}"
         old_lines = old_content.splitlines()
         new_lines = content.splitlines()
         added = len(new_lines) - len(old_lines)
@@ -271,9 +307,21 @@ def _run_tool(tool_call: dict) -> str:
     return f"알 수 없는 도구: {tool}"
 
 
+# ── 파일 잠금 (레이스 컨디션 방지) ────────────────────────────────────────────
+_file_locks: dict = {}
+_lock_mutex = threading.Lock()
+
+def get_file_lock(path: str) -> threading.Lock:
+    with _lock_mutex:
+        if path not in _file_locks:
+            _file_locks[path] = threading.Lock()
+        return _file_locks[path]
+
+
 # ── 세션 히스토리 ─────────────────────────────────────────────────────────────
 _sessions: dict = {}          # session_id → [{"role": ..., "content": ...}, ...]
 MAX_HISTORY = 10              # 유지할 최대 대화 턴 수 (user+assistant 쌍)
+_tg_sessions: dict = {}       # chat_id → session_id (텔레그램 대화별 세션)
 
 
 def _get_history(session_id: str) -> list:
@@ -301,14 +349,17 @@ def call_qwen(user_msg: str, session_id: str = "default") -> str:
         {"role": "user", "content": user_msg}
     ]
 
+    # 도구 결과를 이미 받은 도구 목록 — 같은 도구+경로 반복 차단
+    _executed: set = set()
+
     final_reply = ""
-    for _round in range(5):
+    for _round in range(15):
         try:
             r = requests.post(
                 LM_STUDIO_URL,
                 json={"model": QWEN_MODEL, "messages": messages,
                       "temperature": 0.3, "max_tokens": 4096},
-                timeout=(5, 180),
+                timeout=(5, 600),
             )
             r.raise_for_status()
             data    = r.json()
@@ -323,15 +374,35 @@ def call_qwen(user_msg: str, session_id: str = "default") -> str:
                 final_reply = content
                 break
 
+            # 같은 도구+경로 중복 실행 차단 (루프 방지)
+            tool_key = f"{tool_call.get('tool')}:{tool_call.get('path','')}"
+            if tool_key in _executed and tool_call.get("tool") == "read_file":
+                # 중복 read_file → 분석 강제
+                logger.warning("중복 read_file 감지 (%s) — 분석 강제 전환", tool_key)
+                messages.append({"role": "assistant", "content": content})
+                messages.append({"role": "user",
+                                 "content": "같은 파일을 또 읽으려 하고 있습니다. 이미 파일 내용을 받았습니다. XML 태그 없이 순수 텍스트로 분석 결과만 보고하세요."})
+                continue
+            _executed.add(tool_key)
+
             tool_result = _run_tool(tool_call)
             tool_name = tool_call.get("tool")
             logger.info("도구 실행: %s → %d chars", tool_name, len(tool_result))
 
             # 도구별 맞춤 피드백
+            # 수정 요청 감지: 명령형 패턴만 (예: "수정해", "변경해줘", "바꿔", "고쳐")
+            # "수정 없이", "수정하지 말고" 같은 부정 패턴 제외
+            import re as _re2
+            is_modify_task = bool(_re2.search(r'(수정|변경)(해|줘|해줘|하세요)|바꿔|고쳐|replace|write_file', user_msg))
             if tool_name == "read_file":
-                next_step = "파일 내용 확인 완료. 이제 <write_file> 태그로 수정된 전체 파일 내용을 작성하여 저장하세요. 더 이상 read_file을 반복하지 말고 바로 write_file을 사용하세요."
+                if is_modify_task:
+                    next_step = "파일 내용 확인 완료. 이제 <replace_text> 또는 <write_file>로 수정을 진행하세요. 더 이상 read_file을 반복하지 마세요."
+                else:
+                    next_step = "파일 내용 확인 완료. 요청한 분석을 한국어 텍스트로만 보고하세요. XML 태그(<read_file>, <write_file> 등) 절대 사용 금지. 순수 텍스트로만 답변하세요."
             elif tool_name == "write_file":
                 next_step = "파일 저장 완료. 변경 내용을 한국어로 보고하세요."
+            elif tool_name == "replace_text":
+                next_step = "교체 완료. 다음 수정이 있으면 진행하고, 없으면 완료 보고를 하세요."
             else:
                 next_step = "명령 완료. 다음 작업을 진행하세요."
 
@@ -353,7 +424,21 @@ def call_qwen(user_msg: str, session_id: str = "default") -> str:
 
 # ── 텔레그램 ───────────────────────────────────────────────────────────────────
 def tg_send(text: str):
-    for chunk in [text[i:i+4000] for i in range(0, len(text), 4000)]:
+    # 줄 단위로 4000자 이하 청크 분할 (표/코드블록 중간 잘림 방지)
+    lines = text.splitlines(keepends=True)
+    chunks, cur = [], ""
+    for line in lines:
+        if len(cur) + len(line) > 4000:
+            if cur:
+                chunks.append(cur)
+            cur = line
+        else:
+            cur += line
+    if cur:
+        chunks.append(cur)
+    if not chunks:
+        chunks = [""]
+    for chunk in chunks:
         try:
             requests.post(
                 f"https://api.telegram.org/bot{WORKER_TOKEN}/sendMessage",
@@ -378,13 +463,138 @@ def tg_poll(offset: int) -> tuple:
 
 
 # ── HTTP 태스크 서버 (Claude → Qwen 직접 지시) ────────────────────────────────
+def _prefetch_files(task_text: str) -> str:
+    """태스크 텍스트에 언급된 파일 경로를 미리 읽어 내용을 첨부."""
+    import re as _re
+    # 절대경로 (/home/ubuntu/...) 감지
+    paths = _re.findall(r'/home/ubuntu/[^\s\'"<>]+\.py', task_text)
+    # 짧은 파일명 (예: auto_trader.py, kis_client.py) → WORKSPACE 기준으로 해석
+    short_names = _re.findall(r'[\w\uAC00-\uD7A3]+\.py', task_text)
+    for name in short_names:
+        full = os.path.join(WORKSPACE, name)
+        if os.path.exists(full) and full not in paths:
+            paths.append(full)
+        # mock_trading 하위도 검색
+        sub = os.path.join(WORKSPACE, "mock_trading", name)
+        if os.path.exists(sub) and sub not in paths:
+            paths.append(sub)
+    # 중복 제거, 최대 2개
+    seen = []
+    for p in paths:
+        if p not in seen:
+            seen.append(p)
+        if len(seen) >= 2:
+            break
+    if not seen:
+        return task_text, False
+
+    # 태스크에서 함수명 감지 (예: _monitor_signal_shifts, calculate_chart_signals)
+    func_names = _re.findall(r'\b([a-z_][a-z0-9_]*\(\))', task_text)
+    func_names = [f.rstrip('()') for f in func_names]
+
+    attachments = []
+    for path in seen:
+        try:
+            with open(path, encoding="utf-8") as f:
+                lines = f.readlines()
+            total = len(lines)
+
+            # 함수명이 언급된 경우 해당 함수 범위만 추출 (토큰 절약)
+            chunk = None
+            for func in func_names:
+                for i, line in enumerate(lines):
+                    if f"def {func}" in line:
+                        # 함수 시작 ~ 다음 def/class 또는 최대 120줄
+                        end = i + 1
+                        while end < len(lines) and end < i + 120:
+                            if end > i and _re.match(r'^(def |class )', lines[end]):
+                                break
+                            end += 1
+                        chunk = lines[i:end]
+                        logger.info("[prefetch] %s → %s() 함수 %d~%d줄 추출",
+                                    path, func, i+1, end)
+                        break
+                if chunk:
+                    break
+
+            # 함수 못 찾으면 앞 150줄 (기존 300 → 절반으로)
+            if chunk is None:
+                chunk = lines[:150]
+                suffix = f"\n... (총 {total}줄, 앞 150줄만 표시)" if total > 150 else ""
+                logger.info("[prefetch] %s → 앞 150줄 첨부", path)
+            else:
+                suffix = ""
+
+            content_str = "".join(chunk)
+            attachments.append(f"\n\n--- 📄 {path} ({total}줄) ---\n{content_str}{suffix}\n--- EOF ---")
+        except Exception as e:
+            logger.warning("[prefetch] 파일 읽기 실패 %s: %s", path, e)
+
+    if not attachments:
+        return task_text, False
+
+    msg = (task_text
+           + "\n\n[파일 내용 첨부 완료 — XML 도구 태그 사용 금지. 위 코드를 바탕으로 바로 분석하세요.]"
+           + "".join(attachments))
+    return msg, True   # True = 파일 첨부됨 → 도구 루프 불필요
+
+
+_ANALYSIS_SYSTEM = """너는 서버 보수 협업 조수다. 한국어로 답변한다.
+코드 분석 요청 시: 버그/레이스컨디션/개선점을 구체적으로 보고한다.
+파일 내용이 [파일 내용 첨부 완료] 태그로 첨부되어 있으면 그 코드를 직접 분석하라.
+XML 태그 사용 금지. 순수 텍스트로만 답변."""
+
+
+def _call_qwen_direct(user_msg: str, session_id: str) -> str:
+    """도구 루프 없이 1회 호출 — 파일 이미 첨부된 분석 태스크용.
+    CLAUDE.md 없는 경량 시스템 프롬프트 사용 → 입력 토큰 절약.
+    """
+    messages = [
+        {"role": "system", "content": _ANALYSIS_SYSTEM},
+        {"role": "user", "content": user_msg},
+    ]
+    try:
+        r = requests.post(
+            LM_STUDIO_URL,
+            json={"model": QWEN_MODEL, "messages": messages,
+                  "temperature": 0.3, "max_tokens": 4096},
+            timeout=(5, 600),  # 최대 10분 허용
+        )
+        r.raise_for_status()
+        content = (r.json().get("choices") or [{}])[0].get("message", {}).get("content", "").strip()
+        # 혹시 tool 태그가 섞여 있으면 제거
+        content = re.sub(r'<(read_file|write_file|replace_text|bash)[^>]*/?>.*?(?:</\1>|(?=\n\n))', '', content, flags=re.DOTALL).strip()
+        return content or "⚠️ 응답 없음"
+    except Exception as e:
+        logger.error("직접 호출 실패: %s", e)
+        return f"⚠️ 연결 실패: {e}"
+
+
+def _route_qwen(text: str, session_id: str) -> str:
+    """is_modify/has_code 분기 공통 라우터 — 적절한 Qwen 호출 경로 선택."""
+    import re as _re
+    is_modify = bool(_re.search(r'(수정|변경)(해|줘|해줘|하세요)|바꿔|고쳐', text))
+    has_code  = '```' in text or len(text) > 2000
+    if not is_modify and not has_code:
+        enriched, prefetched = _prefetch_files(text)
+        if prefetched:
+            return _call_qwen_direct(enriched, session_id)
+        return call_qwen(text, session_id=session_id)
+    elif has_code and not is_modify:
+        return _call_qwen_direct(text, session_id)
+    else:
+        return call_qwen(text, session_id=session_id)
+
+
 def _process_task(task_text: str):
-    """백그라운드에서 Qwen 호출 후 텔레그램으로 결과 전송"""
-    logger.info("[Claude→Qwen] 작업 수신: %s", task_text[:80])
+    """백그라운드에서 Qwen 호출 후 텔레그램으로 결과 전송."""
+    import uuid
+    session_id = "task_" + uuid.uuid4().hex[:8]
+    logger.info("[Claude→Qwen] 작업 수신 [%s]: %s", session_id, task_text[:80])
     tg_send(f"📋 Claude 작업지시 수신:\n{task_text[:200]}\n\n⏳ 처리 중...")
-    reply = call_qwen(task_text)
+    reply = _route_qwen(task_text, session_id)
     tg_send(f"✅ 작업 완료:\n{reply}")
-    logger.info("[Claude→Qwen] 작업 완료: %d chars", len(reply))
+    logger.info("[Claude→Qwen] 작업 완료 [%s]: %d chars", session_id, len(reply))
 
 
 class TaskHandler(BaseHTTPRequestHandler):
@@ -453,7 +663,12 @@ def main():
                 return
             logger.info("요청: %s", text[:80])
             tg_send("⏳ 분석 중...")
-            reply = call_qwen(text, session_id=CHAT_ID)
+            # 텔레그램 대화별 세션 UUID (히스토리 오염 방지)
+            if from_id not in _tg_sessions:
+                import uuid as _uuid
+                _tg_sessions[from_id] = "tg_" + _uuid.uuid4().hex[:8]
+            session_id = _tg_sessions[from_id]
+            reply = _route_qwen(text, session_id)
             tg_send(reply)
             logger.info("응답 완료: %d chars", len(reply))
 
