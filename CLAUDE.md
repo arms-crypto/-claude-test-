@@ -46,6 +46,9 @@ curl -s -X POST http://127.0.0.1:8001/task \
 - `call_qwen()` / `_call_qwen_direct()` 모두 `timeout=(5, 600)` — 최대 10분
 - LM Studio 추론 시간 로그의 87895초 등 비정상 수치는 카운터 버그 — 무시
 
+### 다음 단계 (미구현)
+- **Claude-Qwen 1:1 협업 채널** — 태스크 서버(8001)에 `/result` GET 엔드포인트 추가, `_process_task()` 완료 시 결과 저장 → Claude가 사용자 없이 직접 결과 수신 후 후속 작업 지시
+
 ### 한글 파일명 주의
 - bash `ls` 결과에서 한글 파일명 깨짐 방지: `env LC_ALL=en_US.UTF-8 ls`
 - Qwen regex `[\w]+\.py` → 한글 파일명 못 잡음 → `[\w\uAC00-\uD7A3]+\.py` 사용
