@@ -21,7 +21,7 @@ APP_SECRET = ("K2c8EHjkcW56qvDYzNHGAtnzGNsVcGCFurssgTKYSVJF6tN8yueG0kfDLOiwyTdcR
 KIS_URL    = "https://openapi.koreainvestment.com:9443"  # 실전
 ACCOUNT_NO = "44197559"   # 실전 계좌번호
 ACCOUNT_CD = "01"         # 계좌상품코드 (주식)
-REAL_TRADE = False        # True로 바꿔야 실제 주문 전송 — 현재 주문 차단
+REAL_TRADE = True         # 실전 매매 활성화
 
 _token_cache = {"token": None, "expires_at": 0}
 _token_lock  = threading.Lock()   # 동시 토큰 발급 방지

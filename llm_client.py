@@ -1186,7 +1186,7 @@ def call_mistral_only(prompt: str, system: str = _TOOL_SYSTEM, use_tools: bool =
         return None
 
     last_exc = None
-    for attempt in range(1, config.MISTRAL_MAX_RETRY + 1):
+    for attempt in range(1, config.LLM_MAX_RETRY + 1):
         try:
             r = requests.post("http://221.144.111.116:8000/v1/chat/completions", json=payload, timeout=(5, 300))
             r.raise_for_status()
@@ -1251,11 +1251,11 @@ def call_mistral_only(prompt: str, system: str = _TOOL_SYSTEM, use_tools: bool =
                     return "💤 PC가 절전 상태입니다. Wake on LAN으로 깨우는 중...\n⏳ 잠시 후 다시 말씀해 주세요. (보통 1~2분)"
             wait = 2 ** (attempt - 1)
             logger.warning("google_gemma-4-26b-a4b-it 시도 %d/%d 실패 (%s) — %ds 후 재시도",
-                           attempt, config.MISTRAL_MAX_RETRY, str(e)[:80], wait)
-            if attempt < config.MISTRAL_MAX_RETRY:
+                           attempt, config.LLM_MAX_RETRY, str(e)[:80], wait)
+            if attempt < config.LLM_MAX_RETRY:
                 time.sleep(wait)
 
-    logger.error("google_gemma-4-26b-a4b-it %d회 모두 실패: %s", config.MISTRAL_MAX_RETRY, str(last_exc)[:200])
+    logger.error("google_gemma-4-26b-a4b-it %d회 모두 실패: %s", config.LLM_MAX_RETRY, str(last_exc)[:200])
     return "⚠️ PC LM Studio 서버 불안정. 잠시 후 다시 시도해주세요.\n모의투자(/mock)는 정상 작동 중입니다."
 
 
