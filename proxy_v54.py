@@ -535,13 +535,13 @@ if __name__ == "__main__":
     # 4-1) 스마트 웨이크업 모니터 — 순매수 신규진입 + 차트신호 급변 시 PC 자동 웨이크업
     threading.Thread(target=smart_wakeup_monitor, daemon=True).start()
 
-    # 5) PC 슬립 워처 — 10분 유휴 시 자동 최대절전 (장중/장외 무관)
+    # 5) PC 슬립 워처 — 20분 유휴 시 자동 최대절전 (장중/장외 무관)
     def _sleep_watcher():
         import time as _t
         from llm_client import send_sleep
         while True:
             _t.sleep(60)
-            send_sleep(delay_min=10)  # 장중/장외 무관 — 10분 유휴 시 최대절전
+            send_sleep(delay_min=20)  # 장중/장외 무관 — 20분 유휴 시 최대절전
 
     threading.Thread(target=_sleep_watcher, daemon=True).start()
 

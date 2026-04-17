@@ -124,7 +124,7 @@ def _get_pc_user_idle_min() -> int:
         return 0  # SSH 실패 → 안전하게 차단
 
 
-def send_sleep(delay_min: int = 5):
+def send_sleep(delay_min: int = 20):
     """
     PC에 최대절전(hibernate) 명령 전송.
     조건 1: Ollama 마지막 요청 후 delay_min분 유휴.
@@ -138,8 +138,8 @@ def send_sleep(delay_min: int = 5):
 
     # PC 사용자가 직접 쓰고 있는지 확인
     pc_idle_min = _get_pc_user_idle_min()
-    if pc_idle_min < 15:
-        logger.info("send_sleep 스킵 — PC 사용자 유휴 %d분 (기준 15분, 직접 사용 중으로 판단)", pc_idle_min)
+    if pc_idle_min < 20:
+        logger.info("send_sleep 스킵 — PC 사용자 유휴 %d분 (기준 20분, 직접 사용 중으로 판단)", pc_idle_min)
         return False
 
     try:
