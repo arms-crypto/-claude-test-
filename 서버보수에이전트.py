@@ -724,7 +724,12 @@ def _process_task(task_text: str, task_id: str = ""):
         requests.post("http://127.0.0.1:11435/touch_timer", timeout=2)
     except Exception:
         pass
-    reply = _route_qwen(task_text, session_id)
+    _stop_keepalive = threading.Event()
+    _start_task_keepalive(_stop_keepalive)
+    try:
+        reply = _route_qwen(task_text, session_id)
+    finally:
+        _stop_keepalive.set()
     _store_result(task_id, task_text, reply)
     tg_send(f"✅ 작업 완료:\n{reply}")
     logger.info("[Claude→Qwen] 작업 완료 [%s]: %d chars", task_id, len(reply))
@@ -826,14 +831,13 @@ def start_task_server():
 
 
 # ── 메인 루프 ─────────────────────────────────────────────────────────────────
-def _start_keepalive():
-    """4분 30초마다 /ping_sleep_timer 호출 → PC 절전 방지."""
+def _start_task_keepalive(stop_event: threading.Event):
+    """태스크 처리 중에만 270초마다 /ping_sleep_timer 호출 → 작업 중 절전 방지."""
     def _loop():
-        while True:
-            time.sleep(270)
+        while not stop_event.wait(270):
             try:
                 requests.get("http://localhost:11435/ping_sleep_timer", timeout=5)
-                logger.info("[킵얼라이브] 슬립 타이머 리셋")
+                logger.info("[킵얼라이브] 작업 중 슬립 타이머 리셋")
             except Exception:
                 pass
     threading.Thread(target=_loop, daemon=True).start()
@@ -842,7 +846,6 @@ def _start_keepalive():
 def main():
     # HTTP 태스크 서버 백그라운드 시작
     threading.Thread(target=start_task_server, daemon=True).start()
-    _start_keepalive()
 
     logger.info("서버보수에이전트 시작 (Qwen → worker 봇)")
     tg_send("🔧 서버보수에이전트 시작됨\nQwen3.5-27B 연결 완료.\n\n• 텔레그램으로 직접 대화 가능\n• Claude 자동 작업지시: localhost:8001/task")
