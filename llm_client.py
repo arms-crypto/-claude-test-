@@ -24,6 +24,12 @@ def send_wol():
     """Wake on LAN: 라우터 SSH ether-wake (1순위) + UDP 직접 전송 (2순위)."""
     import subprocess
     mac = config.WOL_MAC  # 예: 3C:7C:3F:F2:B0:41
+    # PC가 이미 응답 중이면 WoL 스킵
+    try:
+        requests.get("http://221.144.111.116:8000/v1/models", timeout=2, proxies={"http": None, "https": None})
+        return False
+    except Exception:
+        pass
 
     # 1순위: 라우터 SSH로 ether-wake (LAN에서 직접 전송 → 2차 절전도 깨어남)
     try:
