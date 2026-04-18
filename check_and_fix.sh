@@ -31,9 +31,9 @@ log "--- [2] 프록시 서버 헬스체크 ---"
 HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:11435/health 2>/dev/null)
 if [ "$HTTP_CODE" != "200" ]; then
   log "헬스체크 실패 (HTTP $HTTP_CODE) -> 프록시 재시작"
-  pkill -f proxy_v53.py 2>/dev/null
+  pkill -f proxy_v54.py 2>/dev/null
   sleep 2
-  nohup python3 "$BASE_DIR/proxy_v53.py" >> "$LOG_FILE" 2>&1 &
+  nohup python3 "$BASE_DIR/proxy_v54.py" >> "$LOG_FILE" 2>&1 &
   sleep 3
   log "프록시 재시작 완료 (PID: $!)"
 else

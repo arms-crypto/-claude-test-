@@ -433,7 +433,7 @@ def call_qwen(user_msg: str, session_id: str = "default") -> str:
             r = requests.post(
                 LM_STUDIO_URL,
                 json={"model": QWEN_MODEL, "messages": messages,
-                      "temperature": 0.1, "max_tokens": 4096},
+                      "temperature": 0.2, "max_tokens": 4096, "reasoning_effort": "low", "max_reasoning_tokens": 2000},
                 timeout=(5, 600),
             )
             r.raise_for_status()
@@ -642,7 +642,7 @@ def _call_qwen_direct(user_msg: str, session_id: str) -> str:
         r = requests.post(
             LM_STUDIO_URL,
             json={"model": QWEN_MODEL, "messages": messages,
-                  "temperature": 0.1, "max_tokens": 4096},
+                  "temperature": 0.2, "max_tokens": 4096, "reasoning_effort": "low", "max_reasoning_tokens": 2000},
             timeout=(5, 600),  # 최대 10분 허용
         )
         r.raise_for_status()
@@ -662,7 +662,7 @@ def _call_qwen_direct(user_msg: str, session_id: str) -> str:
                     r2 = requests.post(
                         LM_STUDIO_URL,
                         json={"model": QWEN_MODEL, "messages": messages,
-                              "temperature": 0.1, "max_tokens": 4096},
+                              "temperature": 0.2, "max_tokens": 4096, "reasoning_effort": "low", "max_reasoning_tokens": 2000},
                         timeout=(5, 600),
                     )
                     r2.raise_for_status()
@@ -789,12 +789,12 @@ class TaskHandler(BaseHTTPRequestHandler):
                 self.wfile.write(json.dumps(found or {"error": "not found"}).encode())
             elif self.path.startswith("/wait/"):
                 # Long-polling: 태스크 완료까지 블로킹 대기
-                # /wait/task_abc12345 또는 /wait/task_abc12345?timeout=300
+                # /wait/task_abc12345 또는 /wait/task_abc12345?timeout=600
                 from urllib.parse import urlparse, parse_qs
                 parsed = urlparse(self.path)
                 target_id = parsed.path[len("/wait/"):]
                 qs = parse_qs(parsed.query)
-                timeout = int(qs.get("timeout", ["300"])[0])
+                timeout = int(qs.get("timeout", ["600"])[0])
                 deadline = time.time() + timeout
                 found = None
                 while time.time() < deadline:
