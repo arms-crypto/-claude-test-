@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 """KIS API / Yahoo Finance / Naver 주가 조회 + 종목코드 검색"""
 
+from datetime import datetime
 import os
 import json
 import time
@@ -23,7 +24,7 @@ ACCOUNT_NO = "44197559"   # 실전 계좌번호
 ACCOUNT_CD = "01"         # 계좌상품코드 (주식)
 REAL_TRADE = True         # 실전 매매 활성화
 
-_token_cache = {"token": None, "expires_at": 0}
+_token_cache = {"token": None, "expires_at": 0, "issued_date": ""}
 _token_lock  = threading.Lock()   # 동시 토큰 발급 방지
 _TOKEN_FILE  = os.path.join(os.path.dirname(__file__), ".kis_token_cache.json")
 
@@ -36,6 +37,7 @@ def _load_token_from_file():
         if data.get("token") and data.get("expires_at", 0) > time.time() + 60:
             _token_cache["token"] = data["token"]
             _token_cache["expires_at"] = data["expires_at"]
+            _token_cache["issued_date"] = data.get("issued_date", "")
     except (FileNotFoundError, Exception):
         pass
 
@@ -44,7 +46,7 @@ def _save_token_to_file():
     """KIS 토큰을 파일에 캐시 저장. 서버 재시작 후 재발급 없이 재사용."""
     try:
         with open(_TOKEN_FILE, "w") as f:
-            json.dump({"token": _token_cache["token"], "expires_at": _token_cache["expires_at"]}, f)
+            json.dump({"token": _token_cache["token"], "expires_at": _token_cache["expires_at"], "issued_date": _token_cache["issued_date"]}, f)
     except Exception:
         pass
 
@@ -59,13 +61,15 @@ def get_token() -> str:
         str: KIS OAuth2 토큰, 발급 실패 시 None
     """
     now = time.time()
+    today = datetime.now().strftime("%Y-%m-%d")
     # 락 없이 먼저 캐시 확인 (빠른 경로)
-    if _token_cache["token"] and now < _token_cache["expires_at"]:
+    if _token_cache["token"] and _token_cache.get("issued_date") == today:
         return _token_cache["token"]
     with _token_lock:
         # 락 획득 후 다시 확인 (다른 스레드가 이미 발급했을 수 있음)
         now = time.time()
-        if _token_cache["token"] and now < _token_cache["expires_at"]:
+        today = datetime.now().strftime("%Y-%m-%d")
+        if _token_cache["token"] and _token_cache.get("issued_date") == today:
             return _token_cache["token"]
         try:
             r = requests.post(
@@ -80,6 +84,7 @@ def get_token() -> str:
             if token:
                 _token_cache["token"] = token
                 _token_cache["expires_at"] = now + int(data.get("expires_in", 86400)) - 60
+                _token_cache["issued_date"] = datetime.now().strftime("%Y-%m-%d")
                 _save_token_to_file()
                 return token
         except Exception:
