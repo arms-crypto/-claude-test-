@@ -71,22 +71,21 @@ def _ask_ollama(prompt: str) -> str:
 
 def fetch_cases(pattern: str, limit: int = 30) -> list:
     """signal_history에서 특정 패턴 사례 추출."""
-    con = sqlite3.connect(DB_PATH)
-    rows = con.execute("""
-        SELECT code, name, date,
-               m_price_vs_kijun, m_price_vs_span1, m_price_vs_span2,
-               m_kijun_slope, m_rsi, m_macd, m_adx,
-               w_price_vs_kijun, w_price_vs_span1, w_price_vs_span2,
-               w_kijun_slope, w_rsi, w_macd, w_adx,
-               d_price_vs_kijun, d_price_vs_span1, d_price_vs_span2,
-               d_kijun_slope, d_rsi, d_macd, d_adx, d_ma_align,
-               peak_day, peak_pct, trough_day, trough_pct, pattern
-        FROM signal_history
-        WHERE pattern = ?
-        ORDER BY RANDOM()
-        LIMIT ?
-    """, (pattern, limit)).fetchall()
-    con.close()
+    with sqlite3.connect(DB_PATH) as con:
+        rows = con.execute("""
+            SELECT code, name, date,
+                   m_price_vs_kijun, m_price_vs_span1, m_price_vs_span2,
+                   m_kijun_slope, m_rsi, m_macd, m_adx,
+                   w_price_vs_kijun, w_price_vs_span1, w_price_vs_span2,
+                   w_kijun_slope, w_rsi, w_macd, w_adx,
+                   d_price_vs_kijun, d_price_vs_span1, d_price_vs_span2,
+                   d_kijun_slope, d_rsi, d_macd, d_adx, d_ma_align,
+                   peak_day, peak_pct, trough_day, trough_pct, pattern
+            FROM signal_history
+            WHERE pattern = ?
+            ORDER BY RANDOM()
+            LIMIT ?
+        """, (pattern, limit)).fetchall()
     return rows
 
 
@@ -292,10 +291,9 @@ def learn():
     _start_keepalive()
 
     # DB 종목 목록 확인
-    con = sqlite3.connect(DB_PATH)
-    codes = [r[0] for r in con.execute(
-        "SELECT DISTINCT code FROM signal_history").fetchall()]
-    con.close()
+    with sqlite3.connect(DB_PATH) as con:
+        codes = [r[0] for r in con.execute(
+            "SELECT DISTINCT code FROM signal_history").fetchall()]
 
     if not codes:
         logger.error("signal_history DB가 비어있음. build_signal_history.py 먼저 실행하세요.")
@@ -342,12 +340,11 @@ def learn():
             if not sector:
                 continue
 
-            con = sqlite3.connect(DB_PATH)
-            cnt = con.execute(
-                "SELECT COUNT(*) FROM signal_history WHERE code=? AND pattern IN ({})".format(
-                    ",".join("?" * len(patterns))),
-                [code] + patterns).fetchone()[0]
-            con.close()
+            with sqlite3.connect(DB_PATH) as con:
+                cnt = con.execute(
+                    "SELECT COUNT(*) FROM signal_history WHERE code=? AND pattern IN ({})".format(
+                        ",".join("?" * len(patterns))),
+                    [code] + patterns).fetchone()[0]
 
             if cnt < 50:
                 continue

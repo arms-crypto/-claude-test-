@@ -5,16 +5,20 @@
 실행: nohup python3 schedule_check.py &
 """
 
+import sys
+sys.path.insert(0, "/home/ubuntu/-claude-test-")
+
 import schedule
 import time
 import requests
 import subprocess
 import logging
 from datetime import datetime
+import config
 
-# 텔레그램 설정
-TOKEN   = "8707168013:AAH5yIsoaLoxcA0Lthiw7RaIzD1YcJx8cc8"
-CHAT_ID = "8448138406"
+# 텔레그램 설정 (config 모듈에서 가져옴)
+TOKEN   = config.TOKEN_SRV
+CHAT_ID = str(config.CHAT_ID)
 BASE_URL = f"https://api.telegram.org/bot{TOKEN}"
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")

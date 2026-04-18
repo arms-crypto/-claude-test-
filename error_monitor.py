@@ -101,7 +101,7 @@ def check_proxy_health():
         else:
             logger.error(f"❌ Proxy HTTP {r.status_code}")
             error_tracker.increment('proxy_down')
-            if error_tracker.should_alert('proxy_error'):
+            if error_tracker.should_alert('proxy_down'):
                 send_telegram(f"❌ Proxy 헬스 체크 실패: {r.status_code}")
             return False
     except Exception as e:

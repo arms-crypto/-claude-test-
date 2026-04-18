@@ -154,13 +154,36 @@ def _load_system_prompt() -> str:
 
 # 에러 발생 시 규칙
 - 경로 에러: bash로 1회 확인 후 즉시 수정 진행
-- 같은 파일 read_file 2회 이상 금지 — limit_lines로 범위 좁혀 읽기
+- 같은 파일이라도 offset을 다르게 해서 이어 읽기 허용 — 예: 첫 read_file 앞 500줄, 두번째 offset=500으로 다음 500줄
 - replace_text 실패 시: grep으로 정확한 텍스트 재확인 후 재시도, 그래도 실패 시 sed -i 사용
 
 # 금지
 - git commit (Claude가 검토 후 직접 커밋)
 - 서비스 재시작 (보고만 할 것)
 - bash로 파일 수정 (sed, awk, tee, echo redirect)
+
+# CODE REVIEW RULES [HARD CONSTRAINTS]
+
+You are a code-review VERIFIER, not a bug hunter.
+
+Hard rules:
+1. Do not report any finding unless you cite: file path + exact line number + code snippet.
+2. If code evidence is missing, output UNCERTAIN — do not guess.
+3. Do not classify as BUG unless runtime failure is proven:
+   - with/context manager cleanup → NOT A BUG
+   - dict.get(..., default) → NOT A BUG
+   - caller-side if-not checks → NOT A BUG
+   - intentional except: pass returning False/None → NOT A BUG
+   - fixed thresholds, ports, pool sizes, timeouts → NOT A BUG
+4. Before judging any local issue, read caller/wrapper/fallback code first via read_file.
+5. Every finding must be classified as exactly one of: BUG / IMPROVEMENT / UNCERTAIN.
+6. If files were not fully read via read_file tool, output: INSUFFICIENT_EVIDENCE.
+
+Mandatory resource leak = BUG:
+- sqlite3.connect() / open() / acquire() without with or try-finally close → BUG
+- Key/symbol referenced but not found anywhere in file → HALLUCINATION, discard.
+
+500줄 넘는 파일은 offset으로 이어 읽을 것.
 """ + claude_md_section
 
 
@@ -243,8 +266,8 @@ def _run_tool(tool_call: dict) -> str:
                 end   = start + int(limit)
                 chunk = lines[start:end]
                 return f"[줄 {start+1}~{min(end, total)}/{total}]\n" + "".join(chunk)
-            if total > 200:
-                return f"[앞 200줄만 표시 (총 {total}줄) — 더 보려면 limit_lines/offset 사용]\n" + "".join(lines[:200])
+            if total > 500:
+                return f"[앞 500줄만 표시 (총 {total}줄) — 더 보려면 limit_lines/offset 사용]\n" + "".join(lines[:500])
             return "".join(lines)
         except FileNotFoundError:
             return f"❌ 파일 없음: {path}"
@@ -410,7 +433,7 @@ def call_qwen(user_msg: str, session_id: str = "default") -> str:
             r = requests.post(
                 LM_STUDIO_URL,
                 json={"model": QWEN_MODEL, "messages": messages,
-                      "temperature": 0.3, "max_tokens": 4096},
+                      "temperature": 0.1, "max_tokens": 4096},
                 timeout=(5, 600),
             )
             r.raise_for_status()
@@ -619,7 +642,7 @@ def _call_qwen_direct(user_msg: str, session_id: str) -> str:
         r = requests.post(
             LM_STUDIO_URL,
             json={"model": QWEN_MODEL, "messages": messages,
-                  "temperature": 0.3, "max_tokens": 4096},
+                  "temperature": 0.1, "max_tokens": 4096},
             timeout=(5, 600),  # 최대 10분 허용
         )
         r.raise_for_status()
@@ -639,7 +662,7 @@ def _call_qwen_direct(user_msg: str, session_id: str) -> str:
                     r2 = requests.post(
                         LM_STUDIO_URL,
                         json={"model": QWEN_MODEL, "messages": messages,
-                              "temperature": 0.3, "max_tokens": 4096},
+                              "temperature": 0.1, "max_tokens": 4096},
                         timeout=(5, 600),
                     )
                     r2.raise_for_status()
@@ -764,6 +787,26 @@ class TaskHandler(BaseHTTPRequestHandler):
                 self.send_header("Content-Type", "application/json")
                 self.end_headers()
                 self.wfile.write(json.dumps(found or {"error": "not found"}).encode())
+            elif self.path.startswith("/wait/"):
+                # Long-polling: 태스크 완료까지 블로킹 대기
+                # /wait/task_abc12345 또는 /wait/task_abc12345?timeout=300
+                from urllib.parse import urlparse, parse_qs
+                parsed = urlparse(self.path)
+                target_id = parsed.path[len("/wait/"):]
+                qs = parse_qs(parsed.query)
+                timeout = int(qs.get("timeout", ["300"])[0])
+                deadline = time.time() + timeout
+                found = None
+                while time.time() < deadline:
+                    with _task_results_lock:
+                        found = next((r for r in _task_results if r["id"] == target_id), None)
+                    if found:
+                        break
+                    time.sleep(2)
+                self.send_response(200 if found else 408)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps(found or {"status": "timeout", "task_id": target_id}).encode())
             else:
                 self.send_response(404)
                 self.end_headers()
