@@ -428,7 +428,7 @@ def call_qwen(user_msg: str, session_id: str = "default") -> str:
     _executed: set = set()
 
     final_reply = ""
-    for _round in range(15):
+    for _round in range(25):
         try:
             r = requests.post(
                 LM_STUDIO_URL,
