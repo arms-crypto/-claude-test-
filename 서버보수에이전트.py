@@ -148,7 +148,11 @@ def _load_system_prompt() -> str:
 <bash>grep -n "DEBUG" /home/ubuntu/-claude-test-/config.py</bash>
 
 [결과 확인 후 replace_text 실행]
-<replace_text path="/home/ubuntu/-claude-test-/config.py" old="DEBUG = False" new="DEBUG = True"/>
+<replace_text path="/home/ubuntu/-claude-test-/config.py"><old>
+DEBUG = False
+</old><new>
+DEBUG = True
+</new></replace_text>
 
 ✅ 수정 완료
 
@@ -192,6 +196,8 @@ SYSTEM_PROMPT = _load_system_prompt()
 
 # ── 도구 호출 파싱 (XML 태그 우선, JSON 폴백) ────────────────────────────────
 def _parse_tool_call(content: str) -> dict | None:
+    # <think>...</think> 블록 제거 (reasoning 모델 출력 정리)
+    content = re.sub(r'<think>[\s\S]*?</think>', '', content).strip()
     # read_file: <read_file path="..." limit_lines="50" offset="0"/>
     m = re.search(r'<read_file\s+([^>]+?)(?:\s*/>|>)', content)
     if m:
@@ -207,25 +213,12 @@ def _parse_tool_call(content: str) -> dict | None:
                 result["offset"] = int(off.group(1))
             return result
 
-    # replace_text: <replace_text path="..." old="..." new="..."/>  ← 핵심 도구
-    # 1단계: path 속성만 추출
-    m_path = re.search(r'<replace_text\s+path=["\']([^"\']+)["\']', content)
-    if m_path:
-        path_val = m_path.group(1)
-        tag_start = m_path.start()
-        # 2단계: old= 와 new= 값을 re.DOTALL + [\s\S]*? 로 추출 (이스케이프/줄바꿈 포함)
-        m_old_new = re.search(
-            r'old=["\'](\\.+?|[\s\S]*?)["\'][\s\S]*?new=["\'](\\.+?|[\s\S]*?)["\']',
-            content[tag_start:], re.DOTALL
-        )
-        if m_old_new:
-            return {"tool": "replace_text", "path": path_val,
-                    "old": m_old_new.group(1), "new": m_old_new.group(2)}
-    # 멀티라인 old/new 태그 형식 지원
-    m = re.search(r'<replace_text\s+path=["\']([^"\']+)["\']>(.*?)<old>(.*?)</old>\s*<new>(.*?)</new>.*?</replace_text>',
+    # replace_text: 태그 형식만 지원 <replace_text path="..."><old>...</old><new>...</new></replace_text>
+    m = re.search(r'<replace_text\s+path=["\']([^"\']+)["\']>\s*<old>(.*?)</old>\s*<new>(.*?)</new>\s*</replace_text>',
                   content, re.DOTALL)
     if m:
-        return {"tool": "replace_text", "path": m.group(1), "old": m.group(3), "new": m.group(4)}
+        return {"tool": "replace_text", "path": m.group(1),
+                "old": m.group(2).strip('\n'), "new": m.group(3).strip('\n')}
 
     # write_file: <write_file path="...">content</write_file>
     m = re.search(r'<write_file\s+path=["\']([^"\']+)["\']>(.*?)</write_file>', content, re.DOTALL)
@@ -433,7 +426,7 @@ def call_qwen(user_msg: str, session_id: str = "default") -> str:
             r = requests.post(
                 LM_STUDIO_URL,
                 json={"model": QWEN_MODEL, "messages": messages,
-                      "temperature": 0.2, "max_tokens": 4096, "reasoning_effort": "low", "max_reasoning_tokens": 2000},
+                      "temperature": 0.2, "max_tokens": 4096},
                 timeout=(5, 600),
             )
             r.raise_for_status()
@@ -682,7 +675,7 @@ def _route_qwen(text: str, session_id: str) -> str:
     """is_modify/has_code 분기 공통 라우터 — 적절한 Qwen 호출 경로 선택."""
     import re as _re
     is_modify = bool(_re.search(r'(수정|변경)(해|줘|해줘|하세요)|바꿔|고쳐', text))
-    has_code  = '```' in text or len(text) > 2000
+    has_code  = bool(re.search(r'```[\s\S]+?```', text))  # 실제 코드블록 쌍 존재 여부
     if not is_modify and not has_code:
         enriched, prefetched = _prefetch_files(text)
         if prefetched:
@@ -719,7 +712,7 @@ def _process_task(task_text: str, task_id: str = ""):
         task_id = "task_" + uuid.uuid4().hex[:8]
     session_id = task_id
     logger.info("[Claude→Qwen] 작업 수신 [%s]: %s", task_id, task_text[:80])
-    tg_send(f"📋 Claude 작업지시 수신:\n{task_text[:200]}\n\n⏳ 처리 중...")
+    tg_send(f"📋 Claude 작업지시 수신:\n{task_text}\n\n⏳ 처리 중...")
     try:
         requests.post("http://127.0.0.1:11435/touch_timer", timeout=2)
     except Exception:
