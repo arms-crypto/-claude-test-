@@ -52,11 +52,11 @@ def send_wol():
                 s.sendto(magic, (config.WOL_IP, 9))
                 s.sendto(magic, (config.WOL_IP, 7))
         logger.info("WoL UDP 폴백 전송 완료 → %s", config.WOL_IP)
+        config.WOL_SENT = True
+        return True
     except Exception as e:
         logger.error("WoL UDP 폴백 실패: %s", e)
-
-    config.WOL_SENT = True
-    return True
+        return False
 
 
 import time as _time_mod

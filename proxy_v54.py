@@ -54,6 +54,14 @@ def health():
     return jsonify({"status": "ok"}), 200
 
 
+@app.route('/touch_timer', methods=['POST'])
+def touch_timer():
+    """PC LLM 타이머 갱신 — 서버보수 에이전트가 호출"""
+    from llm_client import touch_ollama_request
+    touch_ollama_request()
+    return jsonify({"status": "ok", "message": "timer touched"}), 200
+
+
 # ======================== 에러 모니터 대시보드 ========================
 
 @app.route('/dashboard', methods=['GET'])
