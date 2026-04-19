@@ -936,6 +936,11 @@ def _process_task(task_text: str, task_id: str = ""):
     _stop_keepalive = threading.Event()
     _start_task_keepalive(_stop_keepalive)
     try:
+        try:
+            from graphify_wrapper import inject_graph_context as _igc
+            task_text = _igc(task_text)
+        except Exception:
+            pass
         reply = _route_qwen(task_text, session_id)
     finally:
         _stop_keepalive.set()

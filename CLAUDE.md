@@ -732,3 +732,21 @@ journalctl -u proxy_v54 -n 50      # 최근 로그
 curl -s http://localhost:11435/health  # 헬스체크
 curl -s http://221.144.111.116:8000/v1/models  # PC Qwen 태스크 서버 모델 목록 조회
 ```
+
+## Code Graph (Graphify)
+
+### Claude 사용 규칙
+1. **먼저 `graphify-out/GRAPH_REPORT.md` 읽기** — 전체 구조 파악 (진입점·위험태그·콜허브)
+2. **필요한 파일만 Read** — 그래프에서 찾은 file:line 으로 바로 이동, 전체 스캔 금지
+3. **Qwen 지시 시** — graph.json의 symbol 노드(file/line/calls)를 지시문에 포함해서 grep 생략
+
+### Stale 방지
+- `git commit` 후 자동 재빌드 (`post-commit` hook 설치 완료)
+- 수동 재빌드: `python3 graphify.py .`
+- **stale 판단 기준**: 작업 전 `graphify-out/graph.json`의 `generated_at`이 최근 커밋보다 오래됐으면 재빌드 후 참고
+- stale 상태에서 그래프를 그대로 믿으면 잘못된 파일:라인으로 안내될 수 있음 — 의심되면 재빌드 먼저
+
+### 파일 경로
+- `graphify-out/GRAPH_REPORT.md` — 253줄 요약 (항상 로드)
+- `graphify-out/graph.json` — symbol 중심 전체 인덱스
+- `graphify-out/doc/` — 파일별 상세 (필요 시만)
