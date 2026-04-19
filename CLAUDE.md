@@ -767,7 +767,27 @@ python3 graphify.py .                   # 코드 그래프 재빌드
    - ❌ `"auto_trade_cycle 매도 조건 수정해줘"`
    - ✅ `"auto_trader.py:642 _sell_for_account 함수에서 매도 조건 수정해줘"`
    - graph.json에서 symbol 조회 → file/line/calls 확인 → 태스크에 포함 → Qwen이 read_file 없이 바로 offset으로 이동
-4. **한국어 태스크도 aliases로 자동 매핑됨** — 자동매매/봇1/태스크서버/절전 등 aliases 25개 등록
+4. **한국어 태스크도 aliases로 자동 매핑됨** — 자동매매/봇1/태스크서버/절전/장중판단/주가조회/포트폴리오/히스토리/세션/슬립타이머 등 aliases 38개 등록
+
+### Graphify 벤치마크 결과 (2026-04-19)
+
+| 케이스 | CTX | 노드 | read_file | bash | 합계 | 시간 |
+|--------|-----|------|-----------|------|------|------|
+| CTX_자동매매 | ✅ | 10 | 0 | 0 | 0 | 22s |
+| CTX_절전 | ✅ | 4 | 0 | 0 | 0 | 26s |
+| CTX_장중판단 | ✅ | 9 | 0 | 0 | 0 | 22s |
+| NOCTX_raw1 (grep) | ❌ | 0 | 0 | 2 | 2 | 44s |
+| NOCTX_raw2 | ❌ | 0 | 0 | 0 | 0 | 26s |
+
+- **CTX 있음 평균 도구 호출: 0.0** / CTX 없음: 1.0 → **탐색 비용 절감 ≈1.0회/태스크**
+- CTX 없는 케이스에서 Qwen이 grep을 통해 탐색 (44s vs 22s, 2배 더 느림)
+
+### 운영 지침 (벤치마크 기반)
+1. **한국어 aliases 사용** — 자동매매/봇1/절전 등 → GRAPH CONTEXT 자동 주입 → 탐색 0회
+2. **aliases 미등록 한국어** → GRAPH CONTEXT 없음 → Qwen grep 탐색 필요 → aliases 추가 권장
+3. **symbol명 직접 포함** (auto_trade_cycle) → 항상 매칭, 가장 확실
+4. **file:line 명시** → read_file 완전 생략 가능 (최적)
+5. 장중(08:00~20:00) 긴 수정 태스크 자제 — Qwen 탐색 비용 + 실매매 간섭 위험
 
 ### Stale 방지
 - `git commit` 후 자동 재빌드 (`post-commit` hook 설치 완료)

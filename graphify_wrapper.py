@@ -53,14 +53,23 @@ def _extract_candidate_symbols(task_text: str, graph: dict) -> list[str]:
             found.append(name)
             seen.add(name)
 
-    # Pass 2: 한글 alias 역조회
-    for m in re.finditer(r'[\uAC00-\uD7A3]{2,}', task_text):
-        korean = m.group(0)
-        if korean in aliases:
-            for sym in aliases[korean]:
-                if sym in known and sym not in seen:
-                    found.append(sym)
-                    seen.add(sym)
+    # Pass 2: 한글 alias 역조회 (조사 제거 + 부분 매칭)
+    for m in re.finditer(r'[\uAC00-\uD7A3\w]{1,}', task_text):
+        chunk = m.group(0)
+        # 정확 매칭 우선
+        candidates = [chunk]
+        # 조사 제거 시도 (에서/에/이/가/을/를/은/는/의/로/으로/와/과 등)
+        for suffix in ("에서", "에게", "으로", "에도", "에", "이", "가", "을", "를",
+                       "은", "는", "의", "로", "와", "과", "도", "만", "서", "게"):
+            if chunk.endswith(suffix) and len(chunk) > len(suffix):
+                candidates.append(chunk[:-len(suffix)])
+        for cand in candidates:
+            if cand in aliases:
+                for sym in aliases[cand]:
+                    if sym in known and sym not in seen:
+                        found.append(sym)
+                        seen.add(sym)
+                break
 
     # Pass 3: 파일명 → 해당 파일 심볼 추가
     for m in re.finditer(r'[\w\uAC00-\uD7A3]+\.py\b', task_text):

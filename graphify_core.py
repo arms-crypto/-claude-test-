@@ -231,8 +231,10 @@ _MANUAL_ALIASES: dict[str, list[str]] = {
     "잔고":       ["query_portfolio"],
     "거래내역":   ["query_trade_history"],
     "봇1":        ["handle_tg"],
+    "봇":         ["handle_tg"],
     "봇2":        ["handle_tg_srv"],
     "태스크서버": ["_process_task", "call_qwen"],
+    "태스크":     ["_process_task", "call_qwen"],
     "절전":       ["send_sleep"],
     "WoL":        ["send_wol"],
     "PC깨우기":   ["send_wol", "wait_for_ollama"],
@@ -243,6 +245,17 @@ _MANUAL_ALIASES: dict[str, list[str]] = {
     "전략":       ["_validate_trade_with_strategy", "auto_trade_cycle"],
     "KIS":        ["buy_mock", "sell_mock", "get_price"],
     "토큰":       ["_get_token", "_refresh_token"],
+    # 추가 aliases
+    "포트폴리오": ["query_portfolio", "_get_holdings"],
+    "에러모니터": ["error_monitor", "check_errors"],
+    "장중판단":   ["is_trading_hours", "is_nxt_hours"],
+    "신호계산":   ["calculate_chart_signals", "_tf_four_signals"],
+    "외국인":     ["get_foreign_net_buy", "collect_smart_flows"],
+    "야간보고":   ["generate_chart_png", "scan_buy_signals_for_chat"],
+    "슬립타이머": ["touch_ollama_request", "send_sleep"],
+    "주가조회":   ["get_price", "get_stock_price"],
+    "히스토리":   ["_append_history", "_get_history"],
+    "세션":       ["_append_history", "_get_history", "_sessions"],
 }
 
 _COMMON_KOREAN = {
