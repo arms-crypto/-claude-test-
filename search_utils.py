@@ -75,7 +75,12 @@ def perplexica_search(query: str, focus_mode: str = "webSearch") -> str:
     try:
         ollama_id, trans_id = _get_perplexica_providers()
         if not ollama_id:
-            logger.warning("Perplexica 프로바이더 UUID 조회 실패")
+            logger.warning("Perplexica 프로바이더 UUID 조회 실패, SearXNG 폴백: %s", query)
+            fallback = searxng_search(query, max_results=5)
+            if fallback:
+                return "\n\n".join(
+                    f"[{r['title']}]\n{r['content']}\n{r['url']}" for r in fallback
+                )
             return None
         embed_id = trans_id or ollama_id
         embed_key = "Xenova/all-MiniLM-L6-v2" if trans_id else config.QWEN_MODEL
