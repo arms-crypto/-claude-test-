@@ -7,6 +7,7 @@ search_and_summarize()
 """
 
 import json
+import re
 import requests
 
 import config
@@ -132,12 +133,54 @@ def perplexica_search(query: str, focus_mode: str = "webSearch") -> str:
                 for s in sources[:3]
             )
             answer += f"\n\n**출처:**\n{src_lines}"
-        return answer if answer else "검색 결과를 찾지 못했습니다."
+        if answer:
+            return answer
+        # Perplexica 결과 없음 → SearXNG 폴백
+        logger.info("Perplexica 결과 없음, SearXNG 폴백: %s", query)
+        fallback = searxng_search(query, max_results=5)
+        if fallback:
+            return "\n\n".join(
+                f"[{r['title']}]\n{r['content']}\n{r['url']}" for r in fallback
+            )
+        return "검색 결과를 찾지 못했습니다."
     except Exception:
         logger.exception("Perplexica 검색 실패: %s", query)
-        # UUID 캐시 초기화 (다음 시도 시 재조회)
         _perplexica_provider_cache["ollama_id"] = None
+        # Perplexica 실패 → SearXNG 폴백
+        fallback = searxng_search(query, max_results=5)
+        if fallback:
+            return "\n\n".join(
+                f"[{r['title']}]\n{r['content']}\n{r['url']}" for r in fallback
+            )
         return None
+
+
+def naver_search(query: str, max_results: int = 5) -> list:
+    """네이버 웹검색 API로 결과 반환."""
+    naver_id = getattr(config, "NAVER_ID", None)
+    naver_secret = getattr(config, "NAVER_SECRET", None)
+    if not naver_id or not naver_secret:
+        return []
+    try:
+        r = requests.get(
+            "https://openapi.naver.com/v1/search/webkr.json",
+            headers={"X-Naver-Client-Id": naver_id, "X-Naver-Client-Secret": naver_secret},
+            params={"query": query, "display": max_results, "sort": "date"},
+            timeout=10,
+        )
+        r.raise_for_status()
+        items = r.json().get("items", [])
+        return [
+            {
+                "title": re.sub(r"<[^>]+>", "", item.get("title", "")),
+                "content": re.sub(r"<[^>]+>", "", item.get("description", "")),
+                "url": item.get("link", ""),
+            }
+            for item in items
+        ]
+    except Exception:
+        logger.exception("네이버 검색 실패: %s", query)
+        return []
 
 
 def search_and_summarize(query: str) -> str:
