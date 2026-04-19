@@ -367,9 +367,10 @@ def _render_report(graph: dict) -> str:
 
     lines: list[str] = []
     lines.append("# Code Graph Report")
-    lines.append(f"Generated: {meta['generated_at']}  |  "
-                 f"Files: {meta['python_files']}  |  "
-                 f"Symbols: {meta['total_symbols']}")
+    lines.append(f"Generated at: {meta['generated_at']}")
+    lines.append("If newer source files exist, rebuild with: python3 graphify.py .")
+    lines.append("")
+    lines.append(f"Files: {meta['python_files']}  |  Symbols: {meta['total_symbols']}")
     lines.append("")
     lines.append("---")
     lines.append("")
