@@ -163,15 +163,8 @@ def ask_ai(session_id, user_input):
             hist_msgs.append({"role": "user", "content": u})
             hist_msgs.append({"role": "assistant", "content": a})
 
-    # 3-0-5) 검색 쿼리 정제 (정치/과거 컨텍스트 제거)
+    # 3-0-5) 검색 쿼리 원본 유지
     _query_for_search = user_input
-    if any(k in user_input.lower() for k in ["뉴스", "요약", "기사", "뭐가"]):
-        # 검색 용도 쿼리: 핵심 키워드만 추출 (트럼프, 이란 같은 과거 컨텍스트 제거)
-        _noise_words = ["트럼프", "이란", "미국", "중국", "전쟁", "협상"]
-        _query_for_search = re.sub(r'(' + '|'.join(_noise_words) + ')', '', user_input).strip()
-        if not _query_for_search or len(_query_for_search) < 2:
-            _query_for_search = user_input
-        logger.info("검색 쿼리 정제: '%s' → '%s'", user_input, _query_for_search)
 
     # 3-1) DB/로컬 데이터 키워드 감지 → 컨텍스트 주입
     _u = re.sub(r'\s+', '', user_input).lower()

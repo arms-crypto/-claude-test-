@@ -65,7 +65,7 @@ def send_wol():
         return False
 
 
-_LM_HEADERS = {"Authorization": "Bearer sk-lm-65FGVrPT:vqn138RmtIy3Br0867pZ"}
+_LM_HEADERS = {"Authorization": f"Bearer {config.LM_API_KEY}"}
 
 import time as _time_mod
 _last_ollama_request = [_time_mod.time()]  # 마지막 Ollama 요청 시각 (시작 시각으로 초기화)
@@ -132,24 +132,75 @@ def _get_pc_user_idle_min() -> int:
         return 0  # SSH 실패 → 안전하게 차단
 
 
+def _get_pc_load() -> tuple:
+    """PC GPU/CPU 사용률(%) 반환. (gpu%, cpu%) 튜플. 확인 실패 → (0, 0)."""
+    import subprocess
+    try:
+        cmd = "nvidia-smi --query-gpu=utilization.gpu --format=csv,noheader,nounits 2>nul & wmic cpu get loadpercentage /value"
+        r = subprocess.run(
+            ["ssh", "-o", "ConnectTimeout=5", "-o", "StrictHostKeyChecking=no",
+             "-p", "2224", "-i", "/home/ubuntu/.ssh/id_ed25519",
+             "ultimate@221.144.111.116", cmd],
+            capture_output=True, timeout=10
+        )
+        if r.returncode == 0:
+            out = r.stdout.decode("utf-8", errors="ignore")
+            lines = [l.strip() for l in out.splitlines() if l.strip()]
+            gpu = 0
+            cpu = 0
+            for l in lines:
+                if "LoadPercentage=" in l:
+                    try:
+                        cpu = int(l.split("=")[1])
+                    except Exception:
+                        pass
+                elif l.isdigit():
+                    gpu = int(l)
+            return gpu, cpu
+    except Exception as e:
+        logger.debug("PC 로드 확인 실패: %s", e)
+    return 0, 0
+
+
+_load_low_since = [0.0]  # 로드가 임계값 아래로 내려간 시점 (타이머)
+
+
 def send_sleep(delay_min: int = 20):
     """
     PC에 최대절전(hibernate) 명령 전송.
-    조건 1: Ollama 마지막 요청 후 delay_min분 유휴.
-    조건 2: Windows 사용자 세션도 15분 이상 유휴 (직접 사용 중이면 차단).
+    - 사용자 유휴 < 20분이면 차단 (직접 사용 중)
+    - GPU > 10% OR CPU > 20%이면 타이머 리셋
+    - 로드가 delay_min분 연속으로 낮으면 절전 실행
     """
     import subprocess, time
-    idle = time.time() - _last_ollama_request[0]
-    if idle < delay_min * 60:
-        logger.info("send_sleep 스킵 — 마지막 요청 %.0f초 전 (유휴 기준 %d분)", idle, delay_min)
-        return False
 
     # PC 사용자가 직접 쓰고 있는지 확인
     pc_idle_min = _get_pc_user_idle_min()
     if pc_idle_min < 20:
-        logger.info("send_sleep 스킵 — PC 사용자 유휴 %d분 (기준 20분, 직접 사용 중으로 판단)", pc_idle_min)
+        logger.info("send_sleep 스킵 — PC 사용자 유휴 %d분 (직접 사용 중)", pc_idle_min)
+        _load_low_since[0] = 0.0
         return False
 
+    # GPU/CPU 로드 확인
+    gpu_load, cpu_load = _get_pc_load()
+    if gpu_load > 10 or cpu_load > 20:
+        logger.info("send_sleep 타이머 리셋 — GPU %d%% / CPU %d%% (작업 중)", gpu_load, cpu_load)
+        _load_low_since[0] = 0.0
+        return False
+
+    # 로드 낮음 — 타이머 시작 또는 경과 확인
+    now = time.time()
+    if _load_low_since[0] == 0.0:
+        _load_low_since[0] = now
+        logger.info("절전 타이머 시작 — GPU %d%% / CPU %d%% (기준 %d분)", gpu_load, cpu_load, delay_min)
+        return False
+
+    low_for_min = (now - _load_low_since[0]) / 60
+    if low_for_min < delay_min:
+        logger.info("절전 타이머 %.0f/%d분 경과 — GPU %d%% / CPU %d%%", low_for_min, delay_min, gpu_load, cpu_load)
+        return False
+
+    # delay_min분 연속 저로드 → 절전 실행
     try:
         result = subprocess.run(
             ["ssh", "-o", "ConnectTimeout=5", "-o", "StrictHostKeyChecking=no",
@@ -159,8 +210,8 @@ def send_sleep(delay_min: int = 20):
             capture_output=True, timeout=10
         )
         if result.returncode == 0:
-            logger.info("PC 최대절전 명령 전송 완료 (Ollama유휴 %.0f분 / PC유휴 %d분)",
-                        idle / 60, pc_idle_min)
+            logger.info("PC 최대절전 명령 전송 완료 (저로드 %.0f분 / PC유휴 %d분)", low_for_min, pc_idle_min)
+            _load_low_since[0] = 0.0
             touch_ollama_request()  # 재전송 방지
             return True
         logger.warning("최대절전 명령 실패: %s", result.stderr.decode()[:100])
@@ -797,7 +848,7 @@ def _execute_tool_call(tool_name: str, arguments: dict) -> str:
                     action, price, qty, ts = row[0], row[1], row[2], row[3]
                     extras = {extra_cols[i]: row[4+i] for i in range(len(extra_cols))}
                     pnl_str = f" | 손익 {extras['pnl']:+.1f}%" if extras.get("pnl") is not None else ""
-                    sig_str = f" | 신호 {extras['buy_signals']}/16" if extras.get("buy_signals") is not None else ""
+                    sig_str = f" | 신호 {extras['buy_signals']}/12" if extras.get("buy_signals") is not None else ""
                     rsi_str = f" | RSI {extras['rsi']:.1f}" if extras.get("rsi") is not None else ""
                     lines.append(f"  [{ts[:10]}] {action} {qty}주 @{int(price):,}원{pnl_str}{sig_str}{rsi_str}")
                 return "\n".join(lines)
@@ -847,6 +898,9 @@ def _execute_tool_call(tool_name: str, arguments: dict) -> str:
         if not full.startswith(PROJ_BASE):
             return "접근 거부: 프로젝트 디렉토리 외부는 쓸 수 없습니다."
         try:
+            if os.path.exists(full):
+                import shutil
+                shutil.copy2(full, full + ".bak")
             with open(full, "w", encoding="utf-8") as f:
                 f.write(content)
             logger.info("Ollama tool call: write_file('%s', %d bytes)", path, len(content))

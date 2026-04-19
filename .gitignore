@@ -12,3 +12,4 @@ backtest_result.csv
 test_output.py.bak*
 .openclaw/
 inspect_reports/
+.env

@@ -126,6 +126,57 @@ if "<old>" in content and "</old>" in content:
     old_match = re.search(r"<old>(.*?)</old>", content, re.DOTALL)
     new_match = re.search(r"<new>(.*?)- **Claude-Qwen 1:1 협업 채널** — 태스크 서버(8001)에 `/result` GET 엔드포인트 추가, `_process_task()` 완료 시 결과 저장 → Claude가 사용자 없이 직접 결과 수신 후 후속 작업 지시
 
+### Qwen 태스크 효율 원칙 (2026-04-19 도출)
+
+**역할 분담 (확정)**
+
+| 역할 | 담당 | 도구 |
+|------|------|------|
+| 전략·패치 설계·읽기 | **Claude** | `Read` / `Bash(grep)` |
+| 파일 수정 실행 | **Qwen** | `write_file` 1회 |
+| 변경 검증 | **Qwen** | `bash(grep)` |
+
+**Claude가 하는 것:**
+- `Read` / `grep`으로 파일 직접 읽기 (Qwen에게 읽기 위임 금지 — 200줄 제한·LLM 비용 낭비)
+- 수정 전략·false positive 기준 결정
+- 패치 후 전체 파일 내용 설계
+
+**Qwen이 하는 것:**
+- Claude가 설계한 내용을 `write_file` 1회로 원자적 적용
+- `bash grep [키워드] 파일명`으로 수정 반영 여부 검증 보고
+
+**수정 태스크 (Qwen에게 write_file 지시)**
+```bash
+curl -s -X POST http://127.0.0.1:8001/task \
+  -H "Content-Type: application/json" \
+  -d '{"task": "파일명.py를 write_file로 다음 내용으로 교체해줘: [전체 파일 내용]"}'
+```
+
+**검증 태스크 (Qwen에게 grep 지시)**
+```bash
+curl -s -X POST http://127.0.0.1:8001/task \
+  -H "Content-Type: application/json" \
+  -d '{"task": "bash로 grep -n [키워드] 파일명.py 실행하고 결과 보고해줘."}'
+```
+
+**파일 범위 제한 — 반드시 지킬 것:**
+- 태스크 1개 = 파일 **1~2개** 최대 (5개 이상 절대 금지)
+- 5개 이상 → 도구 루프 25회 초과 + Reasoning 모델 환각 급증
+- 수정 대상 여러 개 → 태스크 분리해서 순차 전송
+
+**Reasoning 모델(Qwen) 도구 생략 대응책:**
+- Qwen은 `<think>` 단계에서 훈련 데이터로 답을 만들고 도구를 생략하는 경향
+- 지시문에 반드시 명시: **"read_file 도구 실행 결과를 인용하지 않으면 INSUFFICIENT_EVIDENCE 출력"**
+- 라인번호 없는 보고 = 환각 → 자동 폐기, 재전송
+
+**태스크 실패 패턴 인식 (즉시 재설계):**
+| 증상 | 원인 | 대응 |
+|------|------|------|
+| .bak 파일 없음 | 수정 안 됨 | 태스크 재전송 |
+| 라인번호 없는 코드 인용 | 환각 | Claude가 grep 후 재지시 |
+| "파일 내용이 없습니다" | 도구 미실행 | "반드시 read_file 먼저" 명시 |
+| 도구 루프 초과 (25회) | 파일 너무 많음 | 파일 1개씩 분리 |
+
 ### 한글 파일명 주의
 - bash `ls` 결과에서 한글 파일명 깨짐 방지: `env LC_ALL=en_US.UTF-8 ls`
 - Qwen regex `[\w]+\.py` → 한글 파일명 못 잡음 → `[\w\uAC00-\uD7A3]+\.py` 사용
@@ -631,6 +682,47 @@ for acc in _ACCOUNTS:          ← 계좌 루프
    ```
 
 **주의:** 한 곳이라도 누락되면 에러 감지가 불완전합니다. 4개 파일 모두 동기화 필수!
+
+## KIS Open Trading API 서비스 (2026-04-18 설치)
+
+### 설치 경로
+- `/home/ubuntu/open-trading-api/` — KIS 공식 오픈소스 레포
+- `/home/ubuntu/kis-ai-extensions/` — KIS AI 확장 레포
+- `/home/ubuntu/KIS/config/kis_devlp.yaml` — KIS API 키/계좌 설정
+
+### 실행 중인 서비스 (systemd)
+| 서비스 | 포트 | 역할 |
+|--------|------|------|
+| `kis-backtester` | 8002 | 전략 YAML → QuantConnect Lean 백테스팅 |
+| `kis-strategy-builder` | 8085 | 80개 지표 전략 설계, .kis.yaml 생성 |
+| `kis-mcp` | 3846 | Claude ↔ 백테스터 MCP 연결 |
+
+### MCP 연결
+- `.mcp.json` — `kis-backtest` MCP 서버 등록 (`http://127.0.0.1:3846/mcp`)
+- Claude Code 재시작 후 백테스팅 도구 직접 호출 가능
+- 주요 도구: `list_presets`, `run_backtest`, `run_optimize`, `get_report`, `validate_yaml`
+
+### 가상환경
+```bash
+# backtester
+/home/ubuntu/open-trading-api/backtester/.venv/bin/python
+
+# strategy_builder
+/home/ubuntu/open-trading-api/strategy_builder/.venv/bin/python
+```
+
+### 서비스 관리
+```bash
+sudo systemctl status kis-backtester kis-strategy-builder kis-mcp
+sudo systemctl restart kis-backtester
+curl -s http://127.0.0.1:3846/health   # MCP 서버 헬스체크
+curl -s http://127.0.0.1:8002/         # backtester API
+curl -s http://127.0.0.1:8085/         # strategy_builder API
+```
+
+### 서버보수에이전트 수정사항 (2026-04-18)
+- `reasoning_effort`, `max_reasoning_tokens` 파라미터 제거 (GGUF 모델 미지원 경고 해결)
+- 태스크 수신 텔레그램 알림: `task_text[:200]` → `task_text` 전체 (청킹으로 전달)
 
 ## 자주 쓰는 명령
 ```bash

@@ -29,9 +29,45 @@ WORKER_TOKEN  = os.environ.get("WORKER_BOT_TOKEN", "8634656301:AAGt2g90XCsYoOWed
 CHAT_ID       = os.environ.get("WORKER_CHAT_ID", "8448138406")
 LM_STUDIO_URL = "http://221.144.111.116:8000/v1/chat/completions"
 LM_STUDIO_HEADERS = {"Authorization": "Bearer sk-lm-65FGVrPT:vqn138RmtIy3Br0867pZ"}
-QWEN_MODEL    = "qwen3.5-27b-claude-4.6-opus-reasoning-distilled-heretic-v2-i1"
+QWEN_MODEL    = "qwen/qwen3-14b"
 WORKSPACE     = "/home/ubuntu/-claude-test-"
 TASK_PORT     = 8001
+
+_TOOLS_SCHEMA = [
+    {"type": "function", "function": {
+        "name": "read_file",
+        "description": "파일을 읽고 내용을 반환",
+        "parameters": {"type": "object", "required": ["path"], "properties": {
+            "path":        {"type": "string",  "description": "파일 절대 경로"},
+            "limit_lines": {"type": "integer", "description": "읽을 최대 줄 수"},
+            "offset":      {"type": "integer", "description": "시작 줄 (0-based)"},
+        }},
+    }},
+    {"type": "function", "function": {
+        "name": "replace_text",
+        "description": "파일 내 특정 텍스트를 다른 텍스트로 교체",
+        "parameters": {"type": "object", "required": ["path", "old", "new"], "properties": {
+            "path": {"type": "string"},
+            "old":  {"type": "string", "description": "교체할 원본 텍스트 (정확히 일치)"},
+            "new":  {"type": "string", "description": "교체할 새 텍스트"},
+        }},
+    }},
+    {"type": "function", "function": {
+        "name": "write_file",
+        "description": "파일 전체 내용을 씀 (덮어쓰기)",
+        "parameters": {"type": "object", "required": ["path", "content"], "properties": {
+            "path":    {"type": "string"},
+            "content": {"type": "string", "description": "파일에 쓸 전체 내용"},
+        }},
+    }},
+    {"type": "function", "function": {
+        "name": "bash",
+        "description": "bash 명령 실행 (조회/grep/find 등 읽기 전용 권장)",
+        "parameters": {"type": "object", "required": ["cmd"], "properties": {
+            "cmd": {"type": "string", "description": "실행할 bash 명령"},
+        }},
+    }},
+]
 WOL_MAC       = "3C:7C:3F:F2:B0:41"
 WOL_IP        = "221.144.111.116"
 PC_HOST       = "221.144.111.116"
@@ -428,17 +464,35 @@ def call_qwen(user_msg: str, session_id: str = "default") -> str:
                 LM_STUDIO_URL,
                 headers=LM_STUDIO_HEADERS,
                 json={"model": QWEN_MODEL, "messages": messages,
+                      "tools": _TOOLS_SCHEMA, "tool_choice": "auto",
                       "temperature": 0.2, "max_tokens": 4096},
                 timeout=(5, 600),
             )
             r.raise_for_status()
             data    = r.json()
-            content = (data.get("choices") or [{}])[0].get("message", {}).get("content", "").strip()
-            if not content:
-                return "⚠️ Qwen 응답 없음"
+            message = (data.get("choices") or [{}])[0].get("message", {})
+            native_tcs = message.get("tool_calls") or []
+            content    = (message.get("content") or "").strip()
 
-            logger.info("Qwen 응답 내용: %s", content[:300])
-            tool_call = _parse_tool_call(content)
+            # native tool_calls 우선 (Qwen3-14B OpenAI 호환), XML 폴백
+            tool_call   = None
+            native_mode = False
+            native_tc   = None
+            if native_tcs:
+                native_tc = native_tcs[0]
+                func = native_tc.get("function", {})
+                try:
+                    args = json.loads(func.get("arguments", "{}"))
+                except Exception:
+                    args = {}
+                tool_call   = {"tool": func.get("name", ""), **args}
+                native_mode = True
+                logger.info("native tool_call: %s", func.get("name"))
+            else:
+                if not content:
+                    return "⚠️ Qwen 응답 없음"
+                logger.info("Qwen 응답 내용: %s", content[:300])
+                tool_call = _parse_tool_call(content)
 
             if not tool_call:
                 final_reply = content
@@ -447,28 +501,24 @@ def call_qwen(user_msg: str, session_id: str = "default") -> str:
             # 같은 도구+경로 중복 실행 차단 (루프 방지)
             tool_key = f"{tool_call.get('tool')}:{tool_call.get('path','')}"
             if tool_key in _executed and tool_call.get("tool") == "read_file":
-                # 중복 read_file → 분석 강제
                 logger.warning("중복 read_file 감지 (%s) — 분석 강제 전환", tool_key)
-                messages.append({"role": "assistant", "content": content})
+                messages.append({"role": "assistant", "content": content or None,
+                                 **({"tool_calls": native_tcs} if native_mode else {})})
                 messages.append({"role": "user",
-                                 "content": "같은 파일을 또 읽으려 하고 있습니다. 이미 파일 내용을 받았습니다. XML 태그 없이 순수 텍스트로 분석 결과만 보고하세요."})
+                                 "content": "같은 파일을 또 읽으려 하고 있습니다. 이미 파일 내용을 받았습니다. 순수 텍스트로 분석 결과만 보고하세요."})
                 continue
             _executed.add(tool_key)
 
             tool_result = _run_tool(tool_call)
-            tool_name = tool_call.get("tool")
+            tool_name   = tool_call.get("tool")
             logger.info("도구 실행: %s → %d chars", tool_name, len(tool_result))
 
-            # 도구별 맞춤 피드백
-            # 수정 요청 감지: 명령형 패턴만 (예: "수정해", "변경해줘", "바꿔", "고쳐")
-            # "수정 없이", "수정하지 말고" 같은 부정 패턴 제외
             import re as _re2
             is_modify_task = bool(_re2.search(r'(수정|변경)(해|줘|해줘|하세요)|바꿔|고쳐|replace|write_file', user_msg))
             if tool_name == "read_file":
-                if is_modify_task:
-                    next_step = "파일 내용 확인 완료. 이제 <replace_text> 또는 <write_file>로 수정을 진행하세요. 더 이상 read_file을 반복하지 마세요."
-                else:
-                    next_step = "파일 내용 확인 완료. 요청한 분석을 한국어 텍스트로만 보고하세요. XML 태그(<read_file>, <write_file> 등) 절대 사용 금지. 순수 텍스트로만 답변하세요."
+                next_step = ("파일 내용 확인 완료. 이제 replace_text 또는 write_file 도구로 수정을 진행하세요. 더 이상 read_file을 반복하지 마세요."
+                             if is_modify_task else
+                             "파일 내용 확인 완료. 요청한 분석을 한국어 텍스트로만 보고하세요.")
             elif tool_name == "write_file":
                 next_step = "파일 저장 완료. 변경 내용을 한국어로 보고하세요."
             elif tool_name == "replace_text":
@@ -476,9 +526,17 @@ def call_qwen(user_msg: str, session_id: str = "default") -> str:
             else:
                 next_step = "명령 완료. 다음 작업을 진행하세요."
 
-            messages.append({"role": "assistant", "content": content})
-            messages.append({"role": "user",
-                             "content": f"[도구 결과: {tool_name}]\n{tool_result}\n\n{next_step}"})
+            if native_mode:
+                # OpenAI tool_calls 형식: assistant + tool role
+                tc_id = native_tc.get("id", f"call_{_round}")
+                messages.append({"role": "assistant", "content": content or None,
+                                 "tool_calls": native_tcs})
+                messages.append({"role": "tool", "tool_call_id": tc_id,
+                                 "content": f"{tool_result}\n\n{next_step}"})
+            else:
+                messages.append({"role": "assistant", "content": content})
+                messages.append({"role": "user",
+                                 "content": f"[도구 결과: {tool_name}]\n{tool_result}\n\n{next_step}"})
 
         except Exception as e:
             err_str = str(e).lower()
@@ -500,6 +558,149 @@ def call_qwen(user_msg: str, session_id: str = "default") -> str:
     _append_history(session_id, "user", user_msg)
     _append_history(session_id, "assistant", final_reply)
     return final_reply
+
+
+# ── 인용 라인번호 실파일 재검증 ───────────────────────────────────────────────
+def _verify_citations(content: str, file_path: str) -> str:
+    """Qwen 출력의 [path:N] 라인번호를 실제 파일 스니펫 검색으로 교정."""
+    try:
+        with open(file_path, encoding="utf-8") as f:
+            file_lines = f.readlines()
+    except Exception:
+        return content
+
+    result_lines = content.splitlines()
+    output = []
+    for i, line in enumerate(result_lines):
+        m = re.match(r'^(\[.+?):(\d+)\](.*)', line)
+        if m:
+            prefix       = m.group(1)
+            claimed_line = int(m.group(2))
+            suffix       = m.group(3)
+            # 다음 줄에서 코드 스니펫 추출 (들여쓰기 제거)
+            snippet = result_lines[i + 1].strip() if i + 1 < len(result_lines) else ""
+            if snippet:
+                found = next(
+                    (j for j, fl in enumerate(file_lines, 1) if snippet in fl),
+                    None
+                )
+                if found and found != claimed_line:
+                    output.append(f"{prefix}:{found}]{suffix}  ※{claimed_line}→{found}")
+                    continue
+        output.append(line)
+    return "\n".join(output)
+
+
+# read_file 전용 스키마 (리뷰 중 write/bash 호출 차단)
+_REVIEW_TOOLS = [
+    {"type": "function", "function": {
+        "name": "read_file",
+        "description": "파일을 읽고 내용을 반환",
+        "parameters": {"type": "object", "required": ["path"], "properties": {
+            "path":        {"type": "string"},
+            "limit_lines": {"type": "integer"},
+            "offset":      {"type": "integer"},
+        }},
+    }},
+]
+
+# ── 코드 리뷰 전용 호출 (3-턴 툴 루프) ────────────────────────────────────────
+def call_qwen_review(file_path: str, user_instruction: str, session_id: str = "default") -> str:
+    """코드 리뷰 전용 — 실제 tool loop 사용.
+    Phase 1: tool_choice=auto  → Qwen이 read_file을 직접 호출 (500줄씩)
+    Phase 2: tool_choice=none  → 읽기 완료 후 분석만 강제
+    prefetch/direct route 완전 우회.
+    """
+    try:
+        total_lines = sum(1 for _ in open(file_path, encoding="utf-8"))
+    except Exception as e:
+        return f"❌ 파일 확인 실패: {e}"
+
+    needed_reads = (total_lines + 499) // 500  # 500줄씩 몇 번 읽어야 하는지
+
+    messages = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content":
+            f"{user_instruction}\n\n"
+            f"파일: {file_path} (총 {total_lines}줄)\n"
+            f"read_file 도구로 offset=0 limit=500부터 시작해서 {needed_reads}번 읽어라 (500줄씩). "
+            f"모든 청크를 읽은 후에만 인용 목록을 출력하라. "
+            f"도구를 호출하지 않고 직접 답하면 INSUFFICIENT_EVIDENCE만 출력."
+        },
+    ]
+
+    read_count = 0
+
+    for _round in range(20):
+        # 충분히 읽었으면 tools 스키마 없는 분석 전용 호출로 전환
+        phase2 = read_count >= needed_reads
+
+        if phase2:
+            messages.append({"role": "user", "content":
+                f"파일 읽기 완료 ({read_count}번/{needed_reads}번). "
+                f"이제 위에서 읽은 내용만 바탕으로 인용 목록을 출력하라. "
+                f"[{file_path}:라인번호] 코드스니펫 형태. 판정 금지. 도구 추가 호출 금지."})
+            try:
+                r = requests.post(
+                    LM_STUDIO_URL,
+                    headers=LM_STUDIO_HEADERS,
+                    json={"model": QWEN_MODEL, "messages": messages,
+                          "temperature": 0.2, "max_tokens": 4096},  # tools 없음
+                    timeout=(5, 600),
+                )
+                r.raise_for_status()
+                content = (r.json().get("choices") or [{}])[0].get("message", {}).get("content", "").strip()
+                content = _verify_citations(content, file_path)
+                return content or "INSUFFICIENT_EVIDENCE"
+            except Exception as e:
+                return f"⚠️ 리뷰 분석 실패: {e}"
+
+        try:
+            r = requests.post(
+                LM_STUDIO_URL,
+                headers=LM_STUDIO_HEADERS,
+                json={"model": QWEN_MODEL, "messages": messages,
+                      "tools": _REVIEW_TOOLS, "tool_choice": "auto",
+                      "temperature": 0.2, "max_tokens": 4096},
+                timeout=(5, 600),
+            )
+            r.raise_for_status()
+        except Exception as e:
+            return f"⚠️ 리뷰 호출 실패: {e}"
+
+        message    = (r.json().get("choices") or [{}])[0].get("message", {})
+        native_tcs = message.get("tool_calls") or []
+        content    = (message.get("content") or "").strip()
+
+        if not native_tcs:
+            return content or "INSUFFICIENT_EVIDENCE"
+
+        # read_file 실행
+        tc      = native_tcs[0]
+        func    = tc.get("function", {})
+        tc_id   = tc.get("id", f"review_{_round}")
+        try:
+            args = json.loads(func.get("arguments", "{}"))
+        except Exception:
+            args = {}
+
+        tool_result = _run_tool({"tool": func.get("name", ""), **args})
+        read_count += 1
+        logger.info("[review] read_file #%d (offset=%s) → %d chars",
+                    read_count, args.get("offset", 0), len(tool_result))
+
+        messages.append({"role": "assistant", "content": content or None,
+                         "tool_calls": native_tcs})
+        messages.append({"role": "tool", "tool_call_id": tc_id, "content": tool_result})
+
+        # 런타임이 다음 offset을 명시적으로 지시 (Qwen이 스스로 offset 진행 못하는 문제 방지)
+        next_offset = read_count * 500
+        if next_offset < total_lines:
+            messages.append({"role": "user", "content":
+                f"읽기 {read_count}/{needed_reads} 완료. "
+                f"다음: read_file path={file_path} offset={next_offset} limit=500 으로 읽어라."})
+
+    return "INSUFFICIENT_EVIDENCE"
 
 
 # ── 텔레그램 ───────────────────────────────────────────────────────────────────
@@ -678,7 +879,18 @@ def _call_qwen_direct(user_msg: str, session_id: str) -> str:
 def _route_qwen(text: str, session_id: str) -> str:
     """is_modify/has_code 분기 공통 라우터 — 적절한 Qwen 호출 경로 선택."""
     import re as _re
-    is_modify = bool(_re.search(r'(수정|변경)(해|줘|해줘|하세요)|바꿔|고쳐', text))
+    # 코드 리뷰 태스크 → call_qwen_review (prefetch/direct route 완전 우회)
+    review_match = _re.search(r'코드\s*리뷰|1패스|code\s*review|점검해|전체\s*리뷰', text, re.IGNORECASE)
+    file_match   = _re.search(r'/home/ubuntu/[^\s\'\"<>]+\.py|[\w\uAC00-\uD7A3]+\.py', text)
+    if review_match and file_match:
+        fpath = file_match.group(0)
+        if not fpath.startswith("/"):
+            fpath = os.path.join(WORKSPACE, fpath)
+        if os.path.exists(fpath):
+            logger.info("[review route] %s → call_qwen_review", fpath)
+            return call_qwen_review(fpath, text, session_id)
+
+    is_modify = bool(_re.search(r'(수정|변경|추가|삭제|삽입)(해|줘|해줘|하세요)|바꿔|고쳐|write_file|replace_text', text))
     has_code  = bool(re.search(r'```[\s\S]+?```', text))  # 실제 코드블록 쌍 존재 여부
     if not is_modify and not has_code:
         enriched, prefetched = _prefetch_files(text)
@@ -720,7 +932,7 @@ def _process_task(task_text: str, task_id: str = ""):
     try:
         requests.post("http://127.0.0.1:11435/touch_timer", timeout=2)
     except Exception:
-        pass
+        logger.debug("touch_timer 스킵 (proxy 미실행 — 무시)")
     _stop_keepalive = threading.Event()
     _start_task_keepalive(_stop_keepalive)
     try:
@@ -847,8 +1059,16 @@ def main():
     logger.info("서버보수에이전트 시작 (Qwen → worker 봇)")
     tg_send("🔧 서버보수에이전트 시작됨\nQwen3.5-27B 연결 완료.\n\n• 텔레그램으로 직접 대화 가능\n• Claude 자동 작업지시: localhost:8001/task")
     offset = 0
+    _poll_fail = 0
     while True:
         updates, offset = tg_poll(offset)
+        if not updates and offset == offset:
+            _poll_fail += 1
+            if _poll_fail >= 30:
+                logger.warning("tg_poll 연속 30회 빈 응답 — 네트워크 이상 의심")
+                _poll_fail = 0
+        else:
+            _poll_fail = 0
         for upd in updates:
             msg     = upd.get("message", {})
             text    = msg.get("text", "").strip()

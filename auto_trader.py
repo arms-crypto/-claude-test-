@@ -1068,7 +1068,7 @@ def _log_pc_learning_data(code: str, name: str, prev_count: int, new_count: int,
                     learning_data = json.load(f)
                     if not isinstance(learning_data, list):
                         learning_data = []
-            except:
+            except Exception:
                 learning_data = []
 
         # 신호 조합 계산 (월/주/일봉 강도)
@@ -1577,14 +1577,24 @@ def auto_trade_cycle():
                             sell_qty if action == "SELL_PARTIAL" else None,
                             reason=f"Ollama: {reason}"
                         )
-                        emoji = "🤑" if pnl >= 0 else "🟡"
-                        logger.info("%s [%s] 부분매도 %s(%s): %+.1f%% %d주",
-                                    emoji, acc["label"], name, code, pnl, sell_qty)
-                        trade_log.append(
-                            f"{time_str} {emoji} 부분매도 {name}({code}) {pnl:+.1f}% {sell_qty}주\n"
-                            f"  └ {reason}")
-                        last_trades[code] = {"time": time_str, "action": "SELL_PARTIAL",
-                                             "pnl": pnl, "next_check": next_dt}
+                        if action == "SELL_ALL":
+                            emoji = "🔴" if pnl < 0 else "💰"
+                            logger.info("%s [%s] 전량매도(부분→전량) %s(%s): %+.1f%%",
+                                        emoji, acc["label"], name, code, pnl)
+                            trade_log.append(
+                                f"{time_str} {emoji} 전량매도 {name}({code}) {pnl:+.1f}%\n"
+                                f"  └ {reason}")
+                            last_trades[code] = {"time": time_str, "action": "SELL_ALL",
+                                                 "pnl": pnl, "next_check": None}
+                        else:
+                            emoji = "🤑" if pnl >= 0 else "🟡"
+                            logger.info("%s [%s] 부분매도 %s(%s): %+.1f%% %d주",
+                                        emoji, acc["label"], name, code, pnl, sell_qty)
+                            trade_log.append(
+                                f"{time_str} {emoji} 부분매도 {name}({code}) {pnl:+.1f}% {sell_qty}주\n"
+                                f"  └ {reason}")
+                            last_trades[code] = {"time": time_str, "action": "SELL_PARTIAL",
+                                                 "pnl": pnl, "next_check": next_dt}
 
                     elif action == "SELL_ALL":
                         result = _sell_for_account(acc, code, None, reason=f"Ollama: {reason}")

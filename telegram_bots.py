@@ -465,20 +465,19 @@ def auto_report_scheduler():
                     def _get_stat(db_path, today_str):
                         try:
                             import sqlite3 as _sq3
-                            con = _sq3.connect(db_path)
-                            rows = con.execute(
-                                "SELECT pnl FROM trades WHERE action='SELL' "
-                                "AND created_at >= ? AND pnl IS NOT NULL",
-                                [today_str]
-                            ).fetchall()
-                            # 현재 보유 평가손익
-                            holdings = con.execute(
-                                "SELECT ticker, qty, avg_price FROM portfolio"
-                            ).fetchall()
-                            cash_row = con.execute(
-                                "SELECT value FROM account WHERE key='cash'"
-                            ).fetchone()
-                            con.close()
+                            with _sq3.connect(db_path) as con:
+                                rows = con.execute(
+                                    "SELECT pnl FROM trades WHERE action='SELL' "
+                                    "AND created_at >= ? AND pnl IS NOT NULL",
+                                    [today_str]
+                                ).fetchall()
+                                # 현재 보유 평가손익
+                                holdings = con.execute(
+                                    "SELECT ticker, qty, avg_price FROM portfolio"
+                                ).fetchall()
+                                cash_row = con.execute(
+                                    "SELECT value FROM account WHERE key='cash'"
+                                ).fetchone()
                             pnls = [r[0] for r in rows]
                             stat = ""
                             if pnls:
@@ -541,12 +540,11 @@ def auto_report_scheduler():
                 # 자정: 오늘 cash → prev_day_cash 저장 (다음날 보수적 운영 판단용)
                 try:
                     import sqlite3 as _sq3
-                    con = _sq3.connect(PORTFOLIO_DB_PATH)
-                    row = con.execute("SELECT value FROM account WHERE key='cash'").fetchone()
-                    if row:
-                        con.execute("INSERT OR REPLACE INTO account(key,value) VALUES('prev_day_cash',?)", [row[0]])
-                        con.commit()
-                    con.close()
+                    with _sq3.connect(PORTFOLIO_DB_PATH) as con:
+                        row = con.execute("SELECT value FROM account WHERE key='cash'").fetchone()
+                        if row:
+                            con.execute("INSERT OR REPLACE INTO account(key,value) VALUES('prev_day_cash',?)", [row[0]])
+                            con.commit()
                 except Exception:
                     logger.exception("prev_day_cash 저장 실패")
                 # 자정: RAG 뉴스/매매 자동 동기화

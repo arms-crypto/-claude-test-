@@ -8,27 +8,32 @@ config.py — 설정 + 전역 상태
 import logging
 import threading
 
+from dotenv import load_dotenv
+import os
+load_dotenv()
+
 # -------------------------
 # 로깅 설정
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("proxy_v53")
 
 # -------------------------
-# 민감정보
-TOKEN_RAW = "8707168013:AAH5yIsoaLoxcA0Lthiw7RaIzD1YcJx8cc8"
-TOKEN_SRV = "8657060115:AAEDA3L5OKmEjqdDxj3sopQlF-4BotKsvbA"  # oracleN_Agent_bot
-CHAT_ID = "8448138406"
+# 민감정보 (.env 파일에서 로드)
+TOKEN_RAW = os.environ.get("TOKEN_RAW", "")
+TOKEN_SRV = os.environ.get("TOKEN_SRV", "")
+CHAT_ID = os.environ.get("CHAT_ID", "")
 LOCAL_OLLAMA_URL = "http://localhost:11434/api/chat"
 LOCAL_MODEL = "qwen2.5:7b"   # 폴백용 (tool calling 불안정 → use_tools=False로 운영)
-NAVER_ID = "6MSVizApP3DYXeUhor5J"
-NAVER_SECRET = "WCddJHD62B"
-APP_KEY = "PSY9gMy15uipajb9qM25Cj1Uhf74FVu1cDyF"
-APP_SECRET = "A/vwnErWUmOrZFUoJQ5bBS78WdY1lS6T6GaD5Hx1dNE+J3TTxTi1QwBvdFZuoKHWJ2nKEz+SaAmZmNikWH04Ge4Mm7up+/5JeAphHOXYld5nIbtehEmHMFcHVeB3EbNQem1pi2+0cVdyj6w7UzGJA+HqVRNFlPapifykRfPmf4Qf0IaIJdU="
-DB_USER = "admin"
-DB_PASS = "Flavor121212"
+NAVER_ID = os.environ.get("NAVER_ID", "")
+NAVER_SECRET = os.environ.get("NAVER_SECRET", "")
+APP_KEY = os.environ.get("APP_KEY", "")
+APP_SECRET = os.environ.get("APP_SECRET", "")
+DB_USER = os.environ.get("DB_USER", "admin")
+DB_PASS = os.environ.get("DB_PASS", "")
 DB_DSN = "nzdrpgcmwjtme3py_high"
 DB_WALLET_DIR = "/home/ubuntu/oracle_task/wallet_dbname"
-DB_WALLET_PASS = "Flavor121212"
+DB_WALLET_PASS = os.environ.get("DB_WALLET_PASS", "")
+LM_API_KEY = os.environ.get("LM_API_KEY", "")
 URL = "https://openapivts.koreainvestment.com:443"
 
 # -------------------------
