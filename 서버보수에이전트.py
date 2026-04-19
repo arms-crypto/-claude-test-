@@ -28,6 +28,7 @@ logger = logging.getLogger(__name__)
 WORKER_TOKEN  = os.environ.get("WORKER_BOT_TOKEN", "8634656301:AAGt2g90XCsYoOWedumeBNLHaFpESapq33w")
 CHAT_ID       = os.environ.get("WORKER_CHAT_ID", "8448138406")
 LM_STUDIO_URL = "http://221.144.111.116:8000/v1/chat/completions"
+LM_STUDIO_HEADERS = {"Authorization": "Bearer sk-lm-65FGVrPT:vqn138RmtIy3Br0867pZ"}
 QWEN_MODEL    = "qwen3.5-27b-claude-4.6-opus-reasoning-distilled-heretic-v2-i1"
 WORKSPACE     = "/home/ubuntu/-claude-test-"
 TASK_PORT     = 8001
@@ -425,6 +426,7 @@ def call_qwen(user_msg: str, session_id: str = "default") -> str:
         try:
             r = requests.post(
                 LM_STUDIO_URL,
+                headers=LM_STUDIO_HEADERS,
                 json={"model": QWEN_MODEL, "messages": messages,
                       "temperature": 0.2, "max_tokens": 4096},
                 timeout=(5, 600),
@@ -634,6 +636,7 @@ def _call_qwen_direct(user_msg: str, session_id: str) -> str:
     try:
         r = requests.post(
             LM_STUDIO_URL,
+            headers=LM_STUDIO_HEADERS,
             json={"model": QWEN_MODEL, "messages": messages,
                   "temperature": 0.2, "max_tokens": 4096, "reasoning_effort": "low", "max_reasoning_tokens": 2000},
             timeout=(5, 600),  # 최대 10분 허용
@@ -654,6 +657,7 @@ def _call_qwen_direct(user_msg: str, session_id: str) -> str:
                 try:
                     r2 = requests.post(
                         LM_STUDIO_URL,
+                        headers=LM_STUDIO_HEADERS,
                         json={"model": QWEN_MODEL, "messages": messages,
                               "temperature": 0.2, "max_tokens": 4096, "reasoning_effort": "low", "max_reasoning_tokens": 2000},
                         timeout=(5, 600),

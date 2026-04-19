@@ -65,6 +65,8 @@ def send_wol():
         return False
 
 
+_LM_HEADERS = {"Authorization": "Bearer sk-lm-65FGVrPT:vqn138RmtIy3Br0867pZ"}
+
 import time as _time_mod
 _last_ollama_request = [_time_mod.time()]  # 마지막 Ollama 요청 시각 (시작 시각으로 초기화)
 
@@ -1044,6 +1046,7 @@ def call_mistral_vision(prompt: str, image_path: str, system: str = "한국 주�
     try:
         r = requests.post(
             "http://221.144.111.116:8000/v1/chat/completions",
+            headers=_LM_HEADERS,
             json=payload,
             timeout=120,
             proxies={"http": None, "https": None},
@@ -1194,7 +1197,7 @@ def call_mistral_only(prompt: str, system: str = _TOOL_SYSTEM, use_tools: bool =
     last_exc = None
     for attempt in range(1, config.LLM_MAX_RETRY + 1):
         try:
-            r = requests.post("http://221.144.111.116:8000/v1/chat/completions", json=payload, timeout=(5, 300))
+            r = requests.post("http://221.144.111.116:8000/v1/chat/completions", headers=_LM_HEADERS, json=payload, timeout=(5, 300))
             r.raise_for_status()
             data = r.json()
             # OpenAI 호환 응답 형식: {"choices": [{"message": {"content": "..."}}]}
@@ -1229,7 +1232,7 @@ def call_mistral_only(prompt: str, system: str = _TOOL_SYSTEM, use_tools: bool =
                     "temperature": 0.7,
                     "max_tokens": 3000,
                 }
-                r2 = requests.post("http://221.144.111.116:8000/v1/chat/completions", json=payload2, timeout=(5, 300))
+                r2 = requests.post("http://221.144.111.116:8000/v1/chat/completions", headers=_LM_HEADERS, json=payload2, timeout=(5, 300))
                 r2.raise_for_status()
                 msg = (r2.json().get("choices") or [{}])[0].get("message", {})
                 continue
