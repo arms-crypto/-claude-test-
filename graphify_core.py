@@ -219,6 +219,32 @@ def parse_file(path: pathlib.Path, root: pathlib.Path) -> dict[str, Any]:
     return {"symbols": symbols, "file_imports": list(dict.fromkeys(file_imports)), "source_lines": source_lines}
 
 
+_MANUAL_ALIASES: dict[str, list[str]] = {
+    "자동매매":   ["auto_trade_cycle", "auto_trade_loop"],
+    "매수":       ["buy_mock", "buy_ky", "_buy_for_account"],
+    "매도":       ["sell_mock", "sell_ky", "_sell_for_account"],
+    "종목선정":   ["select_volume_smart_chart"],
+    "신호스캔":   ["scan_buy_signals_for_chat", "calculate_chart_signals"],
+    "차트분석":   ["analyze_chart_for_chat", "generate_chart_png"],
+    "워치리스트": ["get_watchlist_from_db"],
+    "포폴":       ["query_portfolio"],
+    "잔고":       ["query_portfolio"],
+    "거래내역":   ["query_trade_history"],
+    "봇1":        ["handle_tg"],
+    "봇2":        ["handle_tg_srv"],
+    "태스크서버": ["_process_task", "call_qwen"],
+    "절전":       ["send_sleep"],
+    "WoL":        ["send_wol"],
+    "PC깨우기":   ["send_wol", "wait_for_ollama"],
+    "LLM호출":    ["call_mistral_only", "call_gemma3"],
+    "RAG":        ["search_local_knowledge", "add_to_rag"],
+    "검색":       ["web_search", "deep_search"],
+    "리스크게이트": ["_validate_trade_with_strategy"],
+    "전략":       ["_validate_trade_with_strategy", "auto_trade_cycle"],
+    "KIS":        ["buy_mock", "sell_mock", "get_price"],
+    "토큰":       ["_get_token", "_refresh_token"],
+}
+
 _COMMON_KOREAN = {
     "도구", "실행", "금지", "패스", "명시", "설정", "작업", "적용", "방법",
     "파일", "수정", "확인", "사용", "제거", "추가", "처리", "반환", "호출",
@@ -289,6 +315,15 @@ def build_graph(root: pathlib.Path = ROOT) -> dict:
                 all_symbols[callee]["called_by"].append(sym_name)
 
     aliases = _extract_aliases_from_claude_md(root, set(all_symbols.keys()))
+    # 수동 aliases 병합 (알려진 심볼만)
+    known = set(all_symbols.keys())
+    for korean, funcs in _MANUAL_ALIASES.items():
+        valid = [f for f in funcs if f in known]
+        if valid:
+            existing = aliases.setdefault(korean, [])
+            for f in valid:
+                if f not in existing:
+                    existing.append(f)
     entrypoints = _detect_entrypoints(all_symbols, files_meta)
 
     graph = {

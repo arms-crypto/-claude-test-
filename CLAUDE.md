@@ -763,7 +763,11 @@ python3 graphify.py .                   # 코드 그래프 재빌드
 ### Claude 사용 규칙
 1. **먼저 `graphify-out/GRAPH_REPORT.md` 읽기** — 전체 구조 파악 (진입점·위험태그·콜허브)
 2. **필요한 파일만 Read** — 그래프에서 찾은 file:line 으로 바로 이동, 전체 스캔 금지
-3. **Qwen 지시 시** — graph.json의 symbol 노드(file/line/calls)를 지시문에 포함해서 grep 생략
+3. **Qwen 태스크 작성 시 file:line 명시 필수**
+   - ❌ `"auto_trade_cycle 매도 조건 수정해줘"`
+   - ✅ `"auto_trader.py:642 _sell_for_account 함수에서 매도 조건 수정해줘"`
+   - graph.json에서 symbol 조회 → file/line/calls 확인 → 태스크에 포함 → Qwen이 read_file 없이 바로 offset으로 이동
+4. **한국어 태스크도 aliases로 자동 매핑됨** — 자동매매/봇1/태스크서버/절전 등 aliases 25개 등록
 
 ### Stale 방지
 - `git commit` 후 자동 재빌드 (`post-commit` hook 설치 완료)
