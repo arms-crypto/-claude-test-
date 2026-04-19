@@ -122,6 +122,40 @@ def wait_for_pc(timeout_sec: int = 120) -> bool:
     logger.warning("PC LM Studio 응답 없음 (%d초 대기)", timeout_sec)
     return False
 
+
+def _is_model_loaded() -> bool:
+    """LM Studio에 모델이 실제로 로드되어 있는지 확인."""
+    try:
+        r = requests.get(
+            f"http://{PC_HOST}:{PC_PORT}/v1/models",
+            headers=LM_STUDIO_HEADERS, timeout=5,
+        )
+        return bool(r.json().get("data"))
+    except Exception:
+        return False
+
+
+def _wait_for_model(timeout_sec: int = 180) -> bool:
+    """모델 로드될 때까지 대기 (TCP 연결이 아닌 실제 모델 확인)."""
+    deadline = time.time() + timeout_sec
+    while time.time() < deadline:
+        if _is_model_loaded():
+            logger.info("LM Studio 모델 로드 확인")
+            return True
+        time.sleep(10)
+    logger.warning("모델 로드 대기 시간 초과 (%d초)", timeout_sec)
+    return False
+
+
+def _is_model_unloaded_resp(data: dict) -> bool:
+    """응답 JSON이 모델 미로드 상태인지 판단."""
+    error = data.get("error", {})
+    if error:
+        msg = (error.get("message", "") if isinstance(error, dict) else str(error)).lower()
+        if any(k in msg for k in ["no model", "not loaded", "unloaded", "model not", "no models"]):
+            return True
+    return not data.get("choices")
+
 def _load_system_prompt() -> str:
     claude_md_path = os.path.join(WORKSPACE, "CLAUDE.md")
     try:
@@ -470,6 +504,17 @@ def call_qwen(user_msg: str, session_id: str = "default") -> str:
             )
             r.raise_for_status()
             data    = r.json()
+
+            # 모델 언로드 감지 — 서버는 살아있지만 모델이 내려간 경우
+            if _is_model_unloaded_resp(data) and _round == 0:
+                logger.warning("모델 언로드 응답 감지 → WoL 후 모델 로드 대기")
+                tg_send("⚠️ LM Studio 모델 언로드 감지 → WoL 전송 중...")
+                send_wol()
+                if _wait_for_model(180):
+                    tg_send("✅ 모델 로드 확인 — 재호출")
+                    continue
+                return "⚠️ 모델 로드 실패 (180초 대기)"
+
             message = (data.get("choices") or [{}])[0].get("message", {})
             native_tcs = message.get("tool_calls") or []
             content    = (message.get("content") or "").strip()
@@ -544,11 +589,11 @@ def call_qwen(user_msg: str, session_id: str = "default") -> str:
                 logger.warning("PC 연결 실패 → WoL 전송 후 재시도")
                 tg_send("⚠️ PC 연결 실패 → WoL 전송 중...")
                 send_wol()
-                if wait_for_pc(120):
-                    tg_send("✅ PC 응답 확인 — Qwen 재호출")
+                if _wait_for_model(180):
+                    tg_send("✅ 모델 로드 확인 — Qwen 재호출")
                     continue
                 else:
-                    tg_send("❌ PC 120초 내 응답 없음")
+                    tg_send("❌ 모델 로드 실패 (180초 대기)")
             logger.error("Qwen 호출 실패: %s", e)
             return f"⚠️ Qwen 연결 실패: {e}"
     else:
@@ -843,7 +888,25 @@ def _call_qwen_direct(user_msg: str, session_id: str) -> str:
             timeout=(5, 600),  # 최대 10분 허용
         )
         r.raise_for_status()
-        content = (r.json().get("choices") or [{}])[0].get("message", {}).get("content", "").strip()
+        data2 = r.json()
+        # 모델 언로드 감지
+        if _is_model_unloaded_resp(data2):
+            logger.warning("직접 호출 — 모델 언로드 응답 → WoL 후 모델 로드 대기")
+            tg_send("⚠️ LM Studio 모델 언로드 감지 → WoL 전송 중...")
+            send_wol()
+            if _wait_for_model(180):
+                tg_send("✅ 모델 로드 확인 — 재호출")
+                r3 = requests.post(
+                    LM_STUDIO_URL, headers=LM_STUDIO_HEADERS,
+                    json={"model": QWEN_MODEL, "messages": messages,
+                          "temperature": 0.2, "max_tokens": 4096},
+                    timeout=(5, 600),
+                )
+                r3.raise_for_status()
+                data2 = r3.json()
+            else:
+                return "⚠️ 모델 로드 실패 (180초 대기)"
+        content = (data2.get("choices") or [{}])[0].get("message", {}).get("content", "").strip()
         # 혹시 tool 태그가 섞여 있으면 제거
         content = re.sub(r'<(read_file|write_file|replace_text|bash)[^>]*/?>.*?(?:</\1>|(?=\n\n))', '', content, flags=re.DOTALL).strip()
         return content or "⚠️ 응답 없음"
@@ -853,7 +916,7 @@ def _call_qwen_direct(user_msg: str, session_id: str) -> str:
             logger.warning("직접 호출 PC 연결 실패 → WoL 전송 후 1회 재시도")
             tg_send("⚠️ PC 연결 실패 → WoL 전송 중...")
             send_wol()
-            if wait_for_pc(120):
+            if _wait_for_model(180):
                 tg_send("✅ PC 응답 확인 — 재호출")
                 try:
                     r2 = requests.post(
