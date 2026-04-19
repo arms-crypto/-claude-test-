@@ -26,7 +26,7 @@ def send_wol():
     mac = config.WOL_MAC  # 예: 3C:7C:3F:F2:B0:41
     # PC가 이미 응답 중이면 WoL 스킵
     try:
-        requests.get("http://221.144.111.116:8000/v1/models", timeout=2, proxies={"http": None, "https": None})
+        requests.get("http://221.144.111.116:8000/v1/models", headers=_LM_HEADERS, timeout=2, proxies={"http": None, "https": None})
         return False
     except Exception:
         pass
@@ -174,7 +174,7 @@ def wait_for_ollama(timeout: int = 120, interval: int = 10) -> bool:
     deadline = time.time() + timeout
     while time.time() < deadline:
         try:
-            r = requests.get("http://221.144.111.116:8000/v1/models", timeout=5)
+            r = requests.get("http://221.144.111.116:8000/v1/models", headers=_LM_HEADERS, timeout=5)
             if r.status_code == 200:
                 logger.info("LM Studio 응답 확인 — 서버 정상")
                 return True
@@ -1273,9 +1273,9 @@ call_qwen = call_mistral_only
 
 
 def _ollama_alive() -> bool:
-    """LM Studio (localhost:8000) 응답 가능 여부를 1초 안에 확인."""
+    """LM Studio (localhost:8000) 응답 가능 여부를 확인."""
     try:
-        r = requests.get("http://221.144.111.116:8000/v1/models", timeout=1)
+        r = requests.get("http://221.144.111.116:8000/v1/models", headers=_LM_HEADERS, timeout=3)
         return r.status_code == 200
     except Exception:
         return False
