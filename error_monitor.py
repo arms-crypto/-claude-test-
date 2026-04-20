@@ -314,9 +314,18 @@ def main_loop():
     send_telegram("🚀 에러 감시 시스템 시작")
 
     check_count = 0
+    last_reset_date = None
     while True:
         try:
             check_count += 1
+
+            # 자정 일일 초기화
+            _today = datetime.now().date()
+            if _today != last_reset_date:
+                error_tracker.errors.clear()
+                error_tracker.last_alert.clear()
+                last_reset_date = _today
+                logger.info("🔄 에러 트래커 일일 초기화 완료 (%s)", _today)
 
             # 1차 체크: 빠른 것들 (매번)
             check_proxy_health()
