@@ -24,6 +24,7 @@ pykrx_logger = logging.getLogger('pykrx')
 pykrx_logger.setLevel(logging.CRITICAL)
 
 # 모듈 임포트
+import config
 from config import logger
 from db_utils import get_db_pool, ensure_db_initialized
 from ai_chat import ask_ai
@@ -433,6 +434,20 @@ def collect_smart():
     date_str = request.args.get("date") or None
     ok, msg = collect_smart_flows(date_str)
     return jsonify({"ok": ok, "message": msg}), (200 if ok else 500)
+
+
+@app.route('/auto_trade', methods=['POST'])
+def auto_trade_toggle():
+    """자동매매 시작/정지 API. {"action": "start"|"stop"}"""
+    data = request.get_json(silent=True) or {}
+    action = data.get("action", "")
+    if action == "start":
+        config._auto_enabled = True
+    elif action == "stop":
+        config._auto_enabled = False
+    else:
+        return jsonify({"error": "action must be start or stop"}), 400
+    return jsonify({"status": "ok", "auto_enabled": config._auto_enabled})
 
 
 @app.route('/smart', methods=['GET'])
