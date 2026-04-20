@@ -496,15 +496,6 @@ def auto_report_scheduler():
                     stat_mock, cash_mock, hold_mock = _get_stat(PORTFOLIO_DB_PATH, today_str)
                     stat_ky,   cash_ky,   hold_ky   = _get_stat(PORTFOLIO_KY_DB_PATH, today_str)
 
-                    # 트레이너 KIS API 실제 잔고로 덮어쓰기
-                    try:
-                        from mock_trading.kis_client import get_balance as _tr_get_balance
-                        _tr_bal = _tr_get_balance()
-                        cash_mock = _tr_bal.get("cash", cash_mock)
-                        hold_mock = len(_tr_bal.get("holdings", [])) or hold_mock
-                    except Exception:
-                        pass
-
                     # ── 가상계좌 파트 ────────────────────────────────────────
                     mock_lines = config._daily_trade_log[:]
                     config._daily_trade_log.clear()
