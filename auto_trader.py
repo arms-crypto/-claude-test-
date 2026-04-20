@@ -672,10 +672,27 @@ def _buy_for_account(acc: dict, code: str, amount: int, sig: dict = None) -> str
         kwargs["rsi"]         = sig.get("rsi")
         kwargs["macd_hist"]   = sig.get("macd_hist")
 
+    # 호가창 조회 → 스마트 주문 (지정가 vs 시장가)
+    limit_price = 0
+    try:
+        from mock_trading.kis_client import get_orderbook
+        ob = get_orderbook(code)
+        if ob:
+            ask1  = ob["ask_price"][0]  # 1호가 매도가
+            spread_pct = (ask1 - ob["bid_price"][0]) / ask1 * 100 if ask1 else 0
+            bid_total  = ob["bid_total"]
+            ask_total  = ob["ask_total"]
+            if ask_total > 0 and (bid_total > ask_total * 1.5 or spread_pct > 0.5):
+                limit_price = ask1
+                logger.info("호가 지정가 매수 %s: 1호가=%d 스프레드=%.2f%% 매수잔량비=%.1f",
+                            code, ask1, spread_pct, bid_total / max(ask_total, 1))
+    except Exception:
+        pass
+
     if acc["id"] == "trainer":
-        result = mt.buy(code, amount, oracle_pool=get_db_pool(), **kwargs)
+        result = mt.buy(code, amount, oracle_pool=get_db_pool(), limit_price=limit_price, **kwargs)
     else:
-        result = mt.buy(code, amount, **kwargs)
+        result = mt.buy(code, amount, limit_price=limit_price, **kwargs)
         if "✅" in result:
             acc["notify"](f"📈 [{acc['label']} 자동매수]\n{result}")
 

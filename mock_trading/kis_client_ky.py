@@ -273,6 +273,48 @@ def is_nxt_supported(code: str) -> bool:
     return result
 
 
+def get_orderbook(code: str) -> dict:
+    """호가창 조회 — 매수/매도 1~5호가 잔량 반환 (FHKST01010200).
+    반환: {ask_price, ask_qty, bid_price, bid_qty, ask_total, bid_total}
+    실패 시 {}
+    """
+    token = get_token()
+    if not token:
+        return {}
+    headers = {
+        "authorization": f"Bearer {token}",
+        "appkey": APP_KEY,
+        "appsecret": APP_SECRET,
+        "tr_id": "FHKST01010200",
+    }
+    try:
+        r = requests.get(
+            f"{KIS_URL}/uapi/domestic-stock/v1/quotations/inquire-asking-price-exp-ccn",
+            params={"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": code},
+            headers=headers,
+            timeout=5,
+            proxies={"http": None, "https": None},
+        )
+        r.raise_for_status()
+        data = r.json()
+        out = data.get("output1", {})
+        if not out:
+            return {}
+        ask_price = [int(out.get(f"askp{i}", 0)) for i in range(1, 6)]
+        ask_qty   = [int(out.get(f"askp_rsqn{i}", 0)) for i in range(1, 6)]
+        bid_price = [int(out.get(f"bidp{i}", 0)) for i in range(1, 6)]
+        bid_qty   = [int(out.get(f"bidp_rsqn{i}", 0)) for i in range(1, 6)]
+        ask_total = int(out.get("total_askp_rsqn", 0))
+        bid_total = int(out.get("total_bidp_rsqn", 0))
+        logger.info("호가 %s 매도총잔량:%d 매수총잔량:%d 1호가매도:%d", code, ask_total, bid_total, ask_price[0])
+        return {"ask_price": ask_price, "ask_qty": ask_qty,
+                "bid_price": bid_price, "bid_qty": bid_qty,
+                "ask_total": ask_total, "bid_total": bid_total}
+    except Exception as e:
+        logger.warning("호가 조회 실패 %s: %s", code, e)
+        return {}
+
+
 def _order_headers(tr_id: str) -> dict:
     """KIS 주문 API 헤더 생성 (인증 + 거래ID).
 

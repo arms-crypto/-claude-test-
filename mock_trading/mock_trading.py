@@ -144,21 +144,21 @@ class MockTrading:
     # ── 매수 ─────────────────────────────────────────────────────────────────
 
     def buy(self, name_or_code: str, amount_krw: int, oracle_pool=None,
-            buy_signals=None, rsi=None, macd_hist=None) -> str:
+            buy_signals=None, rsi=None, macd_hist=None, limit_price: int = 0) -> str:
         code, name = self._kis.resolve_code(name_or_code)
         if not code:
             return f"❌ '{name_or_code}' 종목을 찾을 수 없습니다."
 
-        price = self._kis.get_price(code)
+        price = limit_price if limit_price > 0 else self._kis.get_price(code)
         if not price:
             return f"❌ {name}({code}) 가격 조회 실패"
 
         qty = int(amount_krw / price)
         if qty < 1:
-            return f"❌ 수량 부족 (1주 {price:,}원, 요청 {amount_krw:,}원)"
+            return f"❌ 수량 부족 (1주 {price:,}원, 요청 {amount颗:,}원)"
 
-        # KIS 매수 주문
-        result = self._kis.buy_stock(code, qty)
+        # KIS 매수 주문 (limit_price>0 이면 지정가)
+        result = self._kis.buy_stock(code, qty, price=limit_price)
         if not result["success"]:
             return f"❌ KIS 매수 실패: {result['msg']}"
 
