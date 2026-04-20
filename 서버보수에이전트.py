@@ -54,10 +54,20 @@ _TOOLS_SCHEMA = [
     }},
     {"type": "function", "function": {
         "name": "write_file",
-        "description": "파일 전체 내용을 씀 (덮어쓰기)",
+        "description": "파일 전체 내용을 씀 (덮어쓰기). 전체 재작성 또는 신규 파일 생성 시 사용.",
         "parameters": {"type": "object", "required": ["path", "content"], "properties": {
             "path":    {"type": "string"},
             "content": {"type": "string", "description": "파일에 쓸 전체 내용"},
+        }},
+    }},
+    {"type": "function", "function": {
+        "name": "write_lines",
+        "description": "파일의 특정 라인 범위(start_line~end_line)를 새 내용으로 교체. 함수/블록 단위 수정 시 최우선 사용. replace_text보다 안전하고 정확함.",
+        "parameters": {"type": "object", "required": ["path", "start_line", "end_line", "new_content"], "properties": {
+            "path":        {"type": "string", "description": "파일 절대 경로"},
+            "start_line":  {"type": "integer", "description": "교체 시작 줄 번호 (1-based, 포함)"},
+            "end_line":    {"type": "integer", "description": "교체 끝 줄 번호 (1-based, 포함)"},
+            "new_content": {"type": "string", "description": "해당 범위를 대체할 새 내용 (줄바꿈 포함)"},
         }},
     }},
     {"type": "function", "function": {
@@ -182,55 +192,57 @@ def _load_system_prompt() -> str:
 <read_file path="/home/ubuntu/-claude-test-/파일경로" limit_lines="50"/>              ← 앞 50줄
 <read_file path="/home/ubuntu/-claude-test-/파일경로" limit_lines="30" offset="20"/>  ← 21~50줄
 
-## 2. 특정 텍스트 교체 [★ 최우선 — 파일 일부만 바꿀 때 반드시 사용]
+## 2. 라인 범위 교체 [★ 최우선 — 함수/블록 단위 수정 시 반드시 사용]
+Claude가 read_file로 라인 번호를 확인한 뒤 지시함. 텍스트 매칭 없이 정확한 범위 교체.
 
-⚠️ 반드시 아래 태그 형식만 사용 (속성 방식 old="..." 절대 금지 — 파싱 오류 발생)
+<write_lines path="/home/ubuntu/-claude-test-/파일경로" start_line="10" end_line="25">
+새 내용 (10~25줄 전체 대체)
+</write_lines>
 
-<replace_text path="/home/ubuntu/-claude-test-/파일경로"><old>
-바꿀 원본 텍스트
-(따옴표 "포함" 자유롭게 사용 가능)
-</old><new>
-새 텍스트
-("따옴표" 자유롭게 사용)
-</new></replace_text>
-
-## 3. bash (조회 전용 — 파일 수정 금지)
-<bash>grep -n "변수명" /home/ubuntu/-claude-test-/파일경로</bash>
-
-## 4. 전체 파일 쓰기 [전체 내용을 알 때만]
+## 3. 전체 파일 쓰기 [전체 재작성 또는 신규 파일]
 <write_file path="/home/ubuntu/-claude-test-/파일경로">
 파일 전체 내용
 </write_file>
 
+## 4. bash (조회 전용 — 파일 수정 금지)
+<bash>grep -n "변수명" /home/ubuntu/-claude-test-/파일경로</bash>
+
+## 5. 텍스트 교체 [★ 최후수단 — 짧은 1줄 수정만, 긴 블록 절대 금지]
+<replace_text path="/home/ubuntu/-claude-test-/파일경로"><old>
+바꿀 원본 텍스트 (짧을수록 안전)
+</old><new>
+새 텍스트
+</new></replace_text>
+
 # 파일 수정 최적 워크플로우
 ## 파일 일부 수정 (권장 순서):
-1. grep으로 해당 줄 정확한 텍스트 확인: <bash>grep -n "키워드" /경로</bash>
-2. replace_text 태그 형식으로 교체 (반드시 <old>...</old><new>...</new> 사용)
-3. 완료 보고
+1. bash grep으로 라인 번호 확인: <bash>grep -n "키워드" /경로</bash>
+2. read_file로 해당 범위 확인 (offset/limit_lines 활용)
+3. **write_lines로 라인 범위 교체** (함수/블록 단위)
+4. 완료 보고
 
 ## 긴 파일 읽기 (200줄 초과 시):
 - 전체 재읽기 금지 — limit_lines로 필요한 부분만 읽기
 - 수정 타겟이 앞부분이면: <read_file path="..." limit_lines="50"/>
 
 # 파일 수정 예시
-사용자: config.py에서 DEBUG = False → True 로 변경해줘
+사용자: auto_trader.py 470~485줄 함수를 수정해줘
 
-[grep으로 정확한 텍스트 확인]
-<bash>grep -n "DEBUG" /home/ubuntu/-claude-test-/config.py</bash>
+[라인 범위 확인]
+<read_file path="/home/ubuntu/-claude-test-/auto_trader.py" offset="469" limit_lines="16"/>
 
-[결과 확인 후 replace_text 실행]
-<replace_text path="/home/ubuntu/-claude-test-/config.py"><old>
-DEBUG = False
-</old><new>
-DEBUG = True
-</new></replace_text>
+[write_lines로 교체]
+<write_lines path="/home/ubuntu/-claude-test-/auto_trader.py" start_line="470" end_line="485">
+def new_function():
+    pass
+</write_lines>
 
 ✅ 수정 완료
 
 # 에러 발생 시 규칙
 - 경로 에러: bash로 1회 확인 후 즉시 수정 진행
 - 같은 파일이라도 offset을 다르게 해서 이어 읽기 허용 — 예: 첫 read_file 앞 500줄, 두번째 offset=500으로 다음 500줄
-- replace_text 실패 시: grep으로 정확한 텍스트 재확인 후 재시도, 그래도 실패 시 sed -i 사용
+- write_lines 실패(범위 오류): grep으로 라인 번호 재확인 후 재시도
 
 # 금지
 - git commit (Claude가 검토 후 직접 커밋)
@@ -290,6 +302,13 @@ def _parse_tool_call(content: str) -> dict | None:
     if m:
         return {"tool": "replace_text", "path": m.group(1),
                 "old": m.group(2).strip('\n'), "new": m.group(3).strip('\n')}
+
+    # write_lines: <write_lines path="..." start_line="N" end_line="M">content</write_lines>
+    m = re.search(r'<write_lines\s+path=["\']([^"\']+)["\'](?:\s+start_line=["\']?(\d+)["\']?)?(?:\s+end_line=["\']?(\d+)["\']?)?>(.*?)</write_lines>', content, re.DOTALL)
+    if m:
+        return {"tool": "write_lines", "path": m.group(1),
+                "start_line": int(m.group(2) or 0), "end_line": int(m.group(3) or 0),
+                "new_content": m.group(4).strip('\n')}
 
     # write_file: <write_file path="...">content</write_file>
     m = re.search(r'<write_file\s+path=["\']([^"\']+)["\']>(.*?)</write_file>', content, re.DOTALL)
@@ -410,6 +429,40 @@ def _run_tool(tool_call: dict) -> str:
             with open(path, "w", encoding="utf-8") as f:
                 f.write(new_content)
         return f"✅ 교체 완료: {path}\n'{old_str[:60]}' → '{new_str[:60]}'\n백업: {backup_path}"
+
+    elif tool == "write_lines":
+        path        = tool_call.get("path", "")
+        start_line  = tool_call.get("start_line", 0)
+        end_line    = tool_call.get("end_line", 0)
+        new_content = tool_call.get("new_content", "")
+        if not path or not start_line or not end_line:
+            return "write_lines: path/start_line/end_line 누락"
+        if not path.startswith("/"):
+            return f"절대경로 필요: {path}"
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                lines = f.readlines()
+        except FileNotFoundError:
+            return f"❌ 파일 없음: {path}"
+        except Exception as e:
+            return f"❌ 파일 읽기 실패: {e}"
+        total = len(lines)
+        if start_line < 1 or end_line > total or start_line > end_line:
+            return f"❌ 라인 범위 오류: {start_line}~{end_line} (전체 {total}줄)"
+        backup_path = path + ".bak"
+        lock = get_file_lock(path)
+        with lock:
+            with open(backup_path, "w", encoding="utf-8") as f:
+                f.writelines(lines)
+            new_lines = new_content.splitlines(keepends=True)
+            if new_lines and not new_lines[-1].endswith("\n"):
+                new_lines[-1] += "\n"
+            lines[start_line - 1:end_line] = new_lines
+            with open(path, "w", encoding="utf-8") as f:
+                f.writelines(lines)
+        return (f"✅ write_lines 완료: {path}\n"
+                f"교체 범위: {start_line}~{end_line}줄 → {len(new_lines)}줄\n"
+                f"백업: {backup_path}")
 
     elif tool == "write_file":
         path = tool_call.get("path", "")
@@ -559,11 +612,13 @@ def call_qwen(user_msg: str, session_id: str = "default") -> str:
             logger.info("도구 실행: %s → %d chars", tool_name, len(tool_result))
 
             import re as _re2
-            is_modify_task = bool(_re2.search(r'(수정|변경)(해|줘|해줘|하세요)|바꿔|고쳐|replace|write_file', user_msg))
+            is_modify_task = bool(_re2.search(r'(수정|변경)(해|줘|해줘|하세요)|바꿔|고쳐|replace|write_file|write_lines', user_msg))
             if tool_name == "read_file":
-                next_step = ("파일 내용 확인 완료. 이제 replace_text 또는 write_file 도구로 수정을 진행하세요. 더 이상 read_file을 반복하지 마세요."
+                next_step = ("파일 내용 확인 완료. 이제 write_lines(라인 범위 교체) 또는 write_file(전체 교체) 도구로 수정을 진행하세요. read_file 반복 금지."
                              if is_modify_task else
                              "파일 내용 확인 완료. 요청한 분석을 한국어 텍스트로만 보고하세요.")
+            elif tool_name == "write_lines":
+                next_step = "라인 교체 완료. 다음 수정이 있으면 진행하고, 없으면 완료 보고를 하세요."
             elif tool_name == "write_file":
                 next_step = "파일 저장 완료. 변경 내용을 한국어로 보고하세요."
             elif tool_name == "replace_text":
