@@ -996,6 +996,16 @@ def _process_task(task_text: str, task_id: str = ""):
         requests.post("http://127.0.0.1:11435/touch_timer", timeout=2)
     except Exception:
         logger.debug("touch_timer 스킵 (proxy 미실행 — 무시)")
+    _trading_paused = False
+    try:
+        from auto_trader import is_trading_hours as _ith
+        if _ith():
+            requests.post("http://127.0.0.1:11435/auto_trade",
+                          json={"action": "stop"}, timeout=2)
+            _trading_paused = True
+            logger.info("[태스크] 장중 자동매매 일시정지")
+    except Exception:
+        pass
     _stop_keepalive = threading.Event()
     _start_task_keepalive(_stop_keepalive)
     try:
@@ -1007,6 +1017,13 @@ def _process_task(task_text: str, task_id: str = ""):
         reply = _route_qwen(task_text, session_id)
     finally:
         _stop_keepalive.set()
+        if _trading_paused:
+            try:
+                requests.post("http://127.0.0.1:11435/auto_trade",
+                              json={"action": "start"}, timeout=2)
+                logger.info("[태스크] 자동매매 재개")
+            except Exception:
+                pass
     _store_result(task_id, task_text, reply)
     tg_send(f"✅ 작업 완료:\n{reply}")
     logger.info("[Claude→Qwen] 작업 완료 [%s]: %d chars", task_id, len(reply))

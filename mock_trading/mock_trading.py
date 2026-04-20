@@ -160,7 +160,7 @@ class MockTrading:
         # KIS 매수 주문
         result = self._kis.buy_stock(code, qty)
         if not result["success"]:
-            return f"❌ KIS 모의 매수 실패: {result['msg']}"
+            return f"❌ KIS 매수 실패: {result['msg']}"
 
         cost = qty * price
         # 로컬 DB에도 기록 (히스토리용)

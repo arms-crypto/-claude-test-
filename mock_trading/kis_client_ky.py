@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""KIS API 실전 클라이언트 — KY 계좌 (44384407-01)"""
+"""KIS API / Yahoo Finance / Naver 주가 조회 + 종목코드 검색"""
 
 from datetime import datetime
 import os
@@ -14,21 +14,23 @@ import yfinance as yf
 
 logger = logging.getLogger(__name__)
 
+# KIS 실전 설정 — KY 계좌 (44384407-01)
 APP_KEY    = "PSCO2zW98wAJMzyD4Xpingz0QPPujGQTUyP2"
 APP_SECRET = ("HyWiB08P9zRYgeU6WsT43S3rVQhvVXjk6LiL0U3L/LHinBlAbaAzELUqzd9lhGT6DG1VEg8ariiVaOZ"
               "CORxR1SOFBoMjuFYN2vb9J6yYfH5HL1Nqt3xgfJAXGFQAMSJQ6HpkRuxRVrXAJtSETLP5AgmrO2uYp"
               "BFo0LJHb0lGBGsPxcId3RU=")
 KIS_URL    = "https://openapi.koreainvestment.com:9443"
-ACCOUNT_NO = "44384407"
+ACCOUNT_NO = "44384407"   # KY 실전 계좌번호
 ACCOUNT_CD = "01"
-REAL_TRADE = True  # 실전 주문 활성화
+REAL_TRADE = True         # 실전 매매 활성화
 
 _token_cache = {"token": None, "expires_at": 0, "issued_date": ""}
-_token_lock  = threading.Lock()
+_token_lock  = threading.Lock()   # 동시 토큰 발급 방지
 _TOKEN_FILE  = os.path.join(os.path.dirname(__file__), ".kis_token_cache_ky.json")
 
 
 def _load_token_from_file():
+    """재시작 후 파일에서 토큰 복구 — KIS 하루 1회 발급 제한 대응"""
     try:
         with open(_TOKEN_FILE) as f:
             data = json.load(f)
@@ -41,6 +43,7 @@ def _load_token_from_file():
 
 
 def _save_token_to_file():
+    """KIS 토큰을 파일에 캐시 저장. 서버 재시작 후 재발급 없이 재사용."""
     try:
         with open(_TOKEN_FILE, "w") as f:
             json.dump({"token": _token_cache["token"], "expires_at": _token_cache["expires_at"], "issued_date": _token_cache["issued_date"]}, f)
@@ -48,15 +51,22 @@ def _save_token_to_file():
         pass
 
 
-_load_token_from_file()
+_load_token_from_file()  # 모듈 로드 시 파일에서 복구
 
 
 def get_token() -> str:
+    """KIS OAuth2 토큰 발급/캐시 조회. 캐시 유효하면 즉시 반환, 만료 시 재발급.
+
+    Returns:
+        str: KIS OAuth2 토큰, 발급 실패 시 None
+    """
     now = time.time()
     today = datetime.now().strftime("%Y-%m-%d")
+    # 락 없이 먼저 캐시 확인 (빠른 경로)
     if _token_cache["token"] and _token_cache.get("issued_date") == today:
         return _token_cache["token"]
     with _token_lock:
+        # 락 획득 후 다시 확인 (다른 스레드가 이미 발급했을 수 있음)
         now = time.time()
         today = datetime.now().strftime("%Y-%m-%d")
         if _token_cache["token"] and _token_cache.get("issued_date") == today:
@@ -78,11 +88,19 @@ def get_token() -> str:
                 _save_token_to_file()
                 return token
         except Exception:
-            logger.exception("KIS(KY) 토큰 발급 실패")
+            logger.exception("KIS 토큰 발급 실패")
     return None
 
 
 def _price_kis(code: str) -> int:
+    """KIS API로 현재 주가 조회 (KRX 종목).
+
+    Args:
+        code (str): 종목코드 (6자리)
+
+    Returns:
+        int: 현재가, 조회 실패 시 None
+    """
     token = get_token()
     if not token:
         return None
@@ -101,20 +119,30 @@ def _price_kis(code: str) -> int:
             proxies={"http": None, "https": None},
         )
         r.raise_for_status()
-        out = r.json().get("output", {})
+        data = r.json()
+        out = data.get("output", {})
         if out and out.get("stck_prpr"):
             return int(out["stck_prpr"])
     except Exception:
-        logger.exception("KIS(KY) 가격 조회 실패: %s", code)
+        logger.exception("KIS 가격 조회 실패: %s", code)
     return None
 
 
 def _price_yahoo(code: str) -> int:
+    """yfinance로 한국 주식 현재가 조회 (Yahoo Finance).
+
+    Args:
+        code (str): 종목코드 (6자리)
+
+    Returns:
+        int: 현재가, 조회 실패 시 None
+    """
     try:
         stock = yf.Ticker(f"{code}.KS")
         hist = stock.history(period="1d")
         if not hist.empty:
             val = hist["Close"].iloc[-1]
+            # yfinance 버전에 따라 Series 반환 가능
             if hasattr(val, "iloc"):
                 val = val.iloc[0]
             return int(float(val))
@@ -127,6 +155,14 @@ def _price_yahoo(code: str) -> int:
 
 
 def _price_naver(code: str) -> int:
+    """네이버 금융에서 한국 주식 현재가 조회 (웹 크롤링).
+
+    Args:
+        code (str): 종목코드 (6자리)
+
+    Returns:
+        int: 현재가, 조회 실패 시 None
+    """
     try:
         r = requests.get(
             f"https://finance.naver.com/item/main.naver?code={code}",
@@ -144,7 +180,9 @@ def _price_naver(code: str) -> int:
 
 
 def _price_unified(code: str) -> int:
-    """KIS 통합시세 조회 (FID_COND_MRKT_DIV_CODE='UN' — KRX+NXT 통합)."""
+    """KIS 통합시세 조회 (FID_COND_MRKT_DIV_CODE='UN' — KRX+NXT 통합).
+    정규장/비정규장 구분 없이 현재 체결가 반환. 실패 시 None.
+    """
     token = get_token()
     if not token:
         return None
@@ -167,7 +205,7 @@ def _price_unified(code: str) -> int:
         if out and out.get("stck_prpr"):
             return int(out["stck_prpr"])
     except Exception:
-        logger.debug("KIS(KY) 통합시세 조회 실패: %s", code)
+        logger.debug("KIS 통합시세 조회 실패: %s", code)
     return None
 
 
@@ -177,7 +215,10 @@ def get_price(code: str) -> int:
 
 
 def get_nxt_price(code: str) -> int:
-    """NXT 야간 시세 조회. 실패 시 None 반환."""
+    """
+    넥스트트레이드(NXT) 야간 시세 조회.
+    장 마감 후(15:30~) NXT 거래 중일 때 사용. 실패 시 None 반환.
+    """
     token = get_token()
     if not token:
         return None
@@ -200,7 +241,7 @@ def get_nxt_price(code: str) -> int:
         if out and out.get("stck_prpr"):
             return int(out["stck_prpr"])
     except Exception:
-        logger.debug("KIS(KY) NXT 가격 조회 실패: %s", code)
+        logger.debug("NXT 가격 조회 실패: %s", code)
     return None
 
 
@@ -211,24 +252,36 @@ def get_best_price(code: str) -> int:
 
 def get_current_price(code: str) -> int:
     """통합시세 우선 현재가 조회.
-    1순위: KIS 통합시세 (UN — KRX+NXT 자동 선택)
-    2순위: KRX / 3순위: NXT / 4순위: Naver
+    1순위: KIS 통합시세 (UN — KRX+NXT 자동 선택, 장중/비정규장 무관)
+    2순위: KRX 시세
+    3순위: NXT 시세
+    4순위: Naver 금융
     """
     return _price_unified(code) or _price_kis(code) or get_nxt_price(code) or _price_naver(code)
 
 
+# NXT 지원 여부 캐시 (종목코드 → True/False)
 _nxt_support_cache: dict = {}
 
 def is_nxt_supported(code: str) -> bool:
-    """NXT 지원 여부 확인. 캐시 적용."""
+    """종목이 NXT(넥스트트레이드) 지원 여부 확인. 캐시 적용."""
     if code in _nxt_support_cache:
         return _nxt_support_cache[code]
     result = get_nxt_price(code) is not None
     _nxt_support_cache[code] = result
+    logger.debug("NXT 지원 %s: %s", code, result)
     return result
 
 
 def _order_headers(tr_id: str) -> dict:
+    """KIS 주문 API 헤더 생성 (인증 + 거래ID).
+
+    Args:
+        tr_id (str): KIS 거래ID (e.g., 'TTTC0802U' 매수, 'TTTC0801U' 매도)
+
+    Returns:
+        dict: Authorization/AppKey/AppSecret/tr_id 포함 헤더
+    """
     token = get_token()
     return {
         "authorization": f"Bearer {token}",
@@ -249,7 +302,7 @@ def get_available_amount(code: str, price: int = 0) -> int:
             "ACNT_PRDT_CD": ACCOUNT_CD,
             "PDNO":         code,
             "ORD_UNPR":     str(price) if price > 0 else "0",
-            "ORD_DVSN":     "01",   # 시장가
+            "ORD_DVSN":     "01",
             "CMA_EVLU_AMT_ICLD_YN": "N",
             "OVRS_ICLD_YN": "N",
         }
@@ -264,12 +317,12 @@ def get_available_amount(code: str, price: int = 0) -> int:
         data = r.json()
         if data.get("rt_cd") == "0":
             amt = int(data.get("output", {}).get("ord_psbl_cash", 0))
-            logger.info("KIS(KY) 주문가능금액 %s: %d원", code, amt)
+            logger.info("KIS 주문가능금액 %s: %d원", code, amt)
             return amt
-        logger.warning("KIS(KY) 주문가능금액 조회 실패 %s: %s", code, data.get("msg1", ""))
+        logger.warning("KIS 주문가능금액 조회 실패 %s: %s", code, data.get("msg1", ""))
         return 0
     except Exception:
-        logger.exception("KIS(KY) 주문가능금액 조회 예외: %s", code)
+        logger.exception("KIS 주문가능금액 조회 예외: %s", code)
         return 0
 
 
@@ -284,7 +337,7 @@ def buy_stock(code: str, qty: int, price: int = 0) -> dict:
     nxt_time = _is_nxt_hours()
 
     if nxt_time and not is_nxt_supported(code):
-        logger.warning("KIS(KY) NXT 시간 KRX전용 종목 매수 차단: %s", code)
+        logger.warning("NXT 시간 KRX전용 종목 매수 차단: %s", code)
         return {"success": False, "order_no": "", "msg": "NXT 미지원 종목 — KRX 시간에만 거래 가능"}
 
     tr_id = "TTTT0802U" if (nxt_time and is_nxt_supported(code)) else "TTTC0802U"
@@ -309,13 +362,13 @@ def buy_stock(code: str, qty: int, price: int = 0) -> dict:
         data = r.json()
         if data.get("rt_cd") == "0":
             order_no = data.get("output", {}).get("ODNO", "")
-            logger.info("KIS(KY) 실전 매수 완료 %s %d주 [%s] 주문번호:%s", code, qty, tr_id, order_no)
+            logger.info("KIS 실전 매수 완료 %s %d주 [%s] 주문번호:%s", code, qty, tr_id, order_no)
             return {"success": True, "order_no": order_no, "msg": data.get("msg1", "")}
         else:
-            logger.error("KIS(KY) 실전 매수 실패 %s: %s", code, data.get("msg1", ""))
+            logger.error("KIS 실전 매수 실패 %s: %s", code, data.get("msg1", ""))
             return {"success": False, "order_no": "", "msg": data.get("msg1", "")}
     except Exception:
-        logger.exception("KIS(KY) 실전 매수 예외: %s", code)
+        logger.exception("KIS 실전 매수 예외: %s", code)
         return {"success": False, "order_no": "", "msg": "API 오류"}
 
 
@@ -349,19 +402,19 @@ def sell_stock(code: str, qty: int, price: int = 0) -> dict:
         data = r.json()
         if data.get("rt_cd") == "0":
             order_no = data.get("output", {}).get("ODNO", "")
-            logger.info("KIS(KY) 실전 매도 완료 %s %d주 [%s] 주문번호:%s", code, qty, tr_id, order_no)
+            logger.info("KIS 실전 매도 완료 %s %d주 [%s] 주문번호:%s", code, qty, tr_id, order_no)
             return {"success": True, "order_no": order_no, "msg": data.get("msg1", "")}
         else:
-            logger.error("KIS(KY) 실전 매도 실패 %s: %s", code, data.get("msg1", ""))
+            logger.error("KIS 실전 매도 실패 %s: %s", code, data.get("msg1", ""))
             return {"success": False, "order_no": "", "msg": data.get("msg1", "")}
     except Exception:
-        logger.exception("KIS(KY) 실전 매도 예외: %s", code)
+        logger.exception("KIS 실전 매도 예외: %s", code)
         return {"success": False, "order_no": "", "msg": "API 오류"}
 
 
 def get_balance() -> dict:
     """
-    KIS 실전 잔고 조회.
+    KIS 모의투자 잔고 조회.
     반환: {"cash": int, "holdings": [{"code", "name", "qty", "avg_price", "current_price", "pnl"}]}
     """
     token = get_token()
@@ -371,17 +424,17 @@ def get_balance() -> dict:
         r = requests.get(
             f"{KIS_URL}/uapi/domestic-stock/v1/trading/inquire-balance",
             params={
-                "CANO":                 ACCOUNT_NO,
-                "ACNT_PRDT_CD":         ACCOUNT_CD,
-                "AFHR_FLPR_YN":         "N",
-                "OFL_YN":               "N",
-                "INQR_DVSN":            "02",
-                "UNPR_DVSN":            "01",
-                "FUND_STTL_ICLD_YN":    "N",
-                "FNCG_AMT_AUTO_RDPT_YN":"N",
-                "PRCS_DVSN":            "00",
-                "CTX_AREA_FK100":       "",
-                "CTX_AREA_NK100":       "",
+                "CANO": ACCOUNT_NO,
+                "ACNT_PRDT_CD": ACCOUNT_CD,
+                "AFHR_FLPR_YN": "N",
+                "OFL_YN": "N",
+                "INQR_DVSN": "02",
+                "UNPR_DVSN": "01",
+                "FUND_STTL_ICLD_YN": "N",
+                "FNCG_AMT_AUTO_RDPT_YN": "N",
+                "PRCS_DVSN": "00",
+                "CTX_AREA_FK100": "",
+                "CTX_AREA_NK100": "",
             },
             headers=_order_headers("TTTC8434R"),
             timeout=10,
@@ -406,7 +459,7 @@ def get_balance() -> dict:
             })
         return {"cash": cash, "holdings": holdings}
     except Exception:
-        logger.exception("KIS(KY) 잔고 조회 실패")
+        logger.exception("KIS 잔고 조회 실패")
         return {"cash": 0, "holdings": []}
 
 
@@ -441,7 +494,7 @@ def _get_ohlcv_pykrx(code: str, period: str = "D", count: int = 60) -> list:
                 pass
         return result[-count:]
     except Exception as e:
-        logger.warning("pykrx(KY) OHLCV 폴백 실패: %s %s — %s", code, period, e)
+        logger.warning("pykrx OHLCV 폴백 실패: %s %s — %s", code, period, e)
         return []
 
 
@@ -456,6 +509,7 @@ def get_ohlcv(code: str, period: str = "D", count: int = 60) -> list:
     if not token:
         return []
     today = datetime.date.today().strftime("%Y%m%d")
+    # 충분히 과거부터 조회 (count봉 확보)
     days_back = {"D": count * 2, "W": count * 10, "M": count * 35}.get(period, count * 2)
     from_date = (datetime.date.today() - datetime.timedelta(days=days_back)).strftime("%Y%m%d")
     headers = {
@@ -466,11 +520,11 @@ def get_ohlcv(code: str, period: str = "D", count: int = 60) -> list:
     }
     params = {
         "FID_COND_MRKT_DIV_CODE": "J",
-        "FID_INPUT_ISCD":         code,
-        "FID_INPUT_DATE_1":       from_date,
-        "FID_INPUT_DATE_2":       today,
-        "FID_PERIOD_DIV_CODE":    period,
-        "FID_ORG_ADJ_PRC":        "0",
+        "FID_INPUT_ISCD": code,
+        "FID_INPUT_DATE_1": from_date,
+        "FID_INPUT_DATE_2": today,
+        "FID_PERIOD_DIV_CODE": period,
+        "FID_ORG_ADJ_PRC": "0",
     }
     try:
         r = requests.get(
@@ -493,17 +547,17 @@ def get_ohlcv(code: str, period: str = "D", count: int = 60) -> list:
                 })
             except Exception:
                 pass
-        result.reverse()
+        result.reverse()  # 오래된 것부터
         return result[-count:]
     except Exception:
-        logger.warning("KIS(KY) OHLCV 조회 실패: %s %s — pykrx 폴백 시도", code, period)
+        logger.warning("KIS OHLCV 조회 실패: %s %s — pykrx 폴백 시도", code, period)
         return _get_ohlcv_pykrx(code, period, count)
 
 
 def get_minute_ohlcv(code: str, interval: int = 1, count: int = 60) -> list:
     """
     KIS API 분봉 데이터 조회.
-    interval: 1=1분봉, 15/30/60분은 리샘플
+    interval: 1=1분봉 원시데이터 (15/30/60분은 호출 후 직접 리샘플)
     반환: [{"time","open","high","low","close","volume"}, ...] 오래된 것부터
     """
     token = get_token()
@@ -516,11 +570,11 @@ def get_minute_ohlcv(code: str, interval: int = 1, count: int = 60) -> list:
         "tr_id": "FHKST03010200",
     }
     params = {
-        "FID_ETC_CLS_CODE":       "",
+        "FID_ETC_CLS_CODE": "",
         "FID_COND_MRKT_DIV_CODE": "J",
-        "FID_INPUT_ISCD":         code,
-        "FID_INPUT_HOUR_1":       "000000",
-        "FID_PW_DATA_INCU_YN":    "Y",
+        "FID_INPUT_ISCD": code,
+        "FID_INPUT_HOUR_1": "000000",
+        "FID_PW_DATA_INCU_YN": "Y",
     }
     try:
         r = requests.get(
@@ -543,11 +597,13 @@ def get_minute_ohlcv(code: str, interval: int = 1, count: int = 60) -> list:
                 })
             except Exception:
                 pass
-        rows.reverse()
+        rows.reverse()  # 오래된 것부터
 
+        # interval 리샘플 (15/30/60분)
         if interval > 1 and rows:
             import pandas as pd
             df = pd.DataFrame(rows)
+            df.index = range(len(df))
             resampled = []
             for i in range(0, len(df), interval):
                 chunk = df.iloc[i:i + interval]
@@ -565,21 +621,20 @@ def get_minute_ohlcv(code: str, interval: int = 1, count: int = 60) -> list:
 
         return rows[-count:]
     except Exception:
-        logger.exception("KIS(KY) 분봉 조회 실패: %s", code)
+        logger.exception("KIS 분봉 조회 실패: %s", code)
         return []
 
 
-# ────────────────────────────────────────────────────────────────────────
-# 코드 해석 함수 (kis_client.py와 동일)
-# ────────────────────────────────────────────────────────────────────────
-
 def _name_by_pykrx(code: str) -> str:
-    """pykrx로 단일 종목명 조회."""
+    """pykrx로 종목코드 → 종목명 (폴백용)."""
     try:
         from pykrx import stock as _px
-        return _px.get_market_ticker_name(code)
+        name = _px.get_market_ticker_name(code)
+        if name:
+            return name
     except Exception:
-        return None
+        pass
+    return None
 
 
 def _code_by_pykrx(name: str) -> tuple:
