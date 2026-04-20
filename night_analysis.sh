@@ -48,10 +48,12 @@ parts = []
 if codes:
     from mock_trading.kis_client import get_best_price
     lines = []
+    from auto_trader import _get_name_by_code
     for code in codes:
         try:
             price = get_best_price(code) or 0
-            lines.append(f'{code}:{price:,}원')
+            name = _get_name_by_code(code) or code
+            lines.append(f'{name}({code}):{price:,}원')
         except Exception:
             pass
     if lines:
