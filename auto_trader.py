@@ -503,7 +503,8 @@ def sell_ky(code: str, qty: int, reason: str = "") -> str:
         mt_ky  = _get_auto_mt_ky()
         res_ky = mt_ky.sell(code, qty)
         logger.info("[KY] SELL %s qty=%s %s → %s", code, qty, reason, res_ky[:60])
-        _tg_notify_ky(f"📉 [KY 자동매도]\n{res_ky}")
+        if '✅' in res_ky:
+            _tg_notify_ky(f"📉 [KY 자동매도]\n{res_ky}")
         time_str = datetime.datetime.now(pytz.timezone("Asia/Seoul")).strftime("%H:%M:%S")
         config._daily_trade_log_ky.append(f"{time_str} 📉 매도 {code} → {res_ky[:50]}")
         return res_ky
@@ -537,7 +538,8 @@ def buy_ky(code: str, amount: int, sig: dict = None) -> str:
         mt_ky  = _get_auto_mt_ky()
         res_ky = mt_ky.buy(code, amount, **kwargs)
         logger.info("[KY] BUY  %s %d원 → %s", code, amount, res_ky[:60])
-        _tg_notify_ky(f"📈 [KY 자동매수]\n{res_ky}")
+        if '✅' in res_ky:
+            _tg_notify_ky(f"📈 [KY 자동매수]\n{res_ky}")
         time_str = datetime.datetime.now(pytz.timezone("Asia/Seoul")).strftime("%H:%M:%S")
         config._daily_trade_log_ky.append(f"{time_str} 📈 매수 {code} {amount:,}원 → {res_ky[:50]}")
         return res_ky
@@ -674,7 +676,8 @@ def _buy_for_account(acc: dict, code: str, amount: int, sig: dict = None) -> str
         result = mt.buy(code, amount, oracle_pool=get_db_pool(), **kwargs)
     else:
         result = mt.buy(code, amount, **kwargs)
-        acc["notify"](f"📈 [{acc['label']} 자동매수]\n{result}")
+        if "✅" in result:
+            acc["notify"](f"📈 [{acc['label']} 자동매수]\n{result}")
 
     label    = acc["label"]
     time_str = datetime.datetime.now(pytz.timezone("Asia/Seoul")).strftime("%H:%M:%S")
@@ -740,6 +743,9 @@ def _smart_buy_amount_for_account(acc: dict, code: str) -> int:
         try:
             from mock_trading.kis_client_ky import get_available_amount
             avail = get_available_amount(code, price)
+            if avail == 0:
+                logger.info("[%s] %s 주문가능금액 0원 → 매수 스킵", acc["label"], code)
+                return 0
             if avail > 0 and amount > avail:
                 logger.warning("[%s] 주문가능금액 초과 조정: %d → %d원", acc["label"], amount, avail)
                 amount = avail
@@ -1010,6 +1016,7 @@ def select_volume_smart_chart() -> list:
                       if sig.get("buy_count", 0) >= _min_sig(code)]
 
     logger.info("차트 BUY 후보: %d종목 (신호≥6/12)", len(buy_candidates))
+    logger.info("[REPORT] 스캔BUY후보:%d top:%s", len(buy_candidates), [sig.get("name", c) for c, sig in buy_candidates[:5]])
     for code, sig in buy_candidates[:10]:
         logger.info("  %s(%s) %d/12%s", sig.get("name", code), code,
                     sig.get("buy_count", 0), sig.get("vol_tag", ""))
@@ -1644,6 +1651,8 @@ def auto_trade_cycle():
 
                 try:
                     amount = _smart_buy_amount_for_account(acc, code)
+                    if amount <= 0:
+                        continue
                     result = _buy_for_account(acc, code, amount, sig=sig)
                     if "❌" in result:
                         logger.warning("[%s] 매수 실패 %s: %s", acc["label"], code, result[:60])
@@ -1682,6 +1691,11 @@ def auto_trade_cycle():
             logger.exception("[%s] 신규매수 처리 실패", acc["label"])
 
     logger.info("[자동매매 %s] 신규매수:%s", time_str, all_bought or "없음")
+    for _acc in _ACCOUNTS:
+        _tlog = getattr(config, _acc["log_attr"], [])
+        _buys = sum(1 for e in _tlog if "신규매수" in e)
+        _sells = sum(1 for e in _tlog if "전량매도" in e or "부분매도" in e)
+        logger.info("[REPORT] %s 누적매수:%d 누적매도:%d", _acc["label"], _buys, _sells)
     return all_bought  # auto_trade_loop에서 신규매수 여부 판단용
 
 
@@ -1832,6 +1846,7 @@ def auto_trade_loop():
     logger.info("구조: PC LLM(관리자) → 전략 지시 → Python(작업자) → 실행")
     last_hourly_log = None
     no_buy_opportunity_count = 0  # 신규매수 기회 없음 연속 카운트
+    _last_daily_report_date = None
 
     while True:
         try:
@@ -1843,6 +1858,19 @@ def auto_trade_loop():
                     _log_holdings_status()
                     _log_pc_stats()  # 📊 PC 부하 모니터링
                     last_hourly_log = kst_now.hour
+
+            # 15:30~15:40 장 마감 일일 최종 요약
+            if kst_now.hour == 15 and 30 <= kst_now.minute <= 40:
+                if _last_daily_report_date != kst_now.date():
+                    _last_daily_report_date = kst_now.date()
+                    for _acc in _ACCOUNTS:
+                        _tlog = getattr(config, _acc["log_attr"], [])
+                        _buys = sum(1 for e in _tlog if "신규매수" in e)
+                        _profit = sum(1 for e in _tlog if "전량매도" in e and "+" in e)
+                        _loss = sum(1 for e in _tlog if "전량매도" in e and "-" in e)
+                        _partial = sum(1 for e in _tlog if "부분매도" in e)
+                        logger.info("[DAILY_REPORT] %s 매수:%d 익절:%d 손절:%d 부분매도:%d",
+                                    _acc["label"], _buys, _profit, _loss, _partial)
 
             # 효율화: 신규매수 기회 체크
             if not bought:  # 신규매수 없음
