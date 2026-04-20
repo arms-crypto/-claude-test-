@@ -837,6 +837,20 @@ def _execute_tool_call(tool_name: str, arguments: dict) -> str:
         base = os.path.dirname(__file__)
         result = _query_db(os.path.join(base, "mock_trading", "portfolio.db"), "🔵 트레이너 44197559")
         result += "\n\n" + _query_db(os.path.join(base, "mock_trading", "portfolio_ky.db"), "🟡 KY 실전계좌 44384407")
+
+        # KIS API 실제 잔고로 현금 덮어쓰기
+        try:
+            from mock_trading.kis_client import get_balance as _tr_bal_fn
+            from mock_trading.kis_client_ky import get_balance as _ky_bal_fn
+            _tr = _tr_bal_fn()
+            _ky = _ky_bal_fn()
+            result += (
+                f"\n\n### 💰 KIS 실전 잔고\n"
+                f"🔵 트레이너: 현금 {_tr.get('cash',0):,}원 | 보유 {len(_tr.get('holdings',[]))}종목\n"
+                f"🟡 KY: 현금 {_ky.get('cash',0):,}원 | 보유 {len(_ky.get('holdings',[]))}종목"
+            )
+        except Exception:
+            pass
         return result
     if tool_name == "query_trade_history":
         ticker = arguments.get("ticker", query)
