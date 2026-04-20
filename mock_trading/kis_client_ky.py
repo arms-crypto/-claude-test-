@@ -474,9 +474,9 @@ def _get_ohlcv_pykrx(code: str, period: str = "D", count: int = 60) -> list:
         if period == "D":
             df = _px.get_market_ohlcv_by_date(from_date, today, code)
         elif period == "W":
-            df = _px.get_market_ohlcv_by_date(from_date, today, code, freq="W")
+            df = _px.get_market_ohlcv_by_date(from_date, today, code, freq="w")
         else:  # M
-            df = _px.get_market_ohlcv_by_date(from_date, today, code, freq="M")
+            df = _px.get_market_ohlcv_by_date(from_date, today, code, freq="m")
         if df is None or df.empty:
             return []
         result = []
