@@ -175,6 +175,23 @@ curl -s -X POST http://127.0.0.1:8001/task \
 - 지시문에 반드시 명시: **"read_file 도구 실행 결과를 인용하지 않으면 INSUFFICIENT_EVIDENCE 출력"**
 - 라인번호 없는 보고 = 환각 → 자동 폐기, 재전송
 
+**환각 근본 차단 — old 문자열 Claude가 직접 제공 (2026-04-20 확정):**
+
+Qwen의 replace_text 실패 근본 원인: read_file → 기억으로 old 생성(환각) → 불일치 → 수정 실패
+
+**해결책: Claude가 Read로 정확한 코드 읽어서 태스크에 old 통째로 포함**
+```
+"replace_text 도구로 다음을 교체해줘. read_file 불필요.
+
+old:
+[Claude가 Read로 읽어온 정확한 코드]
+
+new:
+[수정된 코드]"
+```
+- Qwen은 replace_text 1번만 실행 → 환각 여지 없음
+- Claude가 Read → 설계 → old/new 구성 → Qwen이 실행만
+
 **태스크 실패 패턴 인식 (즉시 재설계):**
 | 증상 | 원인 | 대응 |
 |------|------|------|
