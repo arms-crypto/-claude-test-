@@ -798,12 +798,26 @@ def _execute_tool_call(tool_name: str, arguments: dict) -> str:
         logger.info("Ollama tool call: query_portfolio('%s')", query)
         import sqlite3 as _sq3
 
+        # KIS API 실전 잔고 미리 조회
+        _kis_cash = {}
+        try:
+            from mock_trading.kis_client import get_balance as _tr_bal_fn
+            from mock_trading.kis_client_ky import get_balance as _ky_bal_fn
+            _kis_cash["트레이너 44197559"] = _tr_bal_fn().get("cash")
+            _kis_cash["KY 실전계좌 44384407"] = _ky_bal_fn().get("cash")
+        except Exception:
+            pass
+
         def _query_db(db_path, label):
             lines = [f"[{label}]"]
             try:
                 with _sq3.connect(db_path) as con:
                     row = con.execute("SELECT value FROM account WHERE key='cash'").fetchone()
                     cash = int(float(row[0])) if row else 0
+                    for _k, _v in _kis_cash.items():
+                        if _k in label and _v is not None:
+                            cash = _v
+                            break
                     lines.append(f"💰 현금잔고: {cash:,}원")
                     holdings = con.execute(
                         "SELECT name, ticker, qty, avg_price FROM portfolio WHERE qty > 0"
@@ -838,19 +852,6 @@ def _execute_tool_call(tool_name: str, arguments: dict) -> str:
         result = _query_db(os.path.join(base, "mock_trading", "portfolio.db"), "🔵 트레이너 44197559")
         result += "\n\n" + _query_db(os.path.join(base, "mock_trading", "portfolio_ky.db"), "🟡 KY 실전계좌 44384407")
 
-        # KIS API 실제 잔고로 현금 덮어쓰기
-        try:
-            from mock_trading.kis_client import get_balance as _tr_bal_fn
-            from mock_trading.kis_client_ky import get_balance as _ky_bal_fn
-            _tr = _tr_bal_fn()
-            _ky = _ky_bal_fn()
-            result += (
-                f"\n\n### 💰 KIS 실전 잔고\n"
-                f"🔵 트레이너: 현금 {_tr.get('cash',0):,}원 | 보유 {len(_tr.get('holdings',[]))}종목\n"
-                f"🟡 KY: 현금 {_ky.get('cash',0):,}원 | 보유 {len(_ky.get('holdings',[]))}종목"
-            )
-        except Exception:
-            pass
         return result
     if tool_name == "query_trade_history":
         ticker = arguments.get("ticker", query)
