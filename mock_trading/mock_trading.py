@@ -155,7 +155,7 @@ class MockTrading:
 
         qty = int(amount_krw / price)
         if qty < 1:
-            return f"❌ 수량 부족 (1주 {price:,}원, 요청 {amount颗:,}원)"
+            return f"❌ 수량 부족 (1주 {price:,}원, 요청 {amount_krw:,}원)"
 
         # KIS 매수 주문 (limit_price>0 이면 지정가)
         result = self._kis.buy_stock(code, qty, price=limit_price)
