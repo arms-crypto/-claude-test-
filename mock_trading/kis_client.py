@@ -753,27 +753,39 @@ def _name_by_pykrx(code: str) -> str:
 
 
 def _code_by_pykrx(name: str) -> tuple:
-    """pykrx로 종목명 → (code, name) (폴백용). 전체 스캔이라 느림."""
+    """pykrx로 종목명 → (code, name) (폴백용). 장 마감 후 오늘 날짜 빈 응답 시 최근 거래일 폴백."""
     try:
         from pykrx import stock as _px
         import datetime as _dt
-        today = _dt.date.today().strftime("%Y%m%d")
+        # 오늘 포함 최대 7일 역방향으로 유효 거래일 탐색 (장 마감 후 오늘 날짜 API 비정상 대응)
+        trade_date = None
+        for delta in range(7):
+            d = (_dt.date.today() - _dt.timedelta(days=delta)).strftime("%Y%m%d")
+            try:
+                tl = _px.get_market_ticker_list(d, market="KOSPI")
+                if tl:
+                    trade_date = d
+                    break
+            except Exception:
+                continue
+        if not trade_date:
+            logger.debug("pykrx: 최근 7일 내 유효 거래일 없음 — 폴백 불가")
+            return None, None
         for market in ("KOSPI", "KOSDAQ"):
             try:
-                ticker_list = _px.get_market_ticker_list(today, market=market)
+                ticker_list = _px.get_market_ticker_list(trade_date, market=market)
                 if not ticker_list:
-                    logger.warning(f"pykrx: {market} 종목 리스트 공 (API 비정상)")
+                    logger.debug(f"pykrx: {market} 종목 리스트 공 (날짜: {trade_date})")
                     continue
                 for code in ticker_list:
                     try:
                         n = _px.get_market_ticker_name(code)
                         if n and name in n:
                             return code, n
-                    except Exception as e:
-                        # 개별 종목 조회 실패는 무시하고 계속
+                    except Exception:
                         pass
-            except (requests.exceptions.JSONDecodeError, Exception) as e:
-                logger.warning(f"pykrx {market} 조회 실패: {type(e).__name__} — 다음 마켓 시도")
+            except Exception as e:
+                logger.debug(f"pykrx {market} 조회 실패: {type(e).__name__}")
                 continue
     except Exception as e:
         logger.warning(f"pykrx 폴백 실패: {e}")
