@@ -1314,13 +1314,13 @@ def _ollama_sell_decision(code: str, name: str, pnl: float, qty: int,
 
     day_range_pct = atr5_pct = 0.0
     try:
-        kst_now   = datetime.datetime.now(pytz.timezone("Asia/Seoul"))
-        from_str  = (kst_now - datetime.timedelta(days=10)).strftime("%Y%m%d")
-        today_str = kst_now.strftime("%Y%m%d")
-        df = pykrx_stock.get_market_ohlcv(from_str, today_str, code)
-        day_range_pct = (float(df["고가"].iloc[-1]) - float(df["저가"].iloc[-1])) \
-                        / float(df["저가"].iloc[-1]) * 100
-        atr5_pct = float((df["고가"] - df["저가"]).tail(5).mean()) / current * 100
+        from mock_trading.kis_client import get_ohlcv as _get_ohlcv
+        _rows = _get_ohlcv(code, "D", 10)
+        if _rows and len(_rows) >= 2:
+            day_range_pct = (_rows[-1]["high"] - _rows[-1]["low"]) \
+                            / _rows[-1]["low"] * 100 if _rows[-1]["low"] else 0.0
+            atr5 = [r["high"] - r["low"] for r in _rows[-5:]]
+            atr5_pct = (sum(atr5) / len(atr5)) / current * 100 if current else 0.0
     except Exception:
         pass
 
@@ -2116,16 +2116,15 @@ def generate_chart_png(code: str, name: str, df_daily=None) -> str | None:
             if not isinstance(df.index, pd.DatetimeIndex):
                 df.index = pd.to_datetime(df.index)
         else:
-            import datetime
-            today_str = datetime.date.today().strftime("%Y%m%d")
-            from_str  = (datetime.date.today() - datetime.timedelta(days=130)).strftime("%Y%m%d")
-            df = pykrx_stock.get_market_ohlcv(from_str, today_str, code)
-            if df is None or len(df) < 10:
+            from mock_trading.kis_client import get_ohlcv as _get_ohlcv
+            _rows = _get_ohlcv(code, "D", 130)
+            if not _rows or len(_rows) < 10:
                 return None
-            df = df.rename(columns={"시가":"Open","고가":"High","저가":"Low","종가":"Close","거래량":"Volume"})
-            df = df[["Open","High","Low","Close","Volume"]].copy()
-            if not isinstance(df.index, pd.DatetimeIndex):
-                df.index = pd.to_datetime(df.index)
+            df = pd.DataFrame(_rows)
+            df = df.rename(columns={"open":"Open","high":"High","low":"Low","close":"Close","volume":"Volume","date":"Date"})
+            df = df.set_index("Date")[["Open","High","Low","Close","Volume"]].copy()
+            df.index = pd.to_datetime(df.index)
+            df = df.sort_index()
         df = df.dropna()
 
         close = df["Close"]
