@@ -64,7 +64,7 @@ pool = None  # 오라클 DB 풀
 
 # -------------------------
 # 자동매매 전역 상태
-_auto_enabled = False          # 서비스 시작 시 자동매매 ON (재시작 시 자동 활성화)
+_auto_enabled = True           # 서비스 시작 시 자동매매 ON (재시작 시 자동 활성화)
 _daily_trade_log: list    = []  # 당일 매매 내역 누적 (가상계좌) → 18:00 보고서
 _daily_trade_log_ky: list = []  # 당일 매매 내역 누적 (KY 실전계좌) → 18:00 보고서
 _auto_lock    = threading.Lock()
