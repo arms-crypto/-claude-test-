@@ -383,14 +383,21 @@ def buy_stock(code: str, qty: int, price: int = 0) -> dict:
             "ORD_QTY":        str(qty),
             "ORD_UNPR":       "0" if price == 0 else str(price),
         }
-        r = requests.post(
-            f"{KIS_URL}/uapi/domestic-stock/v1/trading/order-cash",
-            json=body,
-            headers=_order_headers(tr_id),
-            timeout=10,
-            proxies={"http": None, "https": None},
-        )
-        r.raise_for_status()
+        for _attempt in range(2):
+            r = requests.post(
+                f"{KIS_URL}/uapi/domestic-stock/v1/trading/order-cash",
+                json=body,
+                headers=_order_headers(tr_id),
+                timeout=10,
+                proxies={"http": None, "https": None},
+            )
+            if r.status_code == 500 and _attempt == 0:
+                import time as _time
+                logger.warning("KIS 매수 500 에러 %s — 3초 후 재시도", code)
+                _time.sleep(3)
+                continue
+            r.raise_for_status()
+            break
         data = r.json()
         if data.get("rt_cd") == "0":
             order_no = data.get("output", {}).get("ODNO", "")
@@ -399,6 +406,9 @@ def buy_stock(code: str, qty: int, price: int = 0) -> dict:
         else:
             logger.error("KIS 실전 매수 실패 %s: %s", code, data.get("msg1", ""))
             return {"success": False, "order_no": "", "msg": data.get("msg1", "")}
+    except requests.exceptions.HTTPError as e:
+        logger.warning("KIS 실전 매수 HTTP오류 %s: %s", code, e)
+        return {"success": False, "order_no": "", "msg": f"HTTP오류 {e.response.status_code}"}
     except Exception:
         logger.exception("KIS 실전 매수 예외: %s", code)
         return {"success": False, "order_no": "", "msg": "API 오류"}
