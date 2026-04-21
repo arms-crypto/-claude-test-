@@ -28,7 +28,7 @@ import ta
 from bs4 import BeautifulSoup
 from pykrx import stock as pykrx_stock
 import logging as _logging
-_logging.getLogger("pykrx").setLevel(_logging.CRITICAL)
+_logging.getLogger("pykrx").setLevel(_logging.WARNING)
 
 import config
 from db_utils import get_db_pool
