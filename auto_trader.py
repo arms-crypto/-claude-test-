@@ -27,6 +27,8 @@ import pytz
 import ta
 from bs4 import BeautifulSoup
 from pykrx import stock as pykrx_stock
+import logging as _logging
+_logging.getLogger("pykrx").setLevel(_logging.CRITICAL)
 
 import config
 from db_utils import get_db_pool
@@ -171,15 +173,21 @@ def _scrape_naver_codes(investor_gubun: str, limit: int = 20) -> list:
         return []
 
 
+_etf_ticker_cache: dict = {"tickers": None, "ts": 0.0}
+
 def _get_name_by_code(code: str) -> str:
     """종목코드 → 종목명 조회 (DB → pykrx ETF → pykrx 주식 → naver 순 fallback)"""
     # 1) DB 캐시
     name = get_stock_code_from_db(code)
     if name:
         return name
-    # 2) pykrx ETF 먼저 (KODEX 등 ETF 코드 오류 방지)
+    # 2) pykrx ETF (1시간 캐시 — 장 마감 후 KRX API 반복 호출 방지)
     try:
-        etf_tickers = pykrx_stock.get_etf_ticker_list()
+        import time as _t
+        if _etf_ticker_cache["tickers"] is None or _t.time() - _etf_ticker_cache["ts"] > 86400:
+            _etf_ticker_cache["tickers"] = pykrx_stock.get_etf_ticker_list()
+            _etf_ticker_cache["ts"] = _t.time()
+        etf_tickers = _etf_ticker_cache["tickers"] or []
         if code in etf_tickers:
             result = pykrx_stock.get_etf_ticker_name(code)
             if isinstance(result, str) and result:
@@ -755,19 +763,21 @@ def _smart_buy_amount_for_account(acc: dict, code: str) -> int:
     if price > 0 and amount < price:
         amount = price
 
-    # KY 계좌: KIS API 실제 주문가능금액으로 상한 적용
-    if acc["id"] == "ky":
-        try:
+    # KIS API 실제 주문가능금액으로 상한 적용 (트레이너/KY 공통)
+    try:
+        if acc["id"] == "trainer":
+            from mock_trading.kis_client import get_available_amount
+        else:
             from mock_trading.kis_client_ky import get_available_amount
-            avail = get_available_amount(code, price)
-            if avail == 0:
-                logger.info("[%s] %s 주문가능금액 0원 → 매수 스킵", acc["label"], code)
-                return 0
-            if avail > 0 and amount > avail:
-                logger.warning("[%s] 주문가능금액 초과 조정: %d → %d원", acc["label"], amount, avail)
-                amount = avail
-        except Exception:
-            pass
+        avail = get_available_amount(code, price)
+        if avail == 0:
+            logger.info("[%s] %s 주문가능금액 0원 → 매수 스킵", acc["label"], code)
+            return 0
+        if avail > 0 and amount > avail:
+            logger.warning("[%s] 주문가능금액 초과 조정: %d → %d원", acc["label"], amount, avail)
+            amount = avail
+    except Exception:
+        pass
 
     logger.info("[%s] 매수금액 %s: 예수금%d%s ÷ 슬롯%d = %d원",
                 acc["label"], code, int(cash), "(보수적)" if conservative else "", remain, amount)
@@ -882,101 +892,15 @@ _CODE_TO_SECTOR = {
 
 def _ollama_buy_decision(code: str, name: str, sig: dict) -> dict:
     """
-    PC Ollama(mistral)에게 매수 여부 + 전략 유형 판단 요청.
-    반환: {"action": "BUY"|"SKIP", "trade_type": "단타"|"스윙", "reason": str}
-    실패 시 폴백: buy_count >= 6
+    매수 여부 + 전략 유형 판단 — 신호수 룰 기반 (PC LLM 호출 없음).
+    select_volume_smart_chart()에서 이미 buy_count >= min_signal 필터를 통과한 종목만 들어옴.
+    PC LLM은 _monitor_signal_shifts()를 통해 신호 변화(±2) 시에만 비동기 호출됨.
     """
-    import re as _re, json as _json
-
-    s = sig.get("signals", {})
-    def v(k): return "✅" if s.get(k) else "❌"
-    ma5   = s.get("일봉_ma5")  or 0
-    ma20  = s.get("일봉_ma20") or 0
-    ma60  = s.get("일봉_ma60") or 0
-    ma120 = s.get("일봉_ma120") or 0
-    정배열  = "✅" if s.get("일봉_정배열")   else "❌"
-    가격위치 = "✅" if s.get("일봉_가격위치") else "❌"
-
-    # 업종별 학습 기법 RAG 조회 (chart_method_memory) — 섹터 필터 우선
-    sector = _CODE_TO_SECTOR.get(code, "전체")
-    rag_method = ""
-    try:
-        from rag_store import search_chart_method
-        rag_method = search_chart_method(
-            f"상승진입기법 하락경계 타임프레임신뢰도", n_results=3, sector=sector
-        )
-    except Exception as _me:
-        logger.debug("업종 RAG 조회 실패: %s", _me)
-
-    # 업종 파라미터 로드 (없거나 오래됐으면 백그라운드 자동 학습 트리거)
-    _sp = {}
-    try:
-        import sector_params as _sp_mod
-        _sp = _sp_mod.get(sector)
-    except Exception as _spe:
-        logger.debug("sector_params 조회 실패: %s", _spe)
-
-    prompt = (
-        f"종목: {name}({code}) | 업종: {sector} | 총신호={sig['buy_count']}/12\n\n"
-
-        "월봉 (장기 추세)\n"
-        f"  기준선{'위(✅)' if s.get('월봉_일목균형표') else '아래(❌)'} | ADX={v('월봉_ADX')} | RSI={v('월봉_RSI')} | MACD={v('월봉_MACD')}\n\n"
-
-        "주봉 (스윙 방향)\n"
-        f"  기준선{'위(✅)' if s.get('주봉_일목균형표') else '아래(❌)'} | ADX={v('주봉_ADX')} | RSI={v('주봉_RSI')} | MACD={v('주봉_MACD')}\n\n"
-
-        "일봉 (진입 판단)\n"
-        f"  기준선{'위(✅)' if s.get('일봉_일목균형표') else '아래(❌)'} | ADX={v('일봉_ADX')} | RSI={v('일봉_RSI')} | MACD={v('일봉_MACD')}\n"
-        f"  MA5={ma5:,.0f} MA20={ma20:,.0f} MA60={ma60:,.0f} MA120={ma120:,.0f}\n"
-        f"  정배열={정배열} | 현재가>MA20={가격위치} | MACD히스트={sig['macd_hist']} | ADX={sig['adx']}\n\n"
-
-        "분봉 타이밍 (15/30/60분봉 — 타이밍 참고, BUY/SKIP 판단 영향 없음)\n"
-        f"  기준선{v('분봉_일목균형표')} | ADX={v('분봉_ADX')} | MACD={v('분봉_MACD')}\n\n"
-
-        "단타 (3분봉 — 3/4 이상이면 당일청산)\n"
-        f"  기준선{v('분봉_3분_일목균형표')} | ADX={v('분봉_3분_ADX')} | MACD={v('분봉_3분_MACD')}\n\n"
-    )
-
-    if _sp and _sp.get("note") and _sp.get("note") != "기본값":
-        prompt += (
-            f"## {sector} 업종 최적 파라미터 (10년 데이터 도출)\n"
-            f"  권장최소신호: {_sp.get('min_signal',6)}/12 | "
-            f"외국인기관동시: {'필수' if _sp.get('require_both') else '불필요'} | "
-            f"권장보유: {_sp.get('hold_days',10)}일\n"
-            f"  근거: {_sp.get('note','')}\n\n"
-        )
-
-    if rag_method:
-        prompt += f"## {sector} 업종 학습 기법 (10년 데이터 기반 — 참고용)\n{rag_method}\n\n"
-
-    rag = _rag_trade_history(code, sig)
-    if rag:
-        prompt += rag + "\n\n"
-
-    trade_type = _classify_trade_type(sig)  # 3분봉 기반 코드 결정 (단타/스윙)
-    prompt += (
-        "위 신호와 업종 학습 기법을 종합해서 매수 여부를 판단하세요.\n"
-        "과거 패턴은 참고용이며, 현재 신호가 최우선입니다.\n"
-        "JSON만 반환:\n"
-        '{"action":"BUY"|"SKIP","reason":"한줄설명"}'
-    )
-    try:
-        resp = call_mistral_only(
-            prompt,
-            system="당신은 주식 매매 판단 AI입니다. JSON만 반환하고 다른 텍스트는 쓰지 마세요.",
-            use_tools=False,
-        )
-        m = _re.search(r'\{[^{}]*"action"[^{}]*\}', resp, _re.DOTALL)
-        if m:
-            d = _json.loads(m.group())
-            if d.get("action") in ("BUY", "SKIP"):
-                d["trade_type"] = trade_type
-                logger.info("Ollama 매수판단 %s: %s [%s] — %s",
-                            code, d["action"], d["trade_type"], d.get("reason",""))
-                return d
-    except Exception:
-        logger.warning("Ollama 매수판단 실패 %s, 폴백룰 적용", code)
-    return {"action": "SKIP", "trade_type": trade_type, "reason": f"폴백SKIP(신호 {sig['buy_count']}/12, Ollama실패)"}
+    trade_type = _classify_trade_type(sig)
+    logger.info("매수결정(룰) %s(%s): BUY [%s] — 신호 %d/12",
+                name, code, trade_type, sig.get("buy_count", 0))
+    return {"action": "BUY", "trade_type": trade_type,
+            "reason": f"신호{sig.get('buy_count', 0)}/12 룰기반매수"}
 
 
 def select_volume_smart_chart() -> list:
@@ -1665,6 +1589,13 @@ def auto_trade_cycle():
                     logger.info("⛔ [%s] %s(%s) 거부: %s",
                                 acc["label"], sig.get("name", code), code, reason)
                     continue
+
+                # NXT 시간에 비NXT 종목은 거래 불가 — 조용히 스킵
+                if is_nxt_hours():
+                    from mock_trading.kis_client import is_nxt_supported as _is_nxt_sup
+                    if not _is_nxt_sup(code):
+                        logger.debug("⏭ NXT시간 비NXT 스킵: %s(%s)", sig.get("name", code), code)
+                        continue
 
                 try:
                     amount = _smart_buy_amount_for_account(acc, code)

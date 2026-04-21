@@ -866,23 +866,32 @@ def _execute_tool_call(tool_name: str, arguments: dict) -> str:
                 with _sq3.connect(db_path) as con:
                     cols = [r[1] for r in con.execute("PRAGMA table_info(trades)").fetchall()]
                     extra = ", ".join(c for c in ["buy_signals", "rsi", "pnl"] if c in cols)
-                    sel = "action, price, qty, created_at" + (f", {extra}" if extra else "")
-                    rows = con.execute(
-                        f"SELECT {sel} FROM trades WHERE ticker=? OR name LIKE ? "
-                        "ORDER BY id DESC LIMIT ?",
-                        [ticker, f"%{ticker}%", limit]
-                    ).fetchall()
+                    sel = "ticker, name, action, price, qty, created_at" + (f", {extra}" if extra else "")
+                    all_trades = not ticker or ticker in ("전체", "all", "")
+                    if all_trades:
+                        rows = con.execute(
+                            f"SELECT {sel} FROM trades ORDER BY id DESC LIMIT ?",
+                            [limit]
+                        ).fetchall()
+                    else:
+                        rows = con.execute(
+                            f"SELECT {sel} FROM trades WHERE ticker=? OR name LIKE ? "
+                            "ORDER BY id DESC LIMIT ?",
+                            [ticker, f"%{ticker}%", limit]
+                        ).fetchall()
                 if not rows:
-                    return f"[{label}] '{ticker}' 거래 내역 없음"
+                    label_q = "전체" if all_trades else ticker
+                    return f"[{label}] '{label_q}' 거래 내역 없음"
                 extra_cols = [c for c in ["buy_signals", "rsi", "pnl"] if c in cols]
-                lines = [f"[{label}] 📚 {ticker} 매매 이력 ({len(rows)}건):"]
+                label_q = "전체" if all_trades else ticker
+                lines = [f"[{label}] 📚 {label_q} 매매 이력 ({len(rows)}건):"]
                 for row in rows:
-                    action, price, qty, ts = row[0], row[1], row[2], row[3]
-                    extras = {extra_cols[i]: row[4+i] for i in range(len(extra_cols))}
+                    t_code, t_name, action, price, qty, ts = row[0], row[1], row[2], row[3], row[4], row[5]
+                    extras = {extra_cols[i]: row[6+i] for i in range(len(extra_cols))}
                     pnl_str = f" | 손익 {extras['pnl']:+.1f}%" if extras.get("pnl") is not None else ""
                     sig_str = f" | 신호 {extras['buy_signals']}/12" if extras.get("buy_signals") is not None else ""
                     rsi_str = f" | RSI {extras['rsi']:.1f}" if extras.get("rsi") is not None else ""
-                    lines.append(f"  [{ts[:10]}] {action} {qty}주 @{int(price):,}원{pnl_str}{sig_str}{rsi_str}")
+                    lines.append(f"  [{ts[:10]}] {t_name}({t_code}) {action} {qty}주 @{int(price):,}원{pnl_str}{sig_str}{rsi_str}")
                 return "\n".join(lines)
             except Exception as e:
                 return f"[{label}] 거래 이력 조회 오류: {e}"
@@ -992,7 +1001,8 @@ _GEMMA3_TOOL_SYSTEM = """나는 한국어 AI 어시스턴트입니다. 사용자
 [접근 가능한 데이터]
 - Oracle DB: daily_news 테이블 (매일 수집된 뉴스 헤드라인) → search_local_knowledge
 - 시장 보고서: 매일 갱신되는 코스피/코스닥 분석 텍스트 → search_local_knowledge
-- SQLite portfolio.db: 모의투자 잔고·보유종목·거래내역 → query_portfolio
+- 실전 계좌 DB (portfolio.db): 보유종목·잔고·평가손익 → query_portfolio
+- 실전 매매 이력 (trades 테이블): 과거 매수·매도 체결 내역 → query_trade_history
 사용자가 "DB", "저장된", "서버", "로컬" 등을 언급하면 반드시 도구로 조회할 것.
 
 사용 가능한 도구:
@@ -1000,8 +1010,8 @@ _GEMMA3_TOOL_SYSTEM = """나는 한국어 AI 어시스턴트입니다. 사용자
 - get_news: 종목·기업·시장 뉴스
 - web_search: 최신 정보·뉴스 검색
 - search_local_knowledge: 시장보고서·DB뉴스·RAG 조회
-- query_portfolio: 잔고·보유종목·거래내역
-- query_trade_history: 특정 종목 과거 매매 이력
+- query_portfolio: 현재 보유종목·잔고·평가손익 (지금 상태)
+- query_trade_history: 과거 매수·매도 체결 이력 (종목명 또는 코드로 조회)
 - deep_search: 복잡한 심층 분석
 - fetch_url: 특정 URL 읽기
 
@@ -1017,6 +1027,12 @@ _GEMMA3_TOOL_SYSTEM = """나는 한국어 AI 어시스턴트입니다. 사용자
 
 사용자: 내 포트폴리오 보여줘
 {"tool":"query_portfolio","arguments":{"query":"현황"}}
+
+사용자: 최근 매매내역 보여줘
+{"tool":"query_trade_history","arguments":{"ticker":"전체","limit":10}}
+
+사용자: 삼성전자 매매 이력
+{"tool":"query_trade_history","arguments":{"ticker":"삼성전자","limit":10}}
 
 사용자: 왕과 사는 남자 줄거리 요약
 {"tool":"web_search","arguments":{"query":"왕과 사는 남자 영화 줄거리"}}

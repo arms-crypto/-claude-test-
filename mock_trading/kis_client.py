@@ -253,22 +253,52 @@ def get_best_price(code: str) -> int:
 
 def get_current_price(code: str) -> int:
     """통합시세 우선 현재가 조회.
-    1순위: KIS 통합시세 (UN — KRX+NXT 자동 선택, 장중/비정규장 무관)
+    1순위: KIS 통합시세 (UN — KRX+NXT 자동 선택)
     2순위: KRX 시세
     3순위: NXT 시세
-    4순위: Naver 금융
     """
-    return _price_unified(code) or _price_kis(code) or get_nxt_price(code) or _price_naver(code)
+    return _price_unified(code) or _price_kis(code) or get_nxt_price(code)
 
 
 # NXT 지원 여부 캐시 (종목코드 → True/False)
 _nxt_support_cache: dict = {}
 
+def _check_nxt_support_api(code: str) -> bool:
+    """CTPF1002R (주식기본조회) API로 NXT 거래 가능 여부 정확히 확인.
+    cptt_trad_tr_psbl_yn=Y (NXT 거래종목) AND nxt_tr_stop_yn=N (거래정지 아님)
+    """
+    token = get_token()
+    if not token:
+        return False
+    headers = {
+        "authorization": f"Bearer {token}",
+        "appkey":    APP_KEY,
+        "appsecret": APP_SECRET,
+        "tr_id":     "CTPF1002R",
+    }
+    try:
+        r = requests.get(
+            f"{KIS_URL}/uapi/domestic-stock/v1/quotations/search-stock-info",
+            params={"PRDT_TYPE_CD": "300", "PDNO": code},
+            headers=headers,
+            timeout=5,
+            proxies={"http": None, "https": None},
+        )
+        r.raise_for_status()
+        out = r.json().get("output", {})
+        cptt_yn = out.get("cptt_trad_tr_psbl_yn", "N")
+        stop_yn = out.get("nxt_tr_stop_yn", "Y")
+        return cptt_yn == "Y" and stop_yn == "N"
+    except Exception:
+        logger.debug("NXT 지원 여부 API 실패: %s", code)
+        return False
+
+
 def is_nxt_supported(code: str) -> bool:
-    """종목이 NXT(넥스트트레이드) 지원 여부 확인. 캐시 적용."""
+    """종목이 NXT(넥스트트레이드) 거래 가능 여부 확인. 캐시 적용."""
     if code in _nxt_support_cache:
         return _nxt_support_cache[code]
-    result = get_nxt_price(code) is not None
+    result = _check_nxt_support_api(code)
     _nxt_support_cache[code] = result
     logger.debug("NXT 지원 %s: %s", code, result)
     return result
@@ -372,16 +402,38 @@ def buy_stock(code: str, qty: int, price: int = 0) -> dict:
         logger.warning("NXT 시간 KRX전용 종목 매수 차단: %s", code)
         return {"success": False, "order_no": "", "msg": "NXT 미지원 종목 — KRX 시간에만 거래 가능"}
 
-    tr_id = "TTTT0802U" if (nxt_time and is_nxt_supported(code)) else "TTTC0802U"
+    # 신규 통합 API (TTTC0012U + EXCG_ID_DVSN_CD)
+    # NXT 단독 시간(08~09, 15:30~20): NXT
+    # 정규장(09~15:30): UN — KRX/NXT 최적 체결
+    # 그 외: KRX
+    tr_id = "TTTC0012U"
+    if nxt_time and is_nxt_supported(code):
+        excg_id = "NXT"
+    else:
+        from datetime import datetime
+        import pytz as _pytz
+        _now = datetime.now(_pytz.timezone("Asia/Seoul"))
+        _mins = _now.hour * 60 + _now.minute
+        excg_id = "UN" if (9 * 60 <= _mins < 15 * 60 + 30) else "KRX"
+
+    # NXT 애프터마켓은 시장가 불가 → 통합현재가로 지정가 강제
+    if excg_id == "NXT" and price == 0:
+        forced = get_current_price(code)
+        if forced and forced > 0:
+            price = forced
+            logger.info("NXT 지정가 강제 %s: %d원", code, price)
 
     try:
         body = {
-            "CANO":           ACCOUNT_NO,
-            "ACNT_PRDT_CD":   ACCOUNT_CD,
-            "PDNO":           code,
-            "ORD_DVSN":       "01" if price == 0 else "00",
-            "ORD_QTY":        str(qty),
-            "ORD_UNPR":       "0" if price == 0 else str(price),
+            "CANO":             ACCOUNT_NO,
+            "ACNT_PRDT_CD":     ACCOUNT_CD,
+            "PDNO":             code,
+            "ORD_DVSN":         "01" if price == 0 else "00",
+            "ORD_QTY":          str(qty),
+            "ORD_UNPR":         "0" if price == 0 else str(price),
+            "EXCG_ID_DVSN_CD":  excg_id,
+            "SLL_TYPE":         "",
+            "CNDT_PRIC":        "",
         }
         for _attempt in range(2):
             r = requests.post(
@@ -393,7 +445,7 @@ def buy_stock(code: str, qty: int, price: int = 0) -> dict:
             )
             if r.status_code == 500 and _attempt == 0:
                 import time as _time
-                logger.warning("KIS 매수 500 에러 %s — 3초 후 재시도", code)
+                logger.warning("KIS 매수 500 에러 %s [%s] — 3초 후 재시도", code, excg_id)
                 _time.sleep(3)
                 continue
             r.raise_for_status()
@@ -401,11 +453,16 @@ def buy_stock(code: str, qty: int, price: int = 0) -> dict:
         data = r.json()
         if data.get("rt_cd") == "0":
             order_no = data.get("output", {}).get("ODNO", "")
-            logger.info("KIS 실전 매수 완료 %s %d주 [%s] 주문번호:%s", code, qty, tr_id, order_no)
+            logger.info("KIS 실전 매수 완료 %s %d주 [%s/%s] 주문번호:%s", code, qty, tr_id, excg_id, order_no)
             return {"success": True, "order_no": order_no, "msg": data.get("msg1", "")}
         else:
-            logger.error("KIS 실전 매수 실패 %s: %s", code, data.get("msg1", ""))
-            return {"success": False, "order_no": "", "msg": data.get("msg1", "")}
+            msg = data.get("msg1", "")
+            logger.error("KIS 실전 매수 실패 %s [%s]: %s", code, excg_id, msg)
+            # NXT 미상장 종목 캐시 무효화
+            if excg_id == "NXT" and ("NXT 상장종목" in msg or "종목정보가 없습니다" in msg):
+                _nxt_support_cache[code] = False
+                logger.warning("NXT 미지원 캐시 업데이트: %s → False", code)
+            return {"success": False, "order_no": "", "msg": msg}
     except requests.exceptions.HTTPError as e:
         logger.warning("KIS 실전 매수 HTTP오류 %s: %s", code, e)
         return {"success": False, "order_no": "", "msg": f"HTTP오류 {e.response.status_code}"}
@@ -417,16 +474,37 @@ def buy_stock(code: str, qty: int, price: int = 0) -> dict:
 def sell_stock(code: str, qty: int, price: int = 0) -> dict:
     """매도 주문. price=0 시장가, price>0 지정가."""
     from auto_trader import is_nxt_hours as _is_nxt_hours
-    tr_id = "TTTT0801U" if (_is_nxt_hours() and is_nxt_supported(code)) else "TTTC0801U"
+    nxt_time = _is_nxt_hours()
+
+    # 신규 통합 API (TTTC0011U + EXCG_ID_DVSN_CD)
+    tr_id = "TTTC0011U"
+    if nxt_time and is_nxt_supported(code):
+        excg_id = "NXT"
+    else:
+        from datetime import datetime
+        import pytz as _pytz
+        _now = datetime.now(_pytz.timezone("Asia/Seoul"))
+        _mins = _now.hour * 60 + _now.minute
+        excg_id = "UN" if (9 * 60 <= _mins < 15 * 60 + 30) else "KRX"
+
+    # NXT 애프터마켓은 시장가 불가 → NXT현재가 → KRX현재가 순 폴백으로 지정가 강제
+    if excg_id == "NXT" and price == 0:
+        forced = get_nxt_price(code) or _price_kis(code) or _price_naver(code)
+        if forced and forced > 0:
+            price = forced
+            logger.info("NXT 매도 지정가 강제 %s: %d원", code, price)
 
     try:
         body = {
-            "CANO":           ACCOUNT_NO,
-            "ACNT_PRDT_CD":   ACCOUNT_CD,
-            "PDNO":           code,
-            "ORD_DVSN":       "01" if price == 0 else "00",
-            "ORD_QTY":        str(qty),
-            "ORD_UNPR":       "0" if price == 0 else str(price),
+            "CANO":             ACCOUNT_NO,
+            "ACNT_PRDT_CD":     ACCOUNT_CD,
+            "PDNO":             code,
+            "ORD_DVSN":         "01" if price == 0 else "00",
+            "ORD_QTY":          str(qty),
+            "ORD_UNPR":         "0" if price == 0 else str(price),
+            "EXCG_ID_DVSN_CD":  excg_id,
+            "SLL_TYPE":         "01",
+            "CNDT_PRIC":        "",
         }
         r = requests.post(
             f"{KIS_URL}/uapi/domestic-stock/v1/trading/order-cash",
@@ -439,10 +517,10 @@ def sell_stock(code: str, qty: int, price: int = 0) -> dict:
         data = r.json()
         if data.get("rt_cd") == "0":
             order_no = data.get("output", {}).get("ODNO", "")
-            logger.info("KIS 실전 매도 완료 %s %d주 [%s] 주문번호:%s", code, qty, tr_id, order_no)
+            logger.info("KIS 실전 매도 완료 %s %d주 [%s/%s] 주문번호:%s", code, qty, tr_id, excg_id, order_no)
             return {"success": True, "order_no": order_no, "msg": data.get("msg1", "")}
         else:
-            logger.error("KIS 실전 매도 실패 %s: %s", code, data.get("msg1", ""))
+            logger.error("KIS 실전 매도 실패 %s [%s]: %s", code, excg_id, data.get("msg1", ""))
             return {"success": False, "order_no": "", "msg": data.get("msg1", "")}
     except Exception:
         logger.exception("KIS 실전 매도 예외: %s", code)
