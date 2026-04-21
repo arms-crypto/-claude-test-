@@ -65,233 +65,181 @@ def touch_timer():
 
 # ======================== 에러 모니터 대시보드 ========================
 
-@app.route('/dashboard', methods=['GET'])
-def dashboard():
-    """에러 모니터 대시보드 UI"""
-    from pathlib import Path
-    import json
-    from datetime import datetime, timedelta
-    from collections import defaultdict
-    import re
+_dashboard_reset_time = None  # 리셋 기준 시각 (None=오늘 00:00)
 
+
+def _get_dashboard_lines():
+    """오늘 날짜 + 리셋 시각 이후 로그 라인만 반환."""
+    from pathlib import Path
+    from datetime import datetime
+    import pytz
     log_path = Path('/home/ubuntu/-claude-test-/proxy_v54.log')
     if not log_path.exists():
-        return jsonify({"error": "log file not found"}), 404
+        return []
+    kst = pytz.timezone("Asia/Seoul")
+    now = datetime.now(kst)
+    today_str = now.strftime('%Y-%m-%d')
+    reset_time = _dashboard_reset_time or now.replace(hour=0, minute=0, second=0, microsecond=0)
+    result = []
+    with open(log_path, 'r', encoding='utf-8', errors='ignore') as f:
+        for line in f.readlines()[-10000:]:
+            if today_str not in line[:11]:
+                continue
+            try:
+                ts_str = line[:23]
+                ts = kst.localize(datetime.strptime(ts_str, '%Y-%m-%d %H:%M:%S,%f'))
+                if ts >= reset_time:
+                    result.append(line)
+            except Exception:
+                result.append(line)
+    return result
 
-    # 로그에서 에러 통계 추출
-    errors = defaultdict(int)
-    # 통합 에러 패턴 (CLAUDE.md 에러 모니터링 섹션 참조)
+
+@app.route('/dashboard/reset', methods=['POST'])
+def dashboard_reset():
+    """대시보드 에러 카운트 리셋."""
+    import pytz
+    from datetime import datetime
+    global _dashboard_reset_time
+    _dashboard_reset_time = datetime.now(pytz.timezone("Asia/Seoul"))
+    return jsonify({'status': 'ok', 'reset_time': _dashboard_reset_time.strftime('%H:%M:%S')})
+
+
+@app.route('/dashboard', methods=['GET'])
+def dashboard():
+    """에러 모니터 대시보드 UI — 오늘 날짜 기준, 리셋 가능"""
+    from collections import defaultdict
+    from datetime import datetime
+    import re
+    import pytz
+
     error_patterns = {
-        'ERROR': r'ERROR\s+',
-        'TRACEBACK': r'Traceback \(most recent call last\)',
-        'EXCEPTION': r'Exception:\s+',
-        'TYPEERROR': r'TypeError:\s+',
-        'ATTRIBUTEERROR': r'AttributeError:\s+',
-        'JSON_ERROR': r'JSONDecodeError|Expecting value',
-        'HTTP_ERROR': r'HTTPError:\s+',
-        'CONNECTION_ERROR': r'ConnectionError:\s+',
-        'TIMEOUT': r'Timeout|timeout',
-        'LOB_BUG': r"'LOB' object is not subscriptable",
-        'KIS_FAILED': r'KIS.*실패|KY.*실패',
-        'DB_FAILED': r'Oracle.*실패|ORA-',
-        'PYKRX_ERROR': r'pykrx',
+        'KIS_FAILED':      r'KIS.*실패|KY.*실패',
+        'TRACEBACK':       r'Traceback \(most recent call last\)',
+        'ERROR':           r'\s+ERROR\s+',
+        'HTTP_ERROR':      r'HTTPError:',
+        'CONNECTION_ERROR':r'ConnectionError:',
+        'TIMEOUT':         r'Timeout|timeout',
+        'EXCEPTION':       r'Exception:',
+        'JSON_ERROR':      r'JSONDecodeError|Expecting value',
+        'DB_FAILED':       r'Oracle.*실패|ORA-',
+        'PYKRX_ERROR':     r'pykrx',
     }
 
-    with open(log_path, 'r', encoding='utf-8', errors='ignore') as f:
-        lines = f.readlines()[-3000:]
+    lines = _get_dashboard_lines()
+    errors = defaultdict(int)
+    recent_errors = []
 
     for line in lines:
         for error_type, pattern in error_patterns.items():
             if re.search(pattern, line, re.IGNORECASE):
                 errors[error_type] += 1
+                if len(recent_errors) < 20:
+                    recent_errors.append((error_type, line.strip()[:120]))
                 break
 
+    recent_errors = list(reversed(recent_errors))
     total_errors = sum(errors.values())
-    status = 'healthy' if total_errors < 50 else 'warning' if total_errors < 200 else 'critical'
-    max_errors = max(errors.values()) if errors else 1
+    status = 'HEALTHY' if total_errors < 20 else 'WARNING' if total_errors < 100 else 'CRITICAL'
+    status_color = '#10b981' if status == 'HEALTHY' else '#f59e0b' if status == 'WARNING' else '#ef4444'
+    max_cnt = max(errors.values()) if errors else 1
+    now_str = datetime.now(pytz.timezone("Asia/Seoul")).strftime('%Y-%m-%d %H:%M:%S')
+    reset_str = _dashboard_reset_time.strftime('%H:%M:%S') if _dashboard_reset_time else '00:00:00'
+    line_count = len(lines)
 
-    # HTML 반환
-    html = f"""
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <meta charset="utf-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1">
-        <title>🚨 에러 모니터 대시보드</title>
-        <style>
-            * {{ margin: 0; padding: 0; box-sizing: border-box; }}
-            body {{
-                font-family: 'Segoe UI', sans-serif;
-                background: #0f172a;
-                color: #e2e8f0;
-                padding: 20px;
-            }}
-            .container {{ max-width: 1200px; margin: 0 auto; }}
-            h1 {{
-                margin-bottom: 30px;
-                font-size: 2em;
-                background: linear-gradient(135deg, #3b82f6, #8b5cf6);
-                -webkit-background-clip: text;
-                -webkit-text-fill-color: transparent;
-            }}
-            .grid {{
-                display: grid;
-                grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-                gap: 20px;
-                margin-bottom: 30px;
-            }}
-            .card {{
-                background: #1e293b;
-                border: 1px solid #334155;
-                border-radius: 8px;
-                padding: 20px;
-                transition: all 0.3s;
-            }}
-            .card:hover {{ border-color: #64748b; box-shadow: 0 0 20px rgba(59, 130, 246, 0.2); }}
-            .stat-box {{
-                display: flex;
-                justify-content: space-between;
-                align-items: center;
-                padding: 15px;
-                background: #0f172a;
-                border-radius: 6px;
-                margin: 10px 0;
-            }}
-            .stat-label {{ font-size: 0.9em; color: #94a3b8; }}
-            .stat-value {{ font-size: 2em; font-weight: bold; }}
-            .status-healthy {{ color: #10b981; }}
-            .status-warning {{ color: #f59e0b; }}
-            .status-critical {{ color: #ef4444; }}
-            .bar {{
-                display: flex;
-                align-items: center;
-                margin: 10px 0;
-            }}
-            .bar-label {{ width: 120px; font-size: 0.9em; }}
-            .bar-container {{
-                flex: 1;
-                height: 25px;
-                background: #334155;
-                border-radius: 4px;
-                overflow: hidden;
-                margin: 0 10px;
-            }}
-            .bar-fill {{
-                height: 100%;
-                background: linear-gradient(90deg, #3b82f6, #8b5cf6);
-            }}
-            .bar-value {{ width: 40px; text-align: right; font-weight: bold; }}
-            .footer {{
-                text-align: center;
-                color: #64748b;
-                margin-top: 30px;
-                font-size: 0.9em;
-            }}
-            h2 {{ font-size: 1.2em; margin: 15px 0; color: #e2e8f0; }}
-        </style>
-    </head>
-    <body>
-        <div class="container">
-            <h1>🚨 에러 모니터 대시보드</h1>
+    bars = ''.join(f'''
+        <div class="bar">
+            <div class="bar-label">{et}</div>
+            <div class="bar-wrap"><div class="bar-fill" style="width:{cnt/max_cnt*100:.0f}%"></div></div>
+            <div class="bar-val">{cnt}</div>
+        </div>''' for et, cnt in sorted(errors.items(), key=lambda x: x[1], reverse=True))
 
-            <div class="grid">
-                <div class="card">
-                    <h2>📊 현재 상태</h2>
-                    <div class="stat-box">
-                        <div class="stat-label">상태</div>
-                        <div class="stat-value status-{status}">{status.upper()}</div>
-                    </div>
-                    <div class="stat-box">
-                        <div class="stat-label">총 에러</div>
-                        <div class="stat-value">{total_errors}</div>
-                    </div>
-                    <div class="stat-box">
-                        <div class="stat-label">마지막 갱신</div>
-                        <div style="font-size: 0.9em;">{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</div>
-                    </div>
-                </div>
+    rows = ''.join(f'<tr><td class="et">{et}</td><td class="msg">{msg}</td></tr>'
+                   for et, msg in recent_errors) or '<tr><td colspan="2" style="text-align:center;color:#64748b">에러 없음</td></tr>'
 
-                <div class="card">
-                    <h2>📈 에러 분포</h2>
-                    {''.join(f'''
-                    <div class="bar">
-                        <div class="bar-label">{error_type}</div>
-                        <div class="bar-container">
-                            <div class="bar-fill" style="width: {(count / max_errors * 100):.0f}%"></div>
-                        </div>
-                        <div class="bar-value">{count}</div>
-                    </div>
-                    ''' for error_type, count in sorted(errors.items(), key=lambda x: x[1], reverse=True))}
-                </div>
-
-                <div class="card">
-                    <h2>⚙️ 시스템</h2>
-                    <div class="stat-box">
-                        <div class="stat-label">모니터 포트</div>
-                        <div style="font-family: monospace;">11435 (통합)</div>
-                    </div>
-                    <div class="stat-box">
-                        <div class="stat-label">로그 파일</div>
-                        <div style="font-family: monospace; font-size: 0.85em;">proxy_v54.log</div>
-                    </div>
-                    <div class="stat-box">
-                        <div class="stat-label">상태 파일</div>
-                        <div style="font-family: monospace; font-size: 0.85em;">status.json</div>
-                    </div>
-                    <div class="stat-box">
-                        <div class="stat-label">보관 기간</div>
-                        <div>7일 자동 삭제</div>
-                    </div>
-                </div>
-            </div>
-
-            <div class="footer">
-                🚀 통합 에러 모니터 대시보드 v1.0 | 매 5초마다 자동 갱신
-            </div>
-        </div>
-
-        <script>
-            setTimeout(() => location.reload(), 5000);
-        </script>
-    </body>
-    </html>
-    """
+    html = f"""<!DOCTYPE html>
+<html><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>에러 대시보드</title>
+<style>
+*{{margin:0;padding:0;box-sizing:border-box}}
+body{{font-family:'Segoe UI',sans-serif;background:#0f172a;color:#e2e8f0;padding:20px}}
+.wrap{{max-width:1100px;margin:0 auto}}
+h1{{font-size:1.6em;margin-bottom:20px;color:#e2e8f0}}
+.top{{display:flex;gap:12px;align-items:center;margin-bottom:20px;flex-wrap:wrap}}
+.badge{{padding:6px 16px;border-radius:20px;font-weight:bold;font-size:0.9em;background:{status_color}22;color:{status_color};border:1px solid {status_color}}}
+.info{{color:#94a3b8;font-size:0.85em}}
+.btn{{padding:8px 18px;background:#ef444422;color:#ef4444;border:1px solid #ef4444;border-radius:6px;cursor:pointer;font-size:0.9em}}
+.btn:hover{{background:#ef444433}}
+.grid{{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px}}
+@media(max-width:700px){{.grid{{grid-template-columns:1fr}}}}
+.card{{background:#1e293b;border:1px solid #334155;border-radius:8px;padding:16px}}
+h2{{font-size:1em;color:#94a3b8;margin-bottom:12px;text-transform:uppercase;letter-spacing:.05em}}
+.stat{{display:flex;justify-content:space-between;padding:10px;background:#0f172a;border-radius:6px;margin:6px 0}}
+.sv{{font-size:1.8em;font-weight:bold;color:{status_color}}}
+.bar{{display:flex;align-items:center;margin:7px 0}}
+.bar-label{{width:130px;font-size:0.85em;color:#94a3b8}}
+.bar-wrap{{flex:1;height:20px;background:#334155;border-radius:3px;overflow:hidden;margin:0 8px}}
+.bar-fill{{height:100%;background:linear-gradient(90deg,#3b82f6,#8b5cf6)}}
+.bar-val{{width:36px;text-align:right;font-size:0.9em;font-weight:bold}}
+table{{width:100%;border-collapse:collapse;font-size:0.8em}}
+td{{padding:6px 8px;border-bottom:1px solid #1e293b;vertical-align:top}}
+.et{{width:120px;color:#f59e0b;font-weight:bold;white-space:nowrap}}
+.msg{{color:#94a3b8;word-break:break-all}}
+.footer{{text-align:center;color:#475569;font-size:0.8em;margin-top:16px}}
+</style></head>
+<body><div class="wrap">
+<h1>🚨 에러 모니터 대시보드</h1>
+<div class="top">
+  <span class="badge">{status}</span>
+  <span class="info">총 {total_errors}건 | {line_count}줄 분석 | 갱신 {now_str} | 리셋 기준 {reset_str}</span>
+  <button class="btn" onclick="fetch('/dashboard/reset',{{method:'POST'}}).then(()=>location.reload())">🔄 리셋</button>
+</div>
+<div class="grid">
+  <div class="card">
+    <h2>📊 현황</h2>
+    <div class="stat"><span>상태</span><span class="sv">{status}</span></div>
+    <div class="stat"><span>총 에러</span><span style="font-size:1.8em;font-weight:bold">{total_errors}</span></div>
+    <div class="stat"><span>분석 라인</span><span>{line_count:,}</span></div>
+  </div>
+  <div class="card">
+    <h2>📈 에러 분포</h2>
+    {bars or '<div style="color:#64748b;text-align:center;padding:20px">에러 없음</div>'}
+  </div>
+</div>
+<div class="card">
+  <h2>🔴 최근 에러 (최대 20건)</h2>
+  <table><tbody>{rows}</tbody></table>
+</div>
+<div class="footer">자동 갱신 30초 | 리셋 버튼으로 카운트 초기화</div>
+</div>
+<script>setTimeout(()=>location.reload(),30000)</script>
+</body></html>"""
     return html, 200, {'Content-Type': 'text/html; charset=utf-8'}
 
 
 @app.route('/api/error-status', methods=['GET'])
 def error_status_api():
     """에러 상태 JSON API"""
-    from pathlib import Path
     from collections import defaultdict
-    import re
     from datetime import datetime
+    import re
 
-    log_path = Path('/home/ubuntu/-claude-test-/proxy_v54.log')
-    if not log_path.exists():
-        return jsonify({"error": "log file not found"}), 404
-
-    errors = defaultdict(int)
-    # 통합 에러 패턴 (CLAUDE.md 에러 모니터링 섹션 참조)
     error_patterns = {
-        'ERROR': r'ERROR\s+',
-        'TRACEBACK': r'Traceback \(most recent call last\)',
-        'EXCEPTION': r'Exception:\s+',
-        'TYPEERROR': r'TypeError:\s+',
-        'ATTRIBUTEERROR': r'AttributeError:\s+',
-        'JSON_ERROR': r'JSONDecodeError|Expecting value',
-        'HTTP_ERROR': r'HTTPError:\s+',
-        'CONNECTION_ERROR': r'ConnectionError:\s+',
-        'TIMEOUT': r'Timeout|timeout',
-        'LOB_BUG': r"'LOB' object is not subscriptable",
         'KIS_FAILED': r'KIS.*실패|KY.*실패',
+        'TRACEBACK': r'Traceback \(most recent call last\)',
+        'ERROR': r'\s+ERROR\s+',
+        'HTTP_ERROR': r'HTTPError:',
+        'CONNECTION_ERROR': r'ConnectionError:',
+        'TIMEOUT': r'Timeout|timeout',
+        'EXCEPTION': r'Exception:',
+        'JSON_ERROR': r'JSONDecodeError|Expecting value',
         'DB_FAILED': r'Oracle.*실패|ORA-',
         'PYKRX_ERROR': r'pykrx',
     }
 
-    with open(log_path, 'r', encoding='utf-8', errors='ignore') as f:
-        lines = f.readlines()[-3000:]
-
+    lines = _get_dashboard_lines()
+    errors = defaultdict(int)
     for line in lines:
         for error_type, pattern in error_patterns.items():
             if re.search(pattern, line, re.IGNORECASE):
@@ -299,8 +247,7 @@ def error_status_api():
                 break
 
     total_errors = sum(errors.values())
-    status = 'healthy' if total_errors < 50 else 'warning' if total_errors < 200 else 'critical'
-
+    status = 'healthy' if total_errors < 20 else 'warning' if total_errors < 100 else 'critical'
     return jsonify({
         'timestamp': datetime.now().isoformat(),
         'status': status,
