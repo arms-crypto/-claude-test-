@@ -172,7 +172,10 @@ class MockTrading:
         # KIS 매수 주문 (limit_price>0 이면 지정가)
         result = self._kis.buy_stock(code, qty, price=limit_price)
         if not result["success"]:
-            return f"❌ KIS 매수 실패: {result['msg']}"
+            msg = result["msg"]
+            if "주문가능금액" in msg or "금액을 초과" in msg:
+                return f"❌ NXT 매수 불가 (가용금액 부족): {msg}"
+            return f"❌ KIS 매수 실패: {msg}"
 
         cost = qty * price
         # 로컬 DB에도 기록 (히스토리용)
@@ -263,7 +266,10 @@ class MockTrading:
             except Exception:
                 pass
         if not result["success"]:
-            return f"❌ KIS 실전 매도 실패: {result['msg']}"
+            msg = result["msg"]
+            if "수량을 초과" in msg:
+                return f"❌ NXT 매도 불가 (T+2 미결제): {msg}"
+            return f"❌ KIS 실전 매도 실패: {msg}"
 
         proceeds = sell_qty * price
         profit = (price - avg_price) * sell_qty
