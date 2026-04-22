@@ -470,12 +470,14 @@ ai_chat.py → call_mistral_only()에서 자동 주입 (llm_client.py RAG 1단�
 
 ### 트레이너 실전 계좌 (mock_trading/kis_client.py) — 2026-04-17 실전 전환
 - **실전 API** — `https://openapi.koreainvestment.com:9443`, 계좌 `44197559-01`
+- **HTS_ID** — `@2930263` (H0STCNI0 WebSocket tr_key)
 - **REAL_TRADE = True** — 실제 체결, portfolio.db 관리
 - **KRX + NXT** — `get_price()` KRX, `get_nxt_price()` NXT, `get_best_price()` 자동 폴백
 - tr_id: 조회 FHKST*, 잔고 TTTC8434R, 매수 TTTC0802U, 매도 TTTC0801U
 
 ### KY 실전 계좌 (mock_trading/kis_client_ky.py) — 2026-04-11 추가
 - **실전 API** — 계좌 `44384407-01`
+- **HTS_ID** — `@2995879` (H0STCNI0 WebSocket tr_key)
 - **REAL_TRADE = True** — 실제 체결, portfolio_ky.db 별도 관리
 - **독립 매매** — 트레이너와 완전 독립 (동일 신호, 각자 예수금으로 매매)
 
