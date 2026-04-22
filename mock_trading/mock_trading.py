@@ -233,14 +233,13 @@ class MockTrading:
                 # sell_qty = 주문가능수량 (T+2 미결제 제외), qty = 총보유수량
                 kis_sellable = holding.get("sell_qty", holding["qty"])
                 if sell_qty > kis_sellable:
-                    import logging as _log
-                    _log.getLogger(__name__).warning(
+                    logger.warning(
                         "sell_qty 조정: %d → KIS매도가능%d (%s)", sell_qty, kis_sellable, code)
                     sell_qty = kis_sellable
             if sell_qty <= 0:
                 return f"❌ {name}({code}) KIS 매도가능수량 0주"
         except Exception:
-            pass
+            logger.warning("get_balance 실패 — 매도가능수량 캡핑 불가: %s", code)
 
         price = self._kis.get_price(code)
         if not price:
@@ -248,6 +247,21 @@ class MockTrading:
 
         # KIS 매도 주문
         result = self._kis.sell_stock(code, sell_qty)
+        if not result["success"] and "수량을 초과" in result.get("msg", ""):
+            # 주문가능수량 초과 — 잔고 재조회 후 1회 재시도 (NXT T+2 미반영 대응)
+            try:
+                bal2 = self._kis.get_balance()
+                h2 = next((h for h in bal2.get("holdings", []) if h["code"] == code), None)
+                retry_qty = h2.get("sell_qty", 0) if h2 else 0
+                if retry_qty > 0 and retry_qty < sell_qty:
+                    logger.warning("매도수량 재조회 재시도: %d→%d (%s)", sell_qty, retry_qty, code)
+                    result = self._kis.sell_stock(code, retry_qty)
+                    if result["success"]:
+                        sell_qty = retry_qty
+                elif retry_qty == 0:
+                    return f"❌ {name}({code}) KIS 재조회 매도가능수량 0주"
+            except Exception:
+                pass
         if not result["success"]:
             return f"❌ KIS 실전 매도 실패: {result['msg']}"
 
