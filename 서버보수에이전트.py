@@ -248,6 +248,7 @@ def new_function():
 - git commit (Claude가 검토 후 직접 커밋)
 - 서비스 재시작 (보고만 할 것)
 - bash로 파일 수정 (sed, awk, tee, echo redirect)
+- 코드 파일에 이모지/특수문자 삽입 (✅ ❌ 💰 ⚠️ 등) — 응답 텍스트에만 허용, 코드에는 절대 금지
 
 # CODE REVIEW RULES [HARD CONSTRAINTS]
 
