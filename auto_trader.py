@@ -1233,6 +1233,9 @@ def _monitor_signal_shifts():
             if pc_director:
                 def _call_pc_async(c=code, n=name, pc=prev_count, nc=new_count, s=signals):
                     try:
+                        if not config._auto_enabled:
+                            logger.debug("PC 분석 스킵 (자동매매 중지 중): %s", n)
+                            return
                         min_signal = pc_director.analyze_signal_shift(c, n, pc, nc, s)
                         if min_signal is not None:
                             logger.info("💡 PC제안: %s min_signal=%d → 학습데이터 축적", n, min_signal)
@@ -1866,7 +1869,7 @@ def smart_wakeup_monitor():
     while True:
         _t.sleep(30)
 
-        if not is_trading_hours():
+        if not is_trading_hours() or not config._auto_enabled:
             continue
 
         try:
