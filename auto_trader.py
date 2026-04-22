@@ -1606,8 +1606,10 @@ def auto_trade_cycle():
                         continue
                     result = _buy_for_account(acc, code, amount, sig=sig)
                     if "❌" in result:
-                        if "주문가능금액" in result or "잔고" in result:
-                            logger.info("[%s] 매수 스킵 %s (잔고부족): %s", acc["label"], code, result[:60])
+                        if "주문가능금액" in result or "잔고" in result or "NXT 매수 불가" in result:
+                            logger.info("[%s] 매수 스킵 %s (잔고부족) — 이 사이클 매수 중단: %s",
+                                        acc["label"], code, result[:60])
+                            break  # 잔고 부족 → 나머지 후보도 불가, 이 계좌 매수 루프 종료
                         else:
                             logger.warning("[%s] 매수 실패 %s: %s", acc["label"], code, result[:60])
                         continue

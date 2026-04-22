@@ -173,8 +173,6 @@ class MockTrading:
         result = self._kis.buy_stock(code, qty, price=limit_price)
         if not result["success"]:
             msg = result["msg"]
-            if "주문가능금액" in msg or "금액을 초과" in msg:
-                return f"❌ NXT 매수 불가 (가용금액 부족): {msg}"
             return f"❌ KIS 매수 실패: {msg}"
 
         cost = qty * price
@@ -228,6 +226,23 @@ class MockTrading:
         if sell_qty > hold_qty:
             return f"❌ 보유 수량 부족 (보유 {hold_qty:,}주)"
 
+        # NXT 시간 + 오늘 정규장 매수 종목 → T+2 미결제로 당일 NXT 매도 불가
+        try:
+            from auto_trader import is_nxt_hours as _is_nxt_hours
+            if _is_nxt_hours():
+                from datetime import date as _date
+                today_str = _date.today().isoformat()
+                with self._conn() as _db:
+                    row2 = _db.execute(
+                        "SELECT created_at FROM trades WHERE ticker=? AND action='BUY'"
+                        " ORDER BY id DESC LIMIT 1", [code]
+                    ).fetchone()
+                if row2 and row2[0][:10] == today_str:
+                    logger.info("NXT 매도 스킵 %s: 당일 정규장 매수 종목 (내일 정규장 처리)", code)
+                    return f"⏸ {name}({code}) 당일 매수 — NXT 매도 불가 (내일 정규장 자동 처리)"
+        except Exception:
+            pass
+
         # KIS 매도가능수량(ord_psbl_qty)으로 캡핑 — T+2 미결제·불일치 초과주문 방지
         try:
             bal = self._kis.get_balance()
@@ -267,8 +282,6 @@ class MockTrading:
                 pass
         if not result["success"]:
             msg = result["msg"]
-            if "수량을 초과" in msg:
-                return f"❌ NXT 매도 불가 (T+2 미결제): {msg}"
             return f"❌ KIS 실전 매도 실패: {msg}"
 
         proceeds = sell_qty * price
