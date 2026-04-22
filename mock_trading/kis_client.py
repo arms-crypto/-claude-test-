@@ -564,10 +564,13 @@ def get_balance() -> dict:
             qty = int(item.get("hldg_qty", 0))
             if qty <= 0:
                 continue
+            # ord_psbl_qty: 주문가능수량 (T+2 미결제 제외한 실매도 가능 수량)
+            ord_psbl_qty = int(item.get("ord_psbl_qty", qty))
             holdings.append({
                 "code":          item.get("pdno", ""),
                 "name":          item.get("prdt_name", ""),
                 "qty":           qty,
+                "sell_qty":      ord_psbl_qty,  # 실제 매도가능수량
                 "avg_price":     float(item.get("pchs_avg_pric", 0)),
                 "current_price": int(item.get("prpr", 0)),
                 "pnl":           float(item.get("evlu_pfls_rt", 0)),
