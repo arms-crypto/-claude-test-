@@ -157,15 +157,15 @@ class MockTrading:
         if qty < 1:
             return f"❌ 수량 부족 (1주 {price:,}원, 요청 {amount_krw:,}원)"
 
-        # 주문 직전 실잔고 최종 확인 (get_available_amount 후 잔고 변동 대비)
+        # 주문 직전 실잔고 확인 (NXT 시간에도 정확한 AFHR_FLPR_YN 반영)
         try:
             order_price = limit_price if limit_price > 0 else price
-            avail = self._kis.get_available_amount(code, order_price)
             cost_needed = qty * order_price
-            if 0 < avail < cost_needed:
+            avail = self._kis.get_balance().get("cash", 0)
+            if avail > 0 and avail < cost_needed:
                 qty = int(avail / order_price)
                 if qty < 1:
-                    return f"❌ {name}({code}) 주문가능금액 부족 ({avail:,}원 < {order_price:,}원/주)"
+                    return f"❌ 잔고 부족: {avail:,}원 < {order_price:,}원/주 ({name})"
         except Exception:
             pass
 
