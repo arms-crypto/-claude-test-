@@ -10,10 +10,16 @@ import logging
 import threading
 import time
 from base64 import b64decode
+from datetime import datetime
 
+import pytz
 import websocket  # websocket-client
 
 logger = logging.getLogger(__name__)
+# websocket-client 라이브러리가 ERROR 레벨로 "goodbye" 등을 찍어 에러 대시보드를 오염시킴
+logging.getLogger("websocket").setLevel(logging.CRITICAL)
+
+KST = pytz.timezone("Asia/Seoul")
 
 WS_URL = "ws://ops.koreainvestment.com:21000"
 
@@ -63,8 +69,15 @@ class KisOrderWatcher:
         if self._ws:
             self._ws.close()
 
+    def _is_trading_hours(self) -> bool:
+        now = datetime.now(KST)
+        return now.weekday() < 5 and 8 <= now.hour < 20
+
     def _run(self):
         while self._running:
+            if not self._is_trading_hours():
+                time.sleep(60)
+                continue
             try:
                 self._ws = websocket.WebSocketApp(
                     WS_URL,
