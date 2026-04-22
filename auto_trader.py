@@ -1529,33 +1529,45 @@ def auto_trade_cycle():
                             reason=f"Ollama: {reason}"
                         )
                         if action == "SELL_ALL":
-                            emoji = "🔴" if pnl < 0 else "💰"
-                            logger.info("%s [%s] 전량매도(부분→전량) %s(%s): %+.1f%%",
-                                        emoji, acc["label"], name, code, pnl)
-                            trade_log.append(
-                                f"{time_str} {emoji} 전량매도 {name}({code}) {pnl:+.1f}%\n"
-                                f"  └ {reason}")
-                            last_trades[code] = {"time": time_str, "action": "SELL_ALL",
-                                                 "pnl": pnl, "next_check": None}
+                            if "❌" in result:
+                                logger.warning("[%s] 매도 실패(부분→전량) %s(%s): %s",
+                                               acc["label"], name, code, result[:80])
+                            else:
+                                emoji = "🔴" if pnl < 0 else "💰"
+                                logger.info("%s [%s] 전량매도(부분→전량) %s(%s): %+.1f%%",
+                                            emoji, acc["label"], name, code, pnl)
+                                trade_log.append(
+                                    f"{time_str} {emoji} 전량매도 {name}({code}) {pnl:+.1f}%\n"
+                                    f"  └ {reason}")
+                                last_trades[code] = {"time": time_str, "action": "SELL_ALL",
+                                                     "pnl": pnl, "next_check": None}
                         else:
-                            emoji = "🤑" if pnl >= 0 else "🟡"
-                            logger.info("%s [%s] 부분매도 %s(%s): %+.1f%% %d주",
-                                        emoji, acc["label"], name, code, pnl, sell_qty)
-                            trade_log.append(
-                                f"{time_str} {emoji} 부분매도 {name}({code}) {pnl:+.1f}% {sell_qty}주\n"
-                                f"  └ {reason}")
-                            last_trades[code] = {"time": time_str, "action": "SELL_PARTIAL",
-                                                 "pnl": pnl, "next_check": next_dt}
+                            if "❌" in result:
+                                logger.warning("[%s] 매도 실패(부분) %s(%s): %s",
+                                               acc["label"], name, code, result[:80])
+                            else:
+                                emoji = "🤑" if pnl >= 0 else "🟡"
+                                logger.info("%s [%s] 부분매도 %s(%s): %+.1f%% %d주",
+                                            emoji, acc["label"], name, code, pnl, sell_qty)
+                                trade_log.append(
+                                    f"{time_str} {emoji} 부분매도 {name}({code}) {pnl:+.1f}% {sell_qty}주\n"
+                                    f"  └ {reason}")
+                                last_trades[code] = {"time": time_str, "action": "SELL_PARTIAL",
+                                                     "pnl": pnl, "next_check": next_dt}
 
                     elif action == "SELL_ALL":
                         result = _sell_for_account(acc, code, None, reason=f"Ollama: {reason}")
-                        emoji  = "🔴" if pnl < 0 else "💰"
-                        logger.info("%s [%s] 전량매도 %s(%s): %+.1f%%",
-                                    emoji, acc["label"], name, code, pnl)
-                        trade_log.append(
-                            f"{time_str} {emoji} 전량매도 {name}({code}) {pnl:+.1f}%\n  └ {reason}")
-                        last_trades[code] = {"time": time_str, "action": "SELL_ALL",
-                                             "pnl": pnl, "next_check": None}
+                        if "❌" in result:
+                            logger.warning("[%s] 매도 실패(전량) %s(%s): %s",
+                                           acc["label"], name, code, result[:80])
+                        else:
+                            emoji  = "🔴" if pnl < 0 else "💰"
+                            logger.info("%s [%s] 전량매도 %s(%s): %+.1f%%",
+                                        emoji, acc["label"], name, code, pnl)
+                            trade_log.append(
+                                f"{time_str} {emoji} 전량매도 {name}({code}) {pnl:+.1f}%\n  └ {reason}")
+                            last_trades[code] = {"time": time_str, "action": "SELL_ALL",
+                                                 "pnl": pnl, "next_check": None}
 
                     else:  # HOLD
                         logger.info("⏸ [%s] HOLD %s(%s): %+.1f%% → %d분 후 재확인",
