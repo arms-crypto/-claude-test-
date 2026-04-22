@@ -46,10 +46,11 @@ class KisOrderWatcher:
     AES-CBC 복호화 key/iv는 구독 확인 응답 body.output에서 자동 수신.
     """
 
-    def __init__(self, account_no: str, approval_key: str, on_fill):
-        self._account_no   = account_no    # "44197559"
+    def __init__(self, account_no: str, approval_key: str, on_fill, hts_id: str = ""):
+        self._account_no   = account_no    # "44197559" (로깅용)
         self._approval_key = approval_key
         self._on_fill      = on_fill
+        self._hts_id       = hts_id or account_no  # H0STCNI0 tr_key (HTS 아이디)
         self._iv           = None
         self._key          = None
         self._ws           = None
@@ -105,7 +106,7 @@ class KisOrderWatcher:
             "body": {
                 "input": {
                     "tr_id": "H0STCNI0",
-                    "tr_key": self._account_no,
+                    "tr_key": self._hts_id,
                 }
             },
         }

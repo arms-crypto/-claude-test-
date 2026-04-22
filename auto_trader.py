@@ -105,8 +105,8 @@ def _start_order_watcher():
     if _order_watcher is not None:
         return
     try:
-        from mock_trading.kis_client import get_approval_key
-        from mock_trading.kis_client_ky import get_approval_key as get_approval_key_ky
+        from mock_trading.kis_client import get_approval_key, HTS_ID
+        from mock_trading.kis_client_ky import get_approval_key as get_approval_key_ky, HTS_ID as HTS_ID_KY
         from mock_trading.kis_ws import KisOrderWatcher
 
         key = get_approval_key()
@@ -114,13 +114,13 @@ def _start_order_watcher():
             logger.warning("approval_key 발급 실패 — 체결통보 WebSocket 미시작")
             return
 
-        w1 = KisOrderWatcher("44197559", key, _get_auto_mt().on_fill)
+        w1 = KisOrderWatcher("44197559", key, _get_auto_mt().on_fill, hts_id=HTS_ID)
         w1.start()
 
         key_ky = get_approval_key_ky()
         w2 = None
         if key_ky:
-            w2 = KisOrderWatcher("44384407", key_ky, _get_auto_mt_ky().on_fill)
+            w2 = KisOrderWatcher("44384407", key_ky, _get_auto_mt_ky().on_fill, hts_id=HTS_ID_KY)
             w2.start()
 
         _order_watcher = (w1, w2)
