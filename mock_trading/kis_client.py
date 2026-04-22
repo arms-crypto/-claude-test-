@@ -520,8 +520,13 @@ def sell_stock(code: str, qty: int, price: int = 0) -> dict:
             logger.info("KIS 실전 매도 완료 %s %d주 [%s/%s] 주문번호:%s", code, qty, tr_id, excg_id, order_no)
             return {"success": True, "order_no": order_no, "msg": data.get("msg1", "")}
         else:
-            logger.error("KIS 실전 매도 실패 %s [%s]: %s", code, excg_id, data.get("msg1", ""))
-            return {"success": False, "order_no": "", "msg": data.get("msg1", "")}
+            msg1 = data.get("msg1", "")
+            # NXT 시간대 "수량 초과"는 T+2 미결제로 인한 정상 거부 — WARNING으로 충분
+            if excg_id == "NXT" and "수량을 초과" in msg1:
+                logger.warning("NXT 매도 불가 %s (T+2 미결제 추정): %s", code, msg1)
+            else:
+                logger.error("KIS 실전 매도 실패 %s [%s]: %s", code, excg_id, msg1)
+            return {"success": False, "order_no": "", "msg": msg1}
     except Exception:
         logger.exception("KIS 실전 매도 예외: %s", code)
         return {"success": False, "order_no": "", "msg": "API 오류"}
@@ -536,12 +541,14 @@ def get_balance() -> dict:
     if not token:
         return {"cash": 0, "holdings": []}
     try:
+        from auto_trader import is_nxt_hours as _is_nxt_hours
+        _afhr = "Y" if _is_nxt_hours() else "N"
         r = requests.get(
             f"{KIS_URL}/uapi/domestic-stock/v1/trading/inquire-balance",
             params={
                 "CANO": ACCOUNT_NO,
                 "ACNT_PRDT_CD": ACCOUNT_CD,
-                "AFHR_FLPR_YN": "N",
+                "AFHR_FLPR_YN": _afhr,
                 "OFL_YN": "N",
                 "INQR_DVSN": "02",
                 "UNPR_DVSN": "01",
