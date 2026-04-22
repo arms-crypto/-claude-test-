@@ -29,6 +29,7 @@ class MockTrading:
     def __init__(self, db_path: str = DB_PATH, kis_module=None):
         self.db_path = db_path
         self._kis = kis_module or _default_kis
+        self._pending_orders: dict = {}  # {order_no: {code, name, qty, price}}
         self._init_db()
 
     # ── DB 헬퍼 ─────────────────────────────────────────────────────────────
@@ -176,6 +177,13 @@ class MockTrading:
             if "주문가능금액" in msg or "초과" in msg:
                 return f"❌ 잔고 부족: {msg}"
             return f"❌ KIS 매수 실패: {msg}"
+
+        order_no = result.get("order_no", "")
+        if order_no:
+            self._pending_orders[order_no] = {
+                "code": code, "name": name, "qty": qty, "price": price,
+            }
+            logger.info("체결 대기 등록 %s: %s %d주 (주문번호: %s)", code, name, qty, order_no)
 
         cost = qty * price
         # 로컬 DB에도 기록 (히스토리용)
@@ -418,3 +426,87 @@ class MockTrading:
         except Exception:
             logger.exception("backtest 실패: %s", name_or_code)
             return "❌ 백테스트 오류 (로그 확인)"
+
+    # ── WebSocket 체결통보 콜백 ──────────────────────────────────────────────
+
+    def on_fill(self, fill: dict):
+        """WebSocket 체결통보 콜백. 실체결 가격/수량으로 portfolio DB 보정."""
+        order_no   = fill.get("order_no", "")
+        code       = fill.get("code", "")
+        fill_qty   = fill.get("fill_qty", 0)
+        fill_price = fill.get("fill_price", 0)
+        action     = fill.get("action", "")
+
+        if action != "BUY":
+            return
+        pending = self._pending_orders.pop(order_no, None)
+        if not pending or fill_qty <= 0 or fill_price <= 0:
+            return
+
+        expected_qty   = pending["qty"]
+        expected_price = pending["price"]
+
+        with self._conn() as db:
+            row = db.execute(
+                "SELECT qty, avg_price FROM portfolio WHERE ticker=?", [code]
+            ).fetchone()
+            if not row:
+                return
+            old_qty, old_avg = row
+            corrected_qty = old_qty - expected_qty + fill_qty
+            if corrected_qty <= 0:
+                db.execute("DELETE FROM portfolio WHERE ticker=?", [code])
+            else:
+                corrected_cost = (old_qty * old_avg
+                                  - expected_qty * expected_price
+                                  + fill_qty * fill_price)
+                corrected_avg  = corrected_cost / corrected_qty
+                db.execute(
+                    "UPDATE portfolio SET qty=?, avg_price=? WHERE ticker=?",
+                    [corrected_qty, corrected_avg, code],
+                )
+            db.commit()
+
+        if fill_qty != expected_qty or fill_price != expected_price:
+            logger.info(
+                "체결 보정 %s: 수량 %d->%d, 단가 %d->%d",
+                code, expected_qty, fill_qty, expected_price, fill_price,
+            )
+
+    def sync_with_kis(self):
+        """KIS 실잔고와 portfolio DB 동기화. 불일치 시 DB를 KIS 기준으로 수정."""
+        try:
+            bal = self._kis.get_balance()
+            kis_holdings = {h["code"]: h for h in bal.get("holdings", [])}
+            with self._conn() as db:
+                db_holdings = {
+                    r[0]: {"qty": r[2], "avg_price": r[3]}
+                    for r in db.execute(
+                        "SELECT ticker, name, qty, avg_price FROM portfolio WHERE qty > 0"
+                    ).fetchall()
+                }
+                diffs = []
+                for code in set(db_holdings) - set(kis_holdings):
+                    db.execute("DELETE FROM portfolio WHERE ticker=?", [code])
+                    diffs.append(f"DB삭제 {code} (KIS 보유없음)")
+                for code, h in kis_holdings.items():
+                    if code not in db_holdings:
+                        db.execute(
+                            "INSERT OR REPLACE INTO portfolio VALUES (?,?,?,?)",
+                            [code, h["name"], h["qty"], h["avg_price"]],
+                        )
+                        diffs.append(f"DB추가 {code} {h['qty']}주 (KIS 보유)")
+                    elif db_holdings[code]["qty"] != h["qty"]:
+                        db.execute(
+                            "UPDATE portfolio SET qty=?, avg_price=? WHERE ticker=?",
+                            [h["qty"], h["avg_price"], code],
+                        )
+                        diffs.append(f"수량보정 {code}: {db_holdings[code]['qty']}->{h['qty']}")
+                db.commit()
+            if diffs:
+                logger.warning("KIS sync 불일치 보정: %s", ", ".join(diffs))
+            else:
+                logger.info("KIS sync 완료 — 불일치 없음")
+            self._pending_orders.clear()
+        except Exception as e:
+            logger.warning("KIS sync 실패: %s", e)

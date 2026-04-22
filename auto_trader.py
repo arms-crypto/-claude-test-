@@ -97,6 +97,38 @@ def _get_auto_mt_ky():
     return _auto_mt_ky_inst
 
 
+_order_watcher = None
+
+
+def _start_order_watcher():
+    global _order_watcher
+    if _order_watcher is not None:
+        return
+    try:
+        from mock_trading.kis_client import get_approval_key
+        from mock_trading.kis_client_ky import get_approval_key as get_approval_key_ky
+        from mock_trading.kis_ws import KisOrderWatcher
+
+        key = get_approval_key()
+        if not key:
+            logger.warning("approval_key 발급 실패 — 체결통보 WebSocket 미시작")
+            return
+
+        w1 = KisOrderWatcher("44197559", key, _get_auto_mt().on_fill)
+        w1.start()
+
+        key_ky = get_approval_key_ky()
+        w2 = None
+        if key_ky:
+            w2 = KisOrderWatcher("44384407", key_ky, _get_auto_mt_ky().on_fill)
+            w2.start()
+
+        _order_watcher = (w1, w2)
+        logger.info("KIS 체결통보 WebSocket 초기화 완료")
+    except Exception as e:
+        logger.warning("KIS 체결통보 WebSocket 초기화 실패: %s", e)
+
+
 def _tg_notify(text: str):
     """텔레그램 알림 전송 (비차단)"""
     try:
@@ -1448,6 +1480,20 @@ def auto_trade_cycle():
     today    = kst_now.date().isoformat()
     all_bought = []
 
+    # ── 장 시작 KIS 동기화 (09:00~09:05) ────────────────────────────
+    if kst_now.hour == 9 and kst_now.minute < 5:
+        if not getattr(config, "_kis_synced_today", False):
+            for acc in _ACCOUNTS:
+                try:
+                    acc["get_mt"]().sync_with_kis()
+                except Exception as e:
+                    logger.warning("[%s] KIS sync 실패: %s", acc["label"], e)
+            config._kis_synced_today = True
+            _start_order_watcher()
+            logger.info("장 시작 KIS 동기화 + WebSocket 초기화 완료")
+    if kst_now.hour == 0:
+        config._kis_synced_today = False
+
     # ── 신규매수 후보 (공통 1회 조회 — 비싼 연산) ────────────────────
     # 09:00~09:10 KIS API 불안정 구간 — 신규매수만 차단 (매도/HOLD는 정상)
     can_buy = not (kst_now.hour == 9 and kst_now.minute < 10)
@@ -1809,6 +1855,9 @@ def auto_trade_loop():
             logger.info("🎯 PC LLM 디렉터 스레드 시작 (관리자 역할)")
         except Exception as e:
             logger.warning("PC LLM 디렉터 시작 실패: %s", e)
+
+    # KIS 체결통보 WebSocket 초기화 (서버 시작 시 1회)
+    _start_order_watcher()
 
     logger.info("자동매매 루프 시작 (적응형 간격: 신규기회 있을 때 30초, 없을 때 5분)")
     logger.info("구조: PC LLM(관리자) → 전략 지시 → Python(작업자) → 실행")

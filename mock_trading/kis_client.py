@@ -93,6 +93,27 @@ def get_token() -> str:
     return None
 
 
+def get_approval_key() -> str:
+    """KIS WebSocket 접속키 발급 (OAuth2/Approval)."""
+    try:
+        r = requests.post(
+            f"{KIS_URL}/oauth2/Approval",
+            json={"grant_type": "client_credentials",
+                  "appkey": APP_KEY, "secretkey": APP_SECRET},
+            headers={"Content-Type": "application/json"},
+            timeout=5,
+            proxies={"http": None, "https": None},
+        )
+        r.raise_for_status()
+        key = r.json().get("approval_key", "")
+        if key:
+            logger.info("KIS WebSocket approval_key 발급 완료")
+        return key
+    except Exception as e:
+        logger.warning("approval_key 발급 실패: %s", e)
+        return ""
+
+
 def _price_kis(code: str) -> int:
     """KIS API로 현재 주가 조회 (KRX 종목).
 
