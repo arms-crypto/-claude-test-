@@ -425,8 +425,12 @@ def buy_stock(code: str, qty: int, price: int = 0) -> dict:
             logger.info("KIS 실전 매수 완료 %s %d주 [%s/%s] 주문번호:%s", code, qty, tr_id, excg_id, order_no)
             return {"success": True, "order_no": order_no, "msg": data.get("msg1", "")}
         else:
-            logger.error("KIS 실전 매수 실패 %s [%s]: %s", code, excg_id, data.get("msg1", ""))
-            return {"success": False, "order_no": "", "msg": data.get("msg1", "")}
+            msg = data.get("msg1", "")
+            if excg_id == "NXT" and ("주문가능금액" in msg or "금액을 초과" in msg):
+                logger.warning("NXT 매수 불가 %s (가용금액 부족): %s", code, msg)
+            else:
+                logger.error("KIS 실전 매수 실패 %s [%s]: %s", code, excg_id, msg)
+            return {"success": False, "order_no": "", "msg": msg}
     except Exception:
         logger.exception("KIS 실전 매수 예외: %s", code)
         return {"success": False, "order_no": "", "msg": "API 오류"}
