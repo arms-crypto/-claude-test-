@@ -579,19 +579,28 @@ def get_balance() -> dict:
 
 
 def _get_ohlcv_pykrx(code: str, period: str = "D", count: int = 60) -> list:
-    """pykrx로 OHLCV 조회 (KIS 레이트리밋 초과 시 폴백)."""
+    """pykrx로 OHLCV 조회 (KIS 폴백용). pykrx freq=w 미지원 → 일봉 리샘플링으로 주봉 생성."""
     try:
         import datetime
         from pykrx import stock as _px
         today = datetime.date.today().strftime("%Y%m%d")
         days_back = {"D": count * 2, "W": count * 10, "M": count * 35}.get(period, count * 2)
         from_date = (datetime.date.today() - datetime.timedelta(days=days_back)).strftime("%Y%m%d")
-        if period == "D":
-            df = _px.get_market_ohlcv_by_date(from_date, today, code)
-        elif period == "W":
-            df = _px.get_market_ohlcv_by_date(from_date, today, code, freq="w")
-        else:  # M
+        if period == "M":
             df = _px.get_market_ohlcv_by_date(from_date, today, code, freq="m")
+        else:  # D 또는 W — pykrx freq=w 없음, 일봉으로 가져옴
+            df = _px.get_market_ohlcv_by_date(from_date, today, code)
+            if period == "W" and df is not None and not df.empty:
+                _cm = {}
+                for c in df.columns:
+                    if "시가" in c: _cm[c] = "open"
+                    elif "고가" in c: _cm[c] = "high"
+                    elif "저가" in c: _cm[c] = "low"
+                    elif "종가" in c: _cm[c] = "close"
+                    elif "거래량" in c: _cm[c] = "volume"
+                df = df.rename(columns=_cm)
+                _agg = {k: fn for k, fn in [("open","first"),("high","max"),("low","min"),("close","last"),("volume","sum")] if k in df.columns}
+                df = df.resample("W-FRI").agg(_agg).dropna()
         if df is None or df.empty:
             return []
         result = []
@@ -599,11 +608,11 @@ def _get_ohlcv_pykrx(code: str, period: str = "D", count: int = 60) -> list:
             try:
                 result.append({
                     "date":   idx.strftime("%Y%m%d"),
-                    "open":   int(row.get("시가", row.get("Open", 0))),
-                    "high":   int(row.get("고가", row.get("High", 0))),
-                    "low":    int(row.get("저가", row.get("Low", 0))),
-                    "close":  int(row.get("종가", row.get("Close", 0))),
-                    "volume": int(row.get("거래량", row.get("Volume", 0))),
+                    "open":   int(row.get("시가", row.get("open", row.get("Open", 0)))),
+                    "high":   int(row.get("고가", row.get("high", row.get("High", 0)))),
+                    "low":    int(row.get("저가", row.get("low", row.get("Low", 0)))),
+                    "close":  int(row.get("종가", row.get("close", row.get("Close", 0)))),
+                    "volume": int(row.get("거래량", row.get("volume", row.get("Volume", 0)))),
                 })
             except Exception:
                 pass
