@@ -163,7 +163,9 @@ class MockTrading:
             avail = self._kis.get_available_amount(code, order_price)
             cost_needed = qty * order_price
             if 0 < avail < cost_needed:
-                qty = max(1, int(avail / order_price))
+                qty = int(avail / order_price)
+                if qty < 1:
+                    return f"❌ {name}({code}) 주문가능금액 부족 ({avail:,}원 < {order_price:,}원/주)"
         except Exception:
             pass
 
