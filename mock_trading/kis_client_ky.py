@@ -22,7 +22,7 @@ APP_SECRET = ("HyWiB08P9zRYgeU6WsT43S3rVQhvVXjk6LiL0U3L/LHinBlAbaAzELUqzd9lhGT6D
 KIS_URL    = "https://openapi.koreainvestment.com:9443"
 ACCOUNT_NO = "44384407"   # KY 실전 계좌번호
 ACCOUNT_CD = "01"
-HTS_ID     = "2995879"    # KIS HTS 로그인 아이디 (H0STCNI0 tr_key)
+HTS_ID     = "@2995879"   # KIS HTS 로그인 아이디 (H0STCNI0 tr_key)
 REAL_TRADE = True         # 실전 매매 활성화
 
 _token_cache = {"token": None, "expires_at": 0, "issued_date": ""}
