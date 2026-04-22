@@ -157,6 +157,16 @@ class MockTrading:
         if qty < 1:
             return f"❌ 수량 부족 (1주 {price:,}원, 요청 {amount_krw:,}원)"
 
+        # 주문 직전 실잔고 최종 확인 (get_available_amount 후 잔고 변동 대비)
+        try:
+            order_price = limit_price if limit_price > 0 else price
+            avail = self._kis.get_available_amount(code, order_price)
+            cost_needed = qty * order_price
+            if 0 < avail < cost_needed:
+                qty = max(1, int(avail / order_price))
+        except Exception:
+            pass
+
         # KIS 매수 주문 (limit_price>0 이면 지정가)
         result = self._kis.buy_stock(code, qty, price=limit_price)
         if not result["success"]:

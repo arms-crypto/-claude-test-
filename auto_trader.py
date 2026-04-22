@@ -1606,7 +1606,10 @@ def auto_trade_cycle():
                         continue
                     result = _buy_for_account(acc, code, amount, sig=sig)
                     if "❌" in result:
-                        logger.warning("[%s] 매수 실패 %s: %s", acc["label"], code, result[:60])
+                        if "주문가능금액" in result or "잔고" in result:
+                            logger.info("[%s] 매수 스킵 %s (잔고부족): %s", acc["label"], code, result[:60])
+                        else:
+                            logger.warning("[%s] 매수 실패 %s: %s", acc["label"], code, result[:60])
                         continue
                     trade_type = sig.get("trade_type", "스윙")
                     name       = sig.get("name", code)
