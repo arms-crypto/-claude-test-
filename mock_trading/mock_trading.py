@@ -213,6 +213,20 @@ class MockTrading:
         if sell_qty > hold_qty:
             return f"❌ 보유 수량 부족 (보유 {hold_qty:,}주)"
 
+        # KIS 실잔고로 sell_qty 캡핑 — portfolio.db와 불일치 시 초과주문 방지
+        try:
+            bal = self._kis.get_balance()
+            kis_qty = next((h["qty"] for h in bal.get("holdings", []) if h["code"] == code), None)
+            if kis_qty is not None and sell_qty > kis_qty:
+                import logging as _log
+                _log.getLogger(__name__).warning(
+                    "sell_qty 조정: DB=%d → KIS실잔고=%d (%s)", sell_qty, kis_qty, code)
+                sell_qty = kis_qty
+            if sell_qty <= 0:
+                return f"❌ {name}({code}) KIS 실잔고 0주"
+        except Exception:
+            pass
+
         price = self._kis.get_price(code)
         if not price:
             return f"❌ {name}({code}) 가격 조회 실패"
@@ -220,7 +234,7 @@ class MockTrading:
         # KIS 매도 주문
         result = self._kis.sell_stock(code, sell_qty)
         if not result["success"]:
-            return f"❌ KIS 모의 매도 실패: {result['msg']}"
+            return f"❌ KIS 실전 매도 실패: {result['msg']}"
 
         proceeds = sell_qty * price
         profit = (price - avg_price) * sell_qty
