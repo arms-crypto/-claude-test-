@@ -635,7 +635,7 @@ def get_ohlcv(code: str, period: str = "D", count: int = 60) -> list:
         result.reverse()  # 오래된 것부터
         return result[-count:]
     except Exception:
-        logger.info("KIS OHLCV 폴백: %s %s → pykrx", code, period)
+        logger.info("KIS OHLCV 폴백: %s %s", code, period)
         return _get_ohlcv_pykrx(code, period, count)
 
 
