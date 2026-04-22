@@ -173,6 +173,8 @@ class MockTrading:
         result = self._kis.buy_stock(code, qty, price=limit_price)
         if not result["success"]:
             msg = result["msg"]
+            if "주문가능금액" in msg or "초과" in msg:
+                return f"❌ 잔고 부족: {msg}"
             return f"❌ KIS 매수 실패: {msg}"
 
         cost = qty * price
