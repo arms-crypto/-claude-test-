@@ -65,7 +65,45 @@ def send_wol():
         return False
 
 
+_PC_LAN_IP = "192.168.1.138"
+_ROUTER_SSH = [
+    "ssh", "-o", "ConnectTimeout=5", "-o", "StrictHostKeyChecking=no",
+    "-p", "2222", "-i", "/home/ubuntu/.ssh/id_rsa",
+    "qflavor12@221.144.111.116",
+]
 _LM_HEADERS = {"Authorization": f"Bearer {config.LM_API_KEY}"}
+
+
+def _check_pc_status() -> str:
+    """
+    PC + LM Studio 상태 3단계 확인.
+    1) LM Studio HTTP → 'online'
+    2) 라우터 SSH 실패 → 'internet_issue'
+    3) 라우터에서 PC ping → 성공='lm_studio_down', 실패='hibernating'
+    """
+    import subprocess
+    try:
+        r = requests.get(
+            "http://221.144.111.116:8000/v1/models",
+            headers=_LM_HEADERS, timeout=3,
+            proxies={"http": None, "https": None},
+        )
+        if r.status_code == 200:
+            return "online"
+    except Exception:
+        pass
+    try:
+        result = subprocess.run(
+            _ROUTER_SSH + [f"ping -c 3 -W 2 {_PC_LAN_IP} > /dev/null 2>&1 && echo PING_OK || echo PING_FAIL"],
+            capture_output=True, timeout=20,
+        )
+        if result.returncode != 0:
+            return "internet_issue"
+        out = result.stdout.decode("utf-8", errors="ignore")
+        return "lm_studio_down" if "PING_OK" in out else "hibernating"
+    except Exception as e:
+        logger.debug("라우터 SSH 상태 확인 실패: %s", e)
+        return "internet_issue"
 
 import time as _time_mod
 _last_ollama_request = [_time_mod.time()]  # 마지막 Ollama 요청 시각 (시작 시각으로 초기화)
@@ -228,16 +266,25 @@ def send_sleep(delay_min: int = 20):
 
 
 def wait_for_ollama(timeout: int = 120, interval: int = 10) -> bool:
-    """LM Studio (localhost:8000)가 응답할 때까지 대기. timeout초 내에 응답하면 True."""
+    """LM Studio 응답 대기. PC 상태에 따라 WoL 전송 또는 대기."""
     deadline = time.time() + timeout
+    _wol_sent = False
     while time.time() < deadline:
-        try:
-            r = requests.get("http://221.144.111.116:8000/v1/models", headers=_LM_HEADERS, timeout=5)
-            if r.status_code == 200:
-                logger.info("LM Studio 응답 확인 — 서버 정상")
-                return True
-        except Exception:
-            pass
+        status = _check_pc_status()
+        if status == "online":
+            logger.info("LM Studio 응답 확인 — 서버 정상")
+            return True
+        elif status == "hibernating":
+            if not _wol_sent:
+                logger.info("PC 절전 감지 → WoL 전송")
+                send_wol()
+                _wol_sent = True
+            else:
+                logger.debug("WoL 전송 후 PC 부팅 대기 중...")
+        elif status == "lm_studio_down":
+            logger.warning("PC 켜짐 but LM Studio 미응답 (재시작 필요)")
+        else:
+            logger.warning("인터넷/공유기 문제 — PC 상태 확인 불가, 대기 중...")
         time.sleep(interval)
     return False
 
