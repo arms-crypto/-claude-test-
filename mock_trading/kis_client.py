@@ -432,11 +432,7 @@ def buy_stock(code: str, qty: int, price: int = 0) -> dict:
     if nxt_time and is_nxt_supported(code):
         excg_id = "NXT"
     else:
-        from datetime import datetime
-        import pytz as _pytz
-        _now = datetime.now(_pytz.timezone("Asia/Seoul"))
-        _mins = _now.hour * 60 + _now.minute
-        excg_id = "UN" if (9 * 60 <= _mins < 15 * 60 + 30) else "KRX"
+        excg_id = "KRX"
 
     # NXT 애프터마켓은 시장가 불가 → 통합현재가로 지정가 강제
     if excg_id == "NXT" and price == 0:
@@ -507,11 +503,7 @@ def sell_stock(code: str, qty: int, price: int = 0) -> dict:
     if nxt_time and is_nxt_supported(code):
         excg_id = "NXT"
     else:
-        from datetime import datetime
-        import pytz as _pytz
-        _now = datetime.now(_pytz.timezone("Asia/Seoul"))
-        _mins = _now.hour * 60 + _now.minute
-        excg_id = "UN" if (9 * 60 <= _mins < 15 * 60 + 30) else "KRX"
+        excg_id = "KRX"
 
     # NXT 애프터마켓은 시장가 불가 → NXT현재가 → KRX현재가 순 폴백으로 지정가 강제
     if excg_id == "NXT" and price == 0:
