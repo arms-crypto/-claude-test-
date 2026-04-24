@@ -318,25 +318,8 @@ def ask_ai(session_id, user_input):
         if extra_data:
             ctx += "[참고 데이터]\n" + "\n".join(extra_data) + "\n\n"
 
-        # 뉴스/요약 요청 감지 → 명시적 요약 지시
-        _is_news = any(k in user_input.lower() for k in ["뉴스", "요약", "기사", "뭐가"])
-        if _is_news:
-            prompt = f"""{ctx}현재 시각: {current_time_str}
-
-사용자 요청: {user_input}
-
-**반드시 다음 형식으로만 답변하세요:**
-📰 [기사제목]
-→ 핵심 내용 (1줄)
-
-📰 [기사제목]
-→ 핵심 내용 (1줄)
-
-절대금지: 기사 원문 복사, 긴 설명, 무관한 내용"""
-            answer = call_qwen(prompt, history_messages=hist_msgs, system="뉴스 요약 전문가. 절대로 기사를 그대로 복사하지 말고, 반드시 핵심만 1줄로 요약해서 답변.")
-        else:
-            prompt = f"{ctx}현재 시각: {current_time_str}\n질문: {user_input}"
-            answer = call_qwen(prompt, history_messages=hist_msgs)
+        prompt = f"{ctx}현재 시각: {current_time_str}\n질문: {user_input}"
+        answer = call_qwen(prompt, history_messages=hist_msgs)
 
         # 6) LLM 응답에 6자리 종목코드 언급 + 주가 질문이면 자동 재조회
         if any(k in user_input for k in ["주가", "가격", "얼마", "시세"]):

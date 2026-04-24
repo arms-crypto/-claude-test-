@@ -393,3 +393,78 @@ def korea_invest_stock(query: str) -> str:
             return f"{q} {code} 현재가: {price}"
         return f"✅ {q} 코드 학습완료: `{code}` (가격 조회 실패)"
     return None  # 종목 미인식 — ask_ai가 LLM 직접 호출하도록 None 반환
+
+
+# ── 거시지표 / 시장 지수 ──────────────────────────────────────────────────────
+
+_MACRO_ENDPOINTS = {
+    "KOSPI":     ("https://m.stock.naver.com/front-api/v1/marketIndex/prices"
+                  "?category=nationalIndex&reutersCode=KOSPI"),
+    "KOSDAQ":    ("https://m.stock.naver.com/front-api/v1/marketIndex/prices"
+                  "?category=nationalIndex&reutersCode=KOSDAQ"),
+    "USD/KRW":   ("https://m.stock.naver.com/front-api/v1/marketIndex/prices"
+                  "?category=exchange&reutersCode=FX_USDKRW"),
+    "WTI유가":   ("https://m.stock.naver.com/front-api/v1/marketIndex/prices"
+                  "?category=commodity&reutersCode=OIL_CL1"),
+    "나스닥":    ("https://m.stock.naver.com/front-api/v1/marketIndex/prices"
+                  "?category=worldIndex&reutersCode=NAS"),
+    "미10Y금리": ("https://m.stock.naver.com/front-api/v1/marketIndex/prices"
+                  "?category=bond&reutersCode=US10YT"),
+}
+
+_MACRO_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36",
+    "Referer": "https://m.stock.naver.com/",
+}
+
+
+def _parse_macro_item(data: dict) -> dict:
+    """Naver Finance API 응답에서 가격·변동 추출."""
+    price = (data.get("closePrice") or data.get("nowValue")
+             or data.get("price") or "?")
+    change_pct = (data.get("fluctuationsRatio") or data.get("changeRate") or 0)
+    change_val = (data.get("compareToPreviousClosePrice")
+                  or data.get("changePrice") or 0)
+    return {"price": price, "change_pct": float(change_pct),
+            "change_val": change_val}
+
+
+def get_naver_index_data(index_name: str) -> dict:
+    """KOSPI / KOSDAQ 지수 조회. pc_director._get_market_context() 호환."""
+    url = _MACRO_ENDPOINTS.get(index_name)
+    if not url:
+        return {"price": "?", "change_pct": 0}
+    try:
+        r = requests.get(url, headers=_MACRO_HEADERS, timeout=6,
+                         proxies={"http": None, "https": None})
+        r.raise_for_status()
+        body = r.json()
+        data = body.get("result") or (body.get("resultList") or [{}])[0]
+        item = _parse_macro_item(data)
+        return {"price": item["price"], "change_pct": item["change_pct"]}
+    except Exception as e:
+        logger.debug("get_naver_index_data(%s) 실패: %s", index_name, e)
+        return {"price": "?", "change_pct": 0}
+
+
+def get_macro_indicators() -> str:
+    """
+    거시지표 6종 조회 → 한 줄 요약 문자열 반환.
+    항목: KOSPI / KOSDAQ / USD-KRW / WTI유가 / 나스닥 / 미10Y금리
+    """
+    lines = []
+    for name, url in _MACRO_ENDPOINTS.items():
+        try:
+            r = requests.get(url, headers=_MACRO_HEADERS, timeout=6,
+                             proxies={"http": None, "https": None})
+            r.raise_for_status()
+            body = r.json()
+            data = body.get("result") or (body.get("resultList") or [{}])[0]
+            item = _parse_macro_item(data)
+            sign = "+" if item["change_pct"] >= 0 else ""
+            lines.append(
+                f"{name}: {item['price']} ({sign}{item['change_pct']:.2f}%)")
+        except Exception as e:
+            logger.debug("get_macro_indicators(%s) 실패: %s", name, e)
+            lines.append(f"{name}: 조회실패")
+    return "\n".join(lines)

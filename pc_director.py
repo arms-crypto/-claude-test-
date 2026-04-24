@@ -46,6 +46,10 @@ _pc_stats = {
     "total_analysis_time": 0,     # 누적 분석 시간 (초)
 }
 
+# 🤖 완전 자율 관리자 — 실행 대기 큐
+_pending_manager_actions: list = []
+_last_system_review: datetime.datetime | None = None
+
 _lock = threading.Lock()
 
 
@@ -174,15 +178,45 @@ def get_pc_stats() -> dict:
 
 
 def _get_market_context() -> str:
-    """간단한 시장 정보 조회."""
+    """거시지표 6종 조회 (KOSPI/KOSDAQ/환율/유가/나스닥/미10Y금리)."""
     try:
-        from stock_data import get_naver_index_data
-        kospi = get_naver_index_data("KOSPI")
-        kosdaq = get_naver_index_data("KOSDAQ")
-        return f"KOSPI: {kospi.get('price', '?')} ({kospi.get('change_pct', '?')}%)\nKOSDAQ: {kosdaq.get('price', '?')} ({kosdaq.get('change_pct', '?')}%)"
+        from stock_data import get_macro_indicators
+        return get_macro_indicators()
     except Exception as e:
         logger.debug("시장 정보 조회 실패: %s", e)
         return "시장 정보 조회 실패"
+
+
+def _collect_holdings_news() -> str:
+    """보유 종목(트레이너 계좌 기준)별 최신 뉴스 수집."""
+    import sqlite3 as _sq
+    base = os.path.dirname(os.path.abspath(__file__))
+    db_path = os.path.join(base, "mock_trading/portfolio.db")
+    try:
+        con = _sq.connect(db_path)
+        holdings = con.execute(
+            "SELECT name, ticker FROM portfolio WHERE qty > 0"
+        ).fetchall()
+        con.close()
+    except Exception:
+        return "보유종목 조회 실패"
+
+    if not holdings:
+        return "보유종목 없음"
+
+    try:
+        from stock_data import naver_news
+    except Exception:
+        return "뉴스 함수 로드 실패"
+
+    lines = []
+    for name, ticker in holdings[:7]:  # 최대 7종목
+        try:
+            news = naver_news(f"{name} 주가")
+            lines.append(f"[{name}({ticker})] {news}")
+        except Exception:
+            lines.append(f"[{name}({ticker})] 뉴스 조회 실패")
+    return "\n".join(lines)
 
 
 def analyze_signal_shift(code: str, name: str, prev_count: int, new_count: int, signals: dict) -> int:
@@ -386,6 +420,247 @@ def generate_evening_analysis(daily_trades: list):
     return response
 
 
+def _collect_portfolio() -> str:
+    """두 계좌 포트폴리오 상태 수집."""
+    import sqlite3 as _sq
+    base = os.path.dirname(os.path.abspath(__file__))
+    accounts = [
+        ("🔵 트레이너", os.path.join(base, "mock_trading/portfolio.db")),
+        ("🟡 KY",       os.path.join(base, "mock_trading/portfolio_ky.db")),
+    ]
+    lines = []
+    for label, db_path in accounts:
+        try:
+            con = _sq.connect(db_path)
+            holdings = con.execute(
+                "SELECT name, ticker, qty, avg_price FROM portfolio WHERE qty > 0"
+            ).fetchall()
+            cash_row = con.execute("SELECT value FROM account WHERE key='cash'").fetchone()
+            con.close()
+            cash = float(cash_row[0]) if cash_row else 0
+            lines.append(f"{label} 예수금: {cash:,.0f}원 | 보유 {len(holdings)}종목")
+            for name, ticker, qty, avg in holdings:
+                lines.append(f"  {name}({ticker}) {qty}주 평단{avg:,.0f}원")
+        except Exception as e:
+            lines.append(f"{label} 조회 실패: {e}")
+    return "\n".join(lines)
+
+
+def _collect_today_stats() -> str:
+    """당일 매매 통계 (트레이너 기준)."""
+    import sqlite3 as _sq
+    base = os.path.dirname(os.path.abspath(__file__))
+    db_path = os.path.join(base, "mock_trading/portfolio.db")
+    try:
+        con = _sq.connect(db_path)
+        today = datetime.datetime.now(pytz.timezone("Asia/Seoul")).date().isoformat()
+        rows = con.execute(
+            "SELECT action, name, pnl FROM trades WHERE DATE(created_at)=? ORDER BY id",
+            [today]
+        ).fetchall()
+        con.close()
+        sells = [(r[1], r[2]) for r in rows if r[0] == "SELL" and r[2] is not None]
+        buys  = [r[1] for r in rows if r[0] == "BUY"]
+        if not sells:
+            return f"당일 매수: {len(buys)}건 | 당일 매도: 0건"
+        wins   = [p for _, p in sells if p > 0]
+        losses = [p for _, p in sells if p <= 0]
+        wr     = len(wins) / len(sells) * 100
+        avg_pnl = sum(p for _, p in sells) / len(sells)
+        return (
+            f"당일 매수: {len(buys)}건 | 당일 매도: {len(sells)}건\n"
+            f"승률: {wr:.0f}% ({len(wins)}승 {len(losses)}패) | 평균손익: {avg_pnl:+.2f}%"
+        )
+    except Exception as e:
+        return f"당일 통계 조회 실패: {e}"
+
+
+def _collect_error_summary() -> str:
+    """proxy_v54.log 최근 에러 요약 (최대 5건)."""
+    import re as _re
+    log_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "proxy_v54.log")
+    if not os.path.exists(log_path):
+        return "로그 파일 없음"
+    try:
+        with open(log_path, "r", encoding="utf-8", errors="ignore") as f:
+            lines = f.readlines()[-500:]
+        errors = [l.strip() for l in lines
+                  if _re.search(r'ERROR|CRITICAL|Traceback|Exception:', l)][-100:]
+        return "\n".join(errors) if errors else "최근 에러 없음"
+    except Exception as e:
+        return f"로그 조회 실패: {e}"
+
+
+def system_review(context_label: str = "정기점검") -> dict:
+    """
+    장 시작 전(08:00~08:10) / 장 마감 후(20:05~20:15) 호출.
+    Gemma에게 전체 시스템 상태 + 보유종목 뉴스 보고 → 관리 지시 수신.
+    완전 자율 모드: 지시를 즉시 실행 큐(_pending_manager_actions)에 적재.
+
+    Args:
+        context_label: "장전프리뷰" | "장후리뷰" | "정기점검"
+    Returns:
+        Gemma의 결정 dict (비어있으면 {})
+    """
+    global _last_system_review
+
+    kst_now = datetime.datetime.now(pytz.timezone("Asia/Seoul"))
+
+    with _lock:
+        if _last_system_review:
+            if (kst_now - _last_system_review).total_seconds() < 1800:
+                return {}
+
+    logger.info("🤖 Gemma 시스템 리뷰 시작 [%s]", context_label)
+
+    portfolio    = _collect_portfolio()
+    today_stats  = _collect_today_stats()
+    errors       = _collect_error_summary()
+    market       = _get_market_context()
+    holdings_news = _collect_holdings_news()
+
+    with _lock:
+        strategy_txt = json.dumps(_current_strategy, ensure_ascii=False)
+
+    # 타이밍별 역할 설명
+    if context_label == "장전프리뷰":
+        timing_guide = (
+            "## 현재 상황: 장 시작 전 프리뷰\n"
+            "오늘 장을 앞두고 전략을 점검하세요.\n"
+            "- 보유종목 중 악재 뉴스가 있으면 alerts로 알려주세요.\n"
+            "- 오늘의 시장 분위기(거시지표)에 맞게 strategy_update로 전략을 조정하세요.\n"
+            "- 즉시 매도가 필요한 종목(심각한 악재)은 sell_triggers에 넣으세요.\n"
+        )
+    elif context_label == "장후리뷰":
+        timing_guide = (
+            "## 현재 상황: 장 마감 후 리뷰\n"
+            "오늘 매매 결과를 분석하고 내일 전략을 수립하세요.\n"
+            "- 승률/손익 기반으로 strategy_update를 통해 내일 전략을 조정하세요.\n"
+            "- 보유종목 중 내일 위험한 종목이 있으면 alerts로 알려주세요.\n"
+            "- 오늘 에러가 있었다면 간단히 alerts에 요약해주세요.\n"
+        )
+    else:
+        timing_guide = "## 현재 상황: 정기점검\n시스템 전반을 점검하세요.\n"
+
+    prompt = f"""당신은 한국 자동매매 시스템의 완전 자율 관리자 AI입니다.
+지시는 즉시 자동 실행됩니다. 신중하게 판단하세요.
+
+{timing_guide}
+
+## 포트폴리오 현황
+{portfolio}
+
+## 당일 매매 통계
+{today_stats}
+
+## 거시지표 (환율/유가/금리/지수)
+{market}
+
+## 보유종목 최신 뉴스
+{holdings_news}
+
+## 현재 전략
+{strategy_txt}
+
+## 최근 에러 로그 (최대 100건)
+{errors}
+
+## 사용 가능한 조치
+1. strategy_update: daily_strategy.json 업데이트 (risk_level/min_signal_override/focus_sectors/max_holdings/notes)
+2. alerts: 텔레그램 알림 메시지 배열 (사용자에게 보낼 한국어 문장)
+3. sell_triggers: 즉시 매도할 종목코드 배열 (예: ["005930"])
+4. param_adjust: 파라미터 조정 로그용
+
+JSON만 반환 (조치 불필요 시 null/빈값):
+{{
+  "strategy_update": null,
+  "alerts": [],
+  "sell_triggers": [],
+  "param_adjust": {{}},
+  "notes": "판단 근거 한 줄"
+}}"""
+
+    response = _call_pc_director(prompt)
+
+    with _lock:
+        _last_system_review = kst_now
+
+    if not response:
+        return {}
+
+    try:
+        import re as _re
+        m = _re.search(r'\{[\s\S]*\}', response)
+        if m:
+            decision = json.loads(m.group())
+            logger.info("🤖 Gemma [%s] 지시 수신: %s", context_label, decision.get("notes", ""))
+            with _lock:
+                _pending_manager_actions.append(decision)
+            return decision
+    except Exception as e:
+        logger.error("Gemma 리뷰 응답 파싱 실패: %s | 원문: %s", e, response[:200])
+    return {}
+
+
+def check_holdings_news(items: list) -> list:
+    """
+    보유 종목별 뉴스 + 가격 변동을 Gemma에게 일괄 판단 요청.
+    가격 변동이 우선 기준, 뉴스는 보조.
+
+    Args:
+        items: [{"name": "삼성전기", "ticker": "009150",
+                 "news": "제목1 / 제목2 / 제목3",
+                 "pnl": -2.3, "price_change_5m": -1.1}, ...]
+    Returns:
+        악재 종목 list: [{"ticker": ..., "name": ..., "severity": "HIGH/MEDIUM",
+                          "reason": "..."}]
+    """
+    if not items:
+        return []
+
+    lines = []
+    for it in items:
+        lines.append(
+            f"- {it['name']}({it['ticker']}): "
+            f"보유손익{it['pnl']:+.1f}% | 5분변동{it.get('price_change_5m', 0):+.2f}% | "
+            f"뉴스: {it['news']}"
+        )
+
+    prompt = f"""보유 종목들의 가격 변동과 뉴스를 보고 실제 악재가 있는 종목만 골라주세요.
+
+판단 기준:
+1. 가격이 5분 내 -1% 이상 하락하고 뉴스에 악재가 있으면 HIGH
+2. 가격 변동은 없지만 심각한 공시·실적 악화 뉴스면 MEDIUM
+3. 뉴스가 단순 전망이거나 가격에 영향 없으면 SKIP
+
+보유 종목:
+{chr(10).join(lines)}
+
+악재 종목만 JSON 배열로 반환. 없으면 빈 배열:
+[{{"ticker":"코드","name":"종목명","severity":"HIGH or MEDIUM","reason":"한줄 이유"}}]"""
+
+    response = _call_pc_director(prompt)
+    if not response:
+        return []
+    try:
+        import re as _re
+        m = _re.search(r'\[[\s\S]*\]', response)
+        if m:
+            result = json.loads(m.group())
+            return result if isinstance(result, list) else []
+    except Exception as e:
+        logger.debug("check_holdings_news 파싱 실패: %s", e)
+    return []
+
+
+def get_pending_actions() -> list:
+    """auto_trader.py가 폴링하는 함수 — 실행 대기 관리자 지시 반환 후 큐 초기화."""
+    with _lock:
+        actions = list(_pending_manager_actions)
+        _pending_manager_actions.clear()
+    return actions
+
+
 def _save_strategy():
     """전략을 JSON 파일로 저장."""
     try:
@@ -430,11 +705,24 @@ def director_scheduler():
         try:
             kst_now = datetime.datetime.now(pytz.timezone("Asia/Seoul"))
 
-            # 장 시작 전 (09:00 ~ 09:05)
+            # 장 시작 전 (09:00 ~ 09:05) — 당일 전략 수립
             if is_trading_hours() and 9 <= kst_now.hour < 10 and kst_now.minute < 5:
                 today = kst_now.date().isoformat()
                 if _current_strategy.get("date") != today:
                     init_daily_strategy()
+
+            # 장 시작 전 프리뷰 (평일 08:00~08:10)
+            if (kst_now.weekday() < 5
+                    and kst_now.hour == 8 and kst_now.minute < 10):
+                today = kst_now.date().isoformat()
+                if getattr(_last_system_review, 'date', lambda: None)() != kst_now.date() \
+                        or _last_system_review is None:
+                    system_review(context_label="장전프리뷰")
+
+            # 장 마감 후 리뷰 (평일 20:05~20:15)
+            if (kst_now.weekday() < 5
+                    and kst_now.hour == 20 and 5 <= kst_now.minute < 15):
+                system_review(context_label="장후리뷰")
 
             # 장 마감 전 준비 (15:30)
             if kst_now.hour == 15 and kst_now.minute == 30 and kst_now.weekday() < 5:

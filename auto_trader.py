@@ -464,11 +464,27 @@ def calculate_chart_signals(code: str, scan_mode: bool = False) -> dict | None:
         except Exception:
             pass
 
+    # 이격도: 현재가 기준 MA20/MA60 대비 거리(%)
+    이격도_ma20 = 이격도_ma60 = None
+    if 'df_d' in locals() and df_d is not None and len(df_d) > 0:
+        try:
+            _cur = float(df_d['close'].iloc[-1])
+            _ma20 = signals.get("일봉_ma20")
+            _ma60 = signals.get("일봉_ma60")
+            if _ma20 and _ma20 > 0:
+                이격도_ma20 = round((_cur - _ma20) / _ma20 * 100, 1)
+            if _ma60 and _ma60 > 0:
+                이격도_ma60 = round((_cur - _ma60) / _ma60 * 100, 1)
+        except Exception:
+            pass
+
     return {
         "signals":        signals,
         "buy_count":      buy_count,       # 스윙 판단 /12
         "minute_count":   minute_count,    # 단타 타이밍 참고 /4
         "volume_ratio":   round(volume_ratio, 2),  # 당일거래량 / 20일평균거래량
+        "이격도_ma20":    이격도_ma20,     # (현재가-MA20)/MA20*100
+        "이격도_ma60":    이격도_ma60,     # (현재가-MA60)/MA60*100
         "df_daily":       df_d if 'df_d' in locals() else None,  # 차트 PNG 생성용
         "sig_ichimoku":   signals.get("주봉_일목균형표", False),
         "sig_d_ichimoku": signals.get("일봉_일목균형표", False),
@@ -1362,12 +1378,17 @@ def _ollama_sell_decision(code: str, name: str, pnl: float, qty: int,
     if last_trades is None:
         last_trades = config._auto_last_trades
 
-    hold_days = 0
+    hold_mins = 0
     try:
-        d = last_trades.get(code, {}).get("date")
-        if d:
-            hold_days = (datetime.datetime.now(pytz.timezone("Asia/Seoul")).date()
+        _bdt = last_trades.get(code, {}).get("buy_dt")
+        if _bdt:
+            hold_mins = int((datetime.datetime.now(pytz.timezone("Asia/Seoul")) - _bdt).total_seconds() / 60)
+        else:
+            d = last_trades.get(code, {}).get("date")
+            if d:
+                _days = (datetime.datetime.now(pytz.timezone("Asia/Seoul")).date()
                          - datetime.date.fromisoformat(d)).days
+                hold_mins = _days * 1440
     except Exception:
         pass
 
@@ -1376,7 +1397,9 @@ def _ollama_sell_decision(code: str, name: str, pnl: float, qty: int,
         sig_txt = (f"RSI={sig['rsi']} MACD_hist={sig['macd_hist']} "
                    f"ADX={sig.get('adx','?')} PDI={sig.get('pdi','?')} MDI={sig.get('mdi','?')} "
                    f"일목균형표={'✅' if sig['sig_ichimoku'] else '❌'} "
-                   f"매수신호={sig['buy_count']}/12")
+                   f"매수신호={sig['buy_count']}/12 "
+                   f"거래량비율={sig.get('volume_ratio','?')}x "
+                   f"이격도MA20={sig.get('이격도_ma20','?')}% 이격도MA60={sig.get('이격도_ma60','?')}%")
 
     rag_sell = _rag_trade_history(code, sig or {})
 
@@ -1397,7 +1420,7 @@ def _ollama_sell_decision(code: str, name: str, pnl: float, qty: int,
         f"현재시각: {kst_time_str} KST\n"
         f"오늘 변동폭: {day_range_pct:.1f}% | ATR5: {atr5_pct:.1f}%\n"
         f"차트: {sig_txt}\n"
-        f"보유일수: {hold_days}일\n"
+        f"매수 후 경과: {hold_mins}분 ({hold_mins // 60}시간 {hold_mins % 60}분)\n"
         + (f"[학습된 매도 기법]\n{rag_method_sell}\n" if rag_method_sell else "")
         + (rag_sell + "\n" if rag_sell else "")
         + f"\n전략: {trade_type}\n"
@@ -1456,6 +1479,58 @@ def _ollama_sell_decision(code: str, name: str, pnl: float, qty: int,
         return     {"action": "HOLD",         "ratio": 0.0, "check_after": 15, "reason": "폴백 스윙 유지"}
 
 
+# ── Gemma 관리자 지시 실행 ───────────────────────────────────────────────────
+
+def _execute_manager_action(action: dict):
+    """
+    pc_director.system_review()가 생성한 Gemma 관리자 지시를 실행.
+    완전 자율 모드 — 사용자 승인 없이 즉시 실행.
+    """
+    import json as _json
+
+    notes = action.get("notes", "")
+    logger.info("🤖 Gemma 관리자 지시 실행: %s", notes)
+
+    # 1. 전략 업데이트
+    su = action.get("strategy_update")
+    if su and isinstance(su, dict):
+        try:
+            current = pc_director.get_current_strategy()
+            merged  = {**current, **su, "date": current.get("date"), "status": "ready"}
+            strategy_path = os.path.join(os.path.dirname(__file__), "daily_strategy.json")
+            with open(strategy_path, "w", encoding="utf-8") as f:
+                _json.dump(merged, f, ensure_ascii=False, indent=2)
+            logger.info("🤖 Gemma 전략 업데이트 완료: %s", su)
+            _tg_notify(f"🤖 Gemma 전략 변경\n{_json.dumps(su, ensure_ascii=False)}\n📝 {notes}")
+        except Exception as e:
+            logger.error("Gemma 전략 업데이트 실패: %s", e)
+
+    # 2. alerts — 로그만 기록 (텔레그램 발송 안 함)
+    for alert in action.get("alerts", []):
+        logger.info("🤖 Gemma 알림 (로그): %s", alert)
+
+    # 3. 즉시 매도 트리거
+    for code in action.get("sell_triggers", []):
+        try:
+            for acc in _ACCOUNTS:
+                mt = acc["get_mt"]()
+                holdings = [h[0] for h in mt._get_holdings()]
+                if code in holdings:
+                    result = _sell_for_account(acc, code, None,
+                                               reason=f"Gemma관리자: {notes[:30]}")
+                    logger.info("🤖 Gemma 매도 [%s] %s: %s",
+                                acc["label"], code, result[:60])
+                    acc["notify"](f"🤖 Gemma 매도 실행\n종목: {code}\n사유: {notes}")
+        except Exception as e:
+            logger.error("Gemma 매도 실행 실패 %s: %s", code, e)
+
+    # 4. 파라미터 조정 (로그 + 알림, 향후 실제 적용)
+    pa = action.get("param_adjust")
+    if pa and isinstance(pa, dict):
+        logger.info("🤖 Gemma 파라미터 조정 요청: %s", pa)
+        _tg_notify(f"🤖 Gemma 파라미터 조정\n{_json.dumps(pa, ensure_ascii=False)}\n📝 {notes}")
+
+
 # ── 핵심 매매 사이클 ─────────────────────────────────────────────────────────
 
 def auto_trade_cycle():
@@ -1467,6 +1542,14 @@ def auto_trade_cycle():
     """
     if not config._auto_enabled or not is_trading_hours():
         return
+
+    # Gemma 관리자 지시 처리 (system_review 큐 폴링)
+    if pc_director:
+        for _action in pc_director.get_pending_actions():
+            try:
+                _execute_manager_action(_action)
+            except Exception as _me:
+                logger.error("Gemma 관리자 지시 실행 오류: %s", _me)
 
     # 신호 변화 감지 (PC LLM이 학습데이터로 분석)
     _monitor_signal_shifts()
@@ -1564,6 +1647,16 @@ def auto_trade_cycle():
                             f"{time_str} 🔔 단타강제청산 {name}({code}) {pnl:+.1f}%")
                         last_trades[code] = {"time": time_str, "action": "SELL_ALL", "pnl": pnl}
                         continue
+
+                    # 최소 보유시간 가드 — 매수 직후 즉각 매도 방지
+                    _buy_dt = last.get("buy_dt")
+                    if _buy_dt:
+                        _min_hold = 10 if trade_type == "단타" else 60
+                        _elapsed  = (kst_now - _buy_dt).total_seconds() / 60
+                        if _elapsed < _min_hold:
+                            logger.debug("⏳ [%s] %s(%s) 최소보유 %d분 미충족 (%.0f분 경과)",
+                                         acc["label"], name, code, _min_hold, _elapsed)
+                            continue
 
                     decision    = _ollama_sell_decision(code, name, pnl, qty, avg_price, current,
                                                         trade_type=trade_type,
@@ -1688,6 +1781,7 @@ def auto_trade_cycle():
                         "time": time_str, "action": "BUY", "date": today,
                         "signals": sig["buy_count"], "rsi": sig["rsi"],
                         "trade_type": trade_type,
+                        "buy_dt": kst_now,
                     }
                     # 신호 감시 등록은 트레이너만 (PC LLM 학습용)
                     if acc["id"] == "trainer":
@@ -1744,11 +1838,18 @@ def _restore_today_trades():
             for ticker, name, action, created_at in rows:
                 db_action = "BUY" if action == "BUY" else "SELL_ALL"
                 if ticker not in last_trades or db_action == "SELL_ALL":
-                    last_trades[ticker] = {
+                    entry = {
                         "action": db_action, "date": today,
                         "time": created_at[11:19] if len(created_at) > 10 else "",
                         "trade_type": "스윙",
                     }
+                    if db_action == "BUY" and len(created_at) >= 19:
+                        try:
+                            _buy_naive = datetime.datetime.fromisoformat(created_at[:19])
+                            entry["buy_dt"] = pytz.timezone("Asia/Seoul").localize(_buy_naive)
+                        except Exception:
+                            pass
+                    last_trades[ticker] = entry
             if rows:
                 logger.info("[%s] 당일 매매 복원: %d건", acc["label"], len(rows))
         except Exception:
@@ -1850,6 +1951,74 @@ def _log_holdings_status():
         logger.exception("_log_holdings_status 실패")
 
 
+def _news_watch_cycle():
+    """
+    10분마다 보유종목 뉴스 + 5분 가격변동 체크 → Gemma 악재 판단 → 텔레그램 알림.
+    가격 변동이 1순위, 뉴스는 보조 기준 (Gemma 권고 반영).
+    """
+    if not is_trading_hours():
+        return
+    try:
+        from stock_data import naver_news
+        from mock_trading.kis_client import get_current_price as _get_price
+
+        with __import__("sqlite3").connect("mock_trading/portfolio.db") as _con:
+            holdings = _con.execute(
+                "SELECT name, ticker, avg_price FROM portfolio WHERE qty > 0"
+            ).fetchall()
+
+        if not holdings:
+            return
+
+        items = []
+        for name, ticker, avg_price in holdings:
+            try:
+                cur = _get_price(ticker) or avg_price
+                pnl = (cur - avg_price) / avg_price * 100
+                news = naver_news(f"{name} 주가")
+
+                # 5분 가격변동 (현재가 vs avg 근사치 — 실시간 이전가 없으면 pnl 사용)
+                price_change_5m = pnl  # 향후 이전가 캐시로 개선 가능
+                items.append({
+                    "name": name, "ticker": ticker,
+                    "pnl": round(pnl, 2),
+                    "price_change_5m": round(price_change_5m, 2),
+                    "news": news,
+                })
+            except Exception:
+                pass
+
+        if not items or not pc_director:
+            return
+
+        악재_list = pc_director.check_holdings_news(items)
+        for item in 악재_list:
+            severity = item.get("severity", "")
+            name     = item.get("name", "")
+            ticker   = item.get("ticker", "")
+            reason   = item.get("reason", "")
+            if severity in ("HIGH", "MEDIUM"):
+                emoji = "🚨" if severity == "HIGH" else "⚠️"
+                msg = (f"{emoji} Gemma 악재 포착 [{severity}]\n"
+                       f"{name}({ticker})\n{reason}")
+                _tg_notify(msg)
+                logger.info("악재 알림 발송 [%s] %s: %s", severity, name, reason)
+    except Exception as e:
+        logger.debug("_news_watch_cycle 오류: %s", e)
+
+
+def _news_watch_loop():
+    """뉴스 감시 데몬 스레드 — 10분마다 실행."""
+    import time as _time
+    logger.info("📰 뉴스 감시 루프 시작 (10분 간격)")
+    while True:
+        try:
+            _news_watch_cycle()
+        except Exception:
+            pass
+        _time.sleep(600)  # 10분
+
+
 def auto_trade_loop():
     """자동매매 루프 — daemon 스레드
     - 신규매수 기회 있을 때: 30초 간격 (활성)
@@ -1866,6 +2035,9 @@ def auto_trade_loop():
             logger.info("🎯 PC LLM 디렉터 스레드 시작 (관리자 역할)")
         except Exception as e:
             logger.warning("PC LLM 디렉터 시작 실패: %s", e)
+
+    # 뉴스 감시 스레드 (10분마다 — 악재 보조 알림)
+    threading.Thread(target=_news_watch_loop, daemon=True).start()
 
     # KIS 체결통보 WebSocket 초기화 (서버 시작 시 1회)
     _start_order_watcher()
@@ -2365,7 +2537,9 @@ def analyze_chart_for_chat(query: str) -> tuple:
         f"정배열{v('일봉_정배열')} 가격>MA20{v('일봉_가격위치')}\n"
         f"분봉(15/30/60): 일목{v('분봉_일목균형표')} ADX{v('분봉_ADX')} RSI{v('분봉_RSI')} MACD{v('분봉_MACD')}\n"
         f"단타(3분): 일목{v('분봉_3분_일목균형표')} ADX{v('분봉_3분_ADX')} RSI{v('분봉_3분_RSI')} MACD{v('분봉_3분_MACD')}\n"
-        f"ADX={sig.get('adx','?'):.1f} MACD히스트={sig.get('macd_hist','?')}\n\n"
+        f"ADX={sig.get('adx','?'):.1f} | MACD히스트={sig.get('macd_hist','?')} | RSI={sig.get('rsi','?')}\n"
+        f"거래량비율={sig.get('volume_ratio','?')}x (1.0=평균거래량) | "
+        f"이격도MA20={sig.get('이격도_ma20','?')}% | 이격도MA60={sig.get('이격도_ma60','?')}%\n\n"
     )
 
     # Ollama 자율 학습 기법 조회 (chart_method_memory)

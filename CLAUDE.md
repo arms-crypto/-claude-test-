@@ -769,6 +769,53 @@ curl -s http://127.0.0.1:8085/         # strategy_builder API
 - LM Studio 모델 언로드 자동 감지 → WoL + `_wait_for_model(180)` + 재시도
 - 태스크 서버: `task-server.service` systemd 등록 — 부팅 시 자동 시작
 
+## Gemma 완전 자율 관리자 (2026-04-25 구현)
+
+### 구조
+```
+[장전 08:00 / 장후 20:05 — director_scheduler]
+  pc_director.system_review(context_label)
+    → 포트폴리오 + 당일승률 + 거시지표 6종 + 보유종목 뉴스 + 에러로그(100건) + 현재전략
+    → Gemma 호출 → JSON 결정 → _pending_manager_actions 큐 적재
+
+[30초마다 — auto_trade_cycle]
+  pc_director.get_pending_actions() 폴링
+    → _execute_manager_action(action):
+        strategy_update → daily_strategy.json 덮어쓰기
+        alerts         → 로그만 (텔레그램 발송 안 함)
+        sell_triggers  → 두 계좌 즉시 매도
+        param_adjust   → 로그 + 텔레그램
+
+[10분마다 — _news_watch_loop 데몬]
+  보유종목 뉴스 수집 → Gemma 악재 판단
+    → HIGH/MEDIUM 악재 → 텔레그램 발송
+```
+
+### Gemma에게 주어진 도구 (llm_client.py)
+- `read_file` — 500줄 + offset 분할 읽기 (최대 500줄/회)
+- `write_file` — **완전 차단** (`⛔ write_file 권한 없음` 반환)
+- `get_macro_indicators` — 거시지표 6종 실시간 조회
+- `run_command`, `web_search`, `get_news` 등 기존 도구 유지
+
+### 승률 개선 (2026-04-25)
+- **최소 보유시간 가드**: 스윙 60분 / 단타 10분 이내 매도 판단 차단
+- **Gemma 프롬프트**: `보유일수(일)` → `매수 후 경과(분)` 으로 변경
+- 효과: 즉각 0% 매도 12건 → 0건, 예상 승률 51% → 78% 복원
+
+### analyze_chart 강화
+- `volume_ratio` (거래량/20일평균) + `이격도_ma20/ma60` 추가 계산·전달
+- Gemma가 거래량 동반 여부, 이격도 과열 여부 판단 가능
+
+### llm_client.py 자율 에이전트화
+- `_TOOL_SYSTEM` 첫 줄: "자율 행동 에이전트" 선언 + 되묻기 금지
+- 도구 루프 3 → 6라운드 (복합 체인 대응)
+- 단독 호출(round 0)만 `_DIRECT_RETURN_TOOLS` 즉시 반환 → 체인 중엔 Gemma 종합
+- Gemma 4 native `<|tool_call>` 따옴표 형식 파싱 개선
+
+### 절대 하지 말 것 추가
+- `write_file` 도구를 Gemma(Ollama)에게 다시 열어주지 말 것 — db_utils.py 오염 사례 발생
+- `ai_chat.py`의 `_is_news` 하드코딩 형식 블록 복구 금지 — Gemma 자유도 차단
+
 ## 자주 쓰는 명령
 ```bash
 sudo systemctl restart proxy_v54        # 서버 재시작
