@@ -154,19 +154,32 @@ class MockTrading:
         if not price:
             return f"❌ {name}({code}) 가격 조회 실패"
 
+        # 현금 동기화 — 1시간에 1회 (매수 시도마다 API 호출 방지)
+        import time as _time
+        now_ts = _time.time()
+        if now_ts - getattr(self, "_last_cash_sync_ts", 0) >= 3600:
+            try:
+                kis_cash = self._kis.get_balance().get("cash", 0)
+                if kis_cash > 0 and kis_cash != self.cash:
+                    logger.warning("cash 동기화: 로컬 %d원 → KIS %d원", self.cash, kis_cash)
+                    self.cash = kis_cash
+                self._last_cash_sync_ts = now_ts
+            except Exception:
+                pass
+
         qty = int(amount_krw / price)
         if qty < 1:
             return f"❌ 수량 부족 (1주 {price:,}원, 요청 {amount_krw:,}원)"
 
-        # 주문 직전 실잔고 확인 (NXT 시간에도 정확한 AFHR_FLPR_YN 반영)
+        # 주문 직전 KIS 실제 주문가능금액으로 qty 조정
+        order_price = limit_price if limit_price > 0 else price
         try:
-            order_price = limit_price if limit_price > 0 else price
-            cost_needed = qty * order_price
-            avail = self._kis.get_balance().get("cash", 0)
-            if avail > 0 and avail < cost_needed:
+            avail = self._kis.get_available_amount(code, order_price)
+            if avail > 0 and avail < qty * order_price:
                 qty = int(avail / order_price)
                 if qty < 1:
-                    return f"❌ 잔고 부족: {avail:,}원 < {order_price:,}원/주 ({name})"
+                    return f"❌ 주문가능금액 부족: {avail:,}원 < {order_price:,}원/주 ({name})"
+                logger.warning("주문가능금액 부족 — qty 조정 %s: 요청 %d원 → 가용 %d원 (%d주로 축소)", code, qty * order_price, avail, qty)
         except Exception:
             pass
 
@@ -478,6 +491,15 @@ class MockTrading:
         try:
             bal = self._kis.get_balance()
             kis_holdings = {h["code"]: h for h in bal.get("holdings", [])}
+
+            # 현금 동기화 — KIS 실잔고로 덮어쓰기
+            kis_cash = bal.get("cash", 0)
+            if kis_cash > 0:
+                local_cash = self.cash
+                if local_cash != kis_cash:
+                    self.cash = kis_cash
+                    logger.warning("KIS cash 동기화: 로컬 %d원 → KIS %d원 (차이 %+d원)",
+                                   local_cash, kis_cash, kis_cash - local_cash)
             with self._conn() as db:
                 db_holdings = {
                     r[0]: {"qty": r[2], "avg_price": r[3]}

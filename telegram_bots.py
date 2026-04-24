@@ -439,6 +439,11 @@ def auto_report_scheduler():
                                           json={"chat_id": _cid, "text": text},
                                           proxies=_np, timeout=10)
 
+                    def _send_personal(text):
+                        requests.post(f"{base_url}/sendMessage",
+                                      json={"chat_id": config.CHAT_ID, "text": text},
+                                      proxies=_np, timeout=10)
+
                     foreign = get_foreign_net_buy("순매수")
                     _send(foreign if foreign and "실패" not in foreign
                           else "⚠️ 외국인 순매수 데이터 조회 실패")
@@ -461,78 +466,21 @@ def auto_report_scheduler():
                             inst = "⚠️ 기관 순매수 데이터 없음 (DB 미수집)"
                     _send(inst)
 
-                    # ── 계좌별 당일 청산 통계 헬퍼 ──────────────────────────
-                    def _get_stat(db_path, today_str):
-                        try:
-                            import sqlite3 as _sq3
-                            with _sq3.connect(db_path) as con:
-                                rows = con.execute(
-                                    "SELECT pnl FROM trades WHERE action='SELL' "
-                                    "AND created_at >= ? AND pnl IS NOT NULL",
-                                    [today_str]
-                                ).fetchall()
-                                # 현재 보유 평가손익
-                                holdings = con.execute(
-                                    "SELECT ticker, qty, avg_price FROM portfolio"
-                                ).fetchall()
-                                cash_row = con.execute(
-                                    "SELECT value FROM account WHERE key='cash'"
-                                ).fetchone()
-                            pnls = [r[0] for r in rows]
-                            stat = ""
-                            if pnls:
-                                wins = sum(1 for p in pnls if p > 0)
-                                stat = (f"청산 {len(pnls)}건 | "
-                                        f"승률 {wins}/{len(pnls)} ({wins/len(pnls)*100:.0f}%) | "
-                                        f"평균 {sum(pnls)/len(pnls):+.1f}%")
-                            else:
-                                stat = "청산: 없음"
-                            cash = int(float(cash_row[0])) if cash_row else 0
-                            return stat, cash, len(holdings)
-                        except Exception:
-                            return "통계 조회 실패", 0, 0
-
-                    today_str = now.strftime('%Y-%m-%d')
-                    stat_mock, cash_mock, hold_mock = _get_stat(PORTFOLIO_DB_PATH, today_str)
-                    stat_ky,   cash_ky,   hold_ky   = _get_stat(PORTFOLIO_KY_DB_PATH, today_str)
-
-                    # 트레이너 KIS API 실제 잔고로 덮어쓰기
-                    try:
-                        from mock_trading.kis_client import get_balance as _tr_get_balance
-                        _tr_bal = _tr_get_balance()
-                        cash_mock = _tr_bal.get("cash", cash_mock)
-                        hold_mock = len(_tr_bal.get("holdings", [])) or hold_mock
-                    except Exception:
-                        pass
-
-                    # ── 가상계좌 파트 ────────────────────────────────────────
+                    # ── 자동매매 내역 — 각 계정 봇으로 (그룹 제외) ──────────
+                    from auto_trader import _KY_BOT_TOKEN, _KY_CHAT_ID
                     mock_lines = config._daily_trade_log[:]
                     config._daily_trade_log.clear()
-                    mock_header = (f"🔵 [트레이너 44197559] 보유 {hold_mock}종목 | 현금 {cash_mock:,}원\n"
-                                   f"   {stat_mock}")
-                    if mock_lines:
-                        mock_part = mock_header + "\n" + "\n".join(mock_lines)
-                    else:
-                        mock_part = mock_header
-
-                    # ── KY 실전계좌 파트 (KIS API 실제 잔고) ────────────────
-                    try:
-                        from mock_trading.kis_client_ky import get_balance as _ky_get_balance
-                        _ky_bal = _ky_get_balance()
-                        cash_ky  = _ky_bal.get("cash", 0)
-                        hold_ky  = len(_ky_bal.get("holdings", []))
-                    except Exception:
-                        pass  # 실패 시 DB 값 유지
                     ky_lines = config._daily_trade_log_ky[:]
                     config._daily_trade_log_ky.clear()
-                    ky_header = (f"🟡 [KY 실전계좌 44384407] 보유 {hold_ky}종목 | 현금 {cash_ky:,}원\n"
-                                 f"   {stat_ky}")
-                    if ky_lines:
-                        ky_part = ky_header + "\n" + "\n".join(ky_lines)
-                    else:
-                        ky_part = ky_header
-
-                    trade_part = f"📋 오늘 자동매매 내역\n\n{mock_part}\n\n{ky_part}"
+                    mock_part = "🔵 트레이너\n" + ("\n".join(mock_lines) if mock_lines else "매매 없음")
+                    ky_part   = "🟡 KY\n"       + ("\n".join(ky_lines)   if ky_lines   else "매매 없음")
+                    # 트레이너 → 본인 계정
+                    _send_personal(f"📋 오늘 자동매매 내역\n\n{mock_part}")
+                    # KY → KY 계정
+                    requests.post(f"https://api.telegram.org/bot{_KY_BOT_TOKEN}/sendMessage",
+                                  json={"chat_id": _KY_CHAT_ID,
+                                        "text": f"📋 오늘 자동매매 내역\n\n{ky_part}"},
+                                  proxies=_np, timeout=10)
 
                     px = perplexica_search("오늘 증시 마감 시황 뉴스")
                     nv = naver_news("증시 마감 시황")
@@ -544,9 +492,7 @@ def auto_report_scheduler():
                             f"다음 증시 뉴스를 2줄로 요약:\n\n{news_src}",
                             system="증시 뉴스 요약 전문가. 핵심만 2줄 한국어로."
                         )
-                        _send(f"{trade_part}\n\n📰 오늘 증시 뉴스:\n{news_summary}")
-                    else:
-                        _send(trade_part)
+                        _send(f"📰 오늘 증시 뉴스:\n{news_summary}")
 
                     last_run_time = "afternoon"
             if now.hour == 0 and now.minute == 0:

@@ -444,8 +444,8 @@ def buy_stock(code: str, qty: int, price: int = 0) -> dict:
             return {"success": True, "order_no": order_no, "msg": data.get("msg1", "")}
         else:
             msg = data.get("msg1", "")
-            if excg_id == "NXT" and ("주문가능금액" in msg or "금액을 초과" in msg):
-                logger.warning("NXT 매수 불가 %s (가용금액 부족): %s", code, msg)
+            if "주문가능금액" in msg or "금액을 초과" in msg:
+                logger.warning("매수 불가 %s [%s] (가용금액 부족): %s", code, excg_id, msg)
             else:
                 logger.error("KIS 실전 매수 실패 %s [%s]: %s", code, excg_id, msg)
             return {"success": False, "order_no": "", "msg": msg}

@@ -1491,8 +1491,19 @@ def auto_trade_cycle():
             config._kis_synced_today = True
             _start_order_watcher()
             logger.info("장 시작 KIS 동기화 + WebSocket 초기화 완료")
+    # ── 장 마감 KIS 동기화 (20:00~20:05, NXT 포함 전 거래 종료 후) ──
+    if kst_now.hour == 20 and kst_now.minute < 5:
+        if not getattr(config, "_kis_synced_eod", False):
+            for acc in _ACCOUNTS:
+                try:
+                    acc["get_mt"]().sync_with_kis()
+                except Exception as e:
+                    logger.warning("[%s] KIS EOD sync 실패: %s", acc["label"], e)
+            config._kis_synced_eod = True
+            logger.info("장 마감 KIS 동기화 완료 (시간외 포함)")
     if kst_now.hour == 0:
         config._kis_synced_today = False
+        config._kis_synced_eod = False
 
     # ── 신규매수 후보 (공통 1회 조회 — 비싼 연산) ────────────────────
     # 09:00~09:10 KIS API 불안정 구간 — 신규매수만 차단 (매도/HOLD는 정상)

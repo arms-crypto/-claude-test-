@@ -475,9 +475,9 @@ def buy_stock(code: str, qty: int, price: int = 0) -> dict:
             return {"success": True, "order_no": order_no, "msg": data.get("msg1", "")}
         else:
             msg = data.get("msg1", "")
-            # NXT 시간대 잔고/금액 부족은 T+2 미결제로 인한 정상 거부 — WARNING
-            if excg_id == "NXT" and ("주문가능금액" in msg or "금액을 초과" in msg):
-                logger.warning("NXT 매수 불가 %s (가용금액 부족): %s", code, msg)
+            # 잔고/금액 부족은 정상 거부 — WARNING
+            if "주문가능금액" in msg or "금액을 초과" in msg:
+                logger.warning("매수 불가 %s [%s] (가용금액 부족): %s", code, excg_id, msg)
             else:
                 logger.error("KIS 실전 매수 실패 %s [%s]: %s", code, excg_id, msg)
             # NXT 미상장 종목 캐시 무효화
