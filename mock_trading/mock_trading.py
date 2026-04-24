@@ -176,7 +176,8 @@ class MockTrading:
         try:
             avail = self._kis.get_available_amount(code, order_price)
             if avail > 0 and avail < qty * order_price:
-                qty = int(avail / order_price)
+                # 세금+수수료(~0.5%) 버퍼 적용 후 qty 계산
+                qty = int(avail * 0.995 / order_price)
                 if qty < 1:
                     return f"❌ 주문가능금액 부족: {avail:,}원 < {order_price:,}원/주 ({name})"
                 logger.warning("주문가능금액 부족 — qty 조정 %s: 요청 %d원 → 가용 %d원 (%d주로 축소)", code, qty * order_price, avail, qty)
