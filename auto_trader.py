@@ -6,7 +6,7 @@ _get_auto_mt(), _tg_notify(),
 get_volume_surge_top20(), _scrape_naver_codes(), _get_name_by_code(), _get_smart_money_codes(),
 _ohlcv_to_df(), _calc_adx(), _ichimoku_signal(), _tf_four_signals(), calculate_chart_signals(), chart_buy_signal(),
 is_trading_hours(), sell_mock(), buy_mock(), smart_buy_amount(),
-_rag_trade_history(), _ollama_buy_decision(), select_volume_smart_chart(),
+_rag_trade_history(), _rule_buy_decision(), select_volume_smart_chart(),
 _ollama_sell_decision(), auto_trade_cycle(), auto_trade_loop(), _handle_auto_trade_cmd(),
 collect_smart_flows(), get_smart_recommendations()
 """
@@ -938,7 +938,7 @@ _CODE_TO_SECTOR = {
 }
 
 
-def _ollama_buy_decision(code: str, name: str, sig: dict) -> dict:
+def _rule_buy_decision(code: str, name: str, sig: dict) -> dict:
     """
     매수 여부 + 전략 유형 판단 — 신호수 룰 기반 (PC LLM 호출 없음).
     select_volume_smart_chart()에서 이미 buy_count >= min_signal 필터를 통과한 종목만 들어옴.
@@ -1012,7 +1012,7 @@ def select_volume_smart_chart() -> list:
 
     targets = []
     for code, sig in buy_candidates:
-        decision = _ollama_buy_decision(code, sig.get("name", code), sig)
+        decision = _rule_buy_decision(code, sig.get("name", code), sig)
         if decision["action"] == "BUY":
             sig["trade_type"] = decision.get("trade_type", "스윙")
             targets.append((code, sig))
@@ -1326,7 +1326,7 @@ def _check_pending_buys():
                 continue
             name = info["name"]
             logger.info("⚡ 신호변화 감지 %s(%s): %s → Ollama 재판단", name, code, change)
-            decision = _ollama_buy_decision(code, name, new_sig)
+            decision = _rule_buy_decision(code, name, new_sig)
             msg = (f"⚡ [{name}({code})] 신호 변화 감지!\n"
                    f"변화: {change}\n"
                    f"Ollama 재판단: {decision['action']} [{decision.get('trade_type','')}]\n"

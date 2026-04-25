@@ -164,8 +164,8 @@ class MockTrading:
                     logger.warning("cash 동기화: 로컬 %d원 → KIS %d원", self.cash, kis_cash)
                     self.cash = kis_cash
                 self._last_cash_sync_ts = now_ts
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("현금 동기화 실패 — KIS 잔고 조회 오류: %s", e)
 
         qty = int(amount_krw / price)
         if qty < 1:
@@ -181,8 +181,8 @@ class MockTrading:
                 if qty < 1:
                     return f"❌ 주문가능금액 부족: {avail:,}원 < {order_price:,}원/주 ({name})"
                 logger.warning("주문가능금액 부족 — qty 조정 %s: 요청 %d원 → 가용 %d원 (%d주로 축소)", code, qty * order_price, avail, qty)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("주문가능금액 cap 조회 실패 %s — 원래 qty 사용: %s", code, e)
 
         # KIS 매수 주문 (limit_price>0 이면 지정가)
         result = self._kis.buy_stock(code, qty, price=limit_price)
@@ -264,8 +264,8 @@ class MockTrading:
                 if row2 and row2[0][:10] == today_str:
                     logger.info("NXT 매도 스킵 %s: 당일 정규장 매수 종목 (내일 정규장 처리)", code)
                     return f"⏸ {name}({code}) 당일 매수 — NXT 매도 불가 (내일 정규장 자동 처리)"
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("NXT 당일매수 체크 실패 %s — 매도 계속 진행: %s", code, e)
 
         # KIS 매도가능수량(ord_psbl_qty)으로 캡핑 — T+2 미결제·불일치 초과주문 방지
         try:
@@ -302,8 +302,8 @@ class MockTrading:
                         sell_qty = retry_qty
                 elif retry_qty == 0:
                     return f"❌ {name}({code}) KIS 재조회 매도가능수량 0주"
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("매도 수량 재조회 실패 %s — 원래 수량으로 진행: %s", code, e)
         if not result["success"]:
             msg = result["msg"]
             return f"❌ KIS 실전 매도 실패: {msg}"

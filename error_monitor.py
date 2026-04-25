@@ -198,9 +198,20 @@ def monitor_log_file():
         with open(log_path, 'r', encoding='utf-8', errors='ignore') as f:
             lines = f.readlines()[-1000:]
 
+        # 일시적 인프라 오류 — 대시보드·텔레그램 모두 skip (코드 버그 아님)
+        _TRANSIENT_NOISE = (
+            'Network is unreachable',
+            '[Errno 101]',
+            'NewConnectionError',
+            'Max retries exceeded',
+        )
+
         # 에러 검색
         error_found = False
         for line in lines:
+            # 일시적 네트워크 순단은 완전 무시
+            if any(t in line for t in _TRANSIENT_NOISE):
+                continue
             for pattern, error_type in error_patterns:
                 if re.search(pattern, line, re.IGNORECASE):
                     timestamp = datetime.now().strftime('%H:%M:%S')

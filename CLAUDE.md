@@ -815,6 +815,12 @@ curl -s http://127.0.0.1:8085/         # strategy_builder API
 ### 절대 하지 말 것 추가
 - `write_file` 도구를 Gemma(Ollama)에게 다시 열어주지 말 것 — db_utils.py 오염 사례 발생
 - `ai_chat.py`의 `_is_news` 하드코딩 형식 블록 복구 금지 — Gemma 자유도 차단
+- `_rule_buy_decision`을 `_ollama_buy_decision`으로 되돌리지 말 것 — LLM 호출 없는 룰 기반 함수임을 명시한 이름
+
+## 에러 모니터링 추가 필터 (2026-04-25)
+- `Network is unreachable` / `[Errno 101]` / `NewConnectionError` / `Max retries exceeded`
+  → Oracle Cloud 순단으로 발생하는 일시적 Telegram API 연결 오류, 코드 버그 아님
+  → `error_monitor.py` + `error_dashboard.py` 양쪽 모두 `_TRANSIENT_NOISE` 리스트로 완전 skip 처리
 
 ## 자주 쓰는 명령
 ```bash

@@ -61,7 +61,15 @@ class StatusTracker:
             with open(log_path, 'r', encoding='utf-8', errors='ignore') as f:
                 lines = f.readlines()[-5000:]  # 최근 5000줄
 
+            _TRANSIENT_NOISE = (
+                'Network is unreachable',
+                '[Errno 101]',
+                'NewConnectionError',
+                'Max retries exceeded',
+            )
             for line in lines:
+                if any(t in line for t in _TRANSIENT_NOISE):
+                    continue
                 for error_type, pattern in error_patterns.items():
                     if re.search(pattern, line, re.IGNORECASE):
                         self.errors[error_type] += 1

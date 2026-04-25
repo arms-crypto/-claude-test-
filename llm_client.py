@@ -976,6 +976,9 @@ def _execute_tool_call(tool_name: str, arguments: dict) -> str:
         return r1 + "\n\n" + r2
     if tool_name == "read_file":
         path   = arguments.get("path", "")
+        # 텔레그램 마크다운 링크 변환 제거: [text](url) → text
+        import re as _re2
+        path   = _re2.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', path).strip()
         offset = int(arguments.get("offset", 0))   # 시작 줄 (0-based)
         limit  = int(arguments.get("limit", 500))  # 읽을 줄 수 (기본 500)
         limit  = min(limit, 500)                   # 최대 500줄
