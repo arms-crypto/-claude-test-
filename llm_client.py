@@ -1130,7 +1130,7 @@ _GEMMA3_TOOL_SYSTEM = """나는 한국어 AI 어시스턴트입니다. 사용자
 
 
 def call_gemma3(prompt: str, use_tools: bool = True) -> str:
-    """gemma3:4b 로컬 호출. 커스텀 tool calling (프롬프트 기반) 지원."""
+    """gemma4:e2b 로컬 호출. 커스텀 tool calling (프롬프트 기반) 지원."""
     import datetime as _dt, pytz as _pytz, json as _json, re as _re
     _now = _dt.datetime.now(_pytz.timezone("Asia/Seoul"))
     # 날짜를 유저 메시지 앞에 붙임 → 시스템 프롬프트 고정 → Ollama KV 캐시 재사용
@@ -1146,7 +1146,7 @@ def call_gemma3(prompt: str, use_tools: bool = True) -> str:
             r = requests.post(
                 config.LOCAL_OLLAMA_URL,
                 json={
-                    "model": "gemma3:4b",
+                    "model": "gemma4:e2b",
                     "messages": messages,
                     "options": {"temperature": 0.7, "num_predict": 600, "num_ctx": 1024, "num_thread": 4},
                     "stream": False,

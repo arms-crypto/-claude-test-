@@ -209,7 +209,7 @@ def _ask_ollama(prompt: str) -> str:
     """PC(LM Studio) → 로컬(Ollama) 순서로 LLM을 호출하여 응답을 반환한다."""
     endpoints = [
         (OLLAMA_PC,    "google_gemma-4-26b-a4b-it", "openai"),   # PC LM Studio
-        (OLLAMA_LOCAL, "gemma3:4b",                  "ollama"),   # 로컬 Ollama
+        (OLLAMA_LOCAL, "gemma4:e2b",                 "ollama"),   # 로컬 Ollama
     ]
     for url, model, api_type in endpoints:
         try:

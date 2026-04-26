@@ -422,7 +422,7 @@ def process_stock(sector: str, code: str, name: str, cap_type: str) -> int:
 # ── Ollama 학습 ────────────────────────────────────────────────────────────────
 
 def _ask_ollama(prompt: str) -> str:
-    for url, model in [(OLLAMA_PC, "google_gemma-4-26b-a4b-it"), (OLLAMA_LOCAL, "gemma3:4b")]:
+    for url, model in [(OLLAMA_PC, "google_gemma-4-26b-a4b-it"), (OLLAMA_LOCAL, "gemma4:e2b")]:
         try:
             r = requests.post(url, json={
                 "model": model,

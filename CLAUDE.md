@@ -8,8 +8,8 @@
 |------|------|--------|---------|------|
 | **4순위** | Gemma 도구 안정성 보강 (파싱 edge case 추가) | ⭐⭐ | 반나절 | ⏳ 대기 |
 | **1순위** | 실거래 성과 추적 (`performance_tracker.py`) | ⭐⭐ | 1~2일 | ✅ 완료 |
-| **2순위** | 백테스트 실제 활용 (KIS MCP, 전략 YAML 설계) | ⭐⭐⭐ | 2~3일 | ⏳ 대기 |
-| **3순위** | 테스트 2~4주차 (계약 테스트 → 로그 리플레이 → CI) | ⭐⭐⭐⭐ | 1~2주 | ⏳ 대기 |
+| **2순위** | 백테스트 실제 활용 (KIS MCP, 전략 YAML 설계) | ⭐⭐⭐ | 2~3일 | 🔄 진행중 |
+| **3순위** | 테스트 2~4주차 (계약 테스트 → 로그 리플레이 → CI) | ⭐⭐⭐⭐ | 1~2주 | 🔄 진행중 |
 
 ### 4순위: Gemma 도구 안정성
 - 목표: `_parse_text_tool_call` edge case 보완, 도구 루프 안정화
@@ -32,12 +32,26 @@
 - 방법: KIS 백테스터 MCP (포트 8002, 정상 동작 확인됨)
 - 절차: 전략 YAML 설계 → `run_backtest` → 결과 분석 → sector_params 반영
 - 참고: `.mcp.json`에 `kis-backtest` MCP 등록됨
+- **진행 상황 (2026-04-26)**:
+  - KIS auth 오류 수정: `mode` 자동감지 로직 개선 (`open-trading-api/backtester/kis_backtest/providers/kis/auth.py`)
+  - 전략 YAML 설계 완료 (12신호 AND 전략 + 단순 RSI+MACD 비교군)
+  - Docker Lean 이미지 다운로드 중 (완료 후 `retry_backtest`로 즉시 실행 가능)
+  - 다음 세션: `docker images | grep lean` 확인 후 백테스트 재실행
 
 ### 3순위: 테스트 2~4주차
 - 2주차: KIS/Oracle API 응답 스키마 계약 테스트
 - 3주차: 실거래 로그 리플레이 자동 검증
 - 4주차: CI 파이프라인 (ruff + 타입체크 + 단위 + 계약)
 - 현황: 1주차 완료 (43개 단위 테스트, `tests/unit/`)
+- **진행 상황 (2026-04-26)**:
+  - `tests/contract/test_kis_schema.py` 생성 — 18개 계약 테스트 (패치 필요)
+  - 남은 것: `auto_trader.is_nxt_hours` mock 패치 수정 후 전체 통과 확인
+  - `/compact` 명령 활용 팁 추가됨 (Claude Code 대화창에서 직접 입력)
+
+### /compact 활용
+- Claude Code 대화창에서 `/compact` 입력 → 컨텍스트 압축 후 계속 진행
+- 작업 하나 마무리됐을 때 또는 대화가 길어질 때 사용
+- CLAUDE.md + Memory + Git으로 세션 간 상태 보존됨
 
 ---
 
