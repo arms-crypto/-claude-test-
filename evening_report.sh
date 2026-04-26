@@ -23,6 +23,7 @@ PROC=$(ps aux | grep proxy_v54 | grep -v grep | awk '{print "PID:"$2, "CPU:"$3"%
 DISK=$(df -h / | tail -1 | awk '{print $3"/"$2, "("$5")"}')
 MEM=$(free -h | grep Mem | awk '{print $3"/"$2}')
 RISK=$(python3 ~/.openclaw/workspace-trading/scripts/risk_gate.py 2>/dev/null)
+PERF=$(python3 "$WORKDIR/performance_tracker.py" --short 2>/dev/null)
 
 PROMPT="현재 시각: $NOW_KST KST
 서버 점검 보고서를 작성해줘.
@@ -31,6 +32,9 @@ PROMPT="현재 시각: $NOW_KST KST
 - proxy_v54.py: ${PROC:-실행 안 됨}
 - 디스크: $DISK / 메모리: $MEM
 - 리스크 게이트: $RISK
+
+[매매 성과]
+$PERF
 
 [최근 매매/Ollama 로그]
 $TRADE_LOG
