@@ -36,14 +36,29 @@ _SECTOR = {
 }
 
 
-def analyze(db_path: Path, label: str) -> dict:
-    """단일 계좌 성과 전체 분석."""
+EFFECTIVE_START = "2026-04-24"  # 정상 가동 기준일 (이전은 코드 수정 과도기)
+
+
+def analyze(db_path: Path, label: str, start_date: str = EFFECTIVE_START) -> dict:
+    """단일 계좌 성과 전체 분석.
+
+    Args:
+        start_date: 분석 시작일 (기본: EFFECTIVE_START). None이면 전체 데이터.
+    """
     with sqlite3.connect(db_path) as con:
-        sells = con.execute("""
-            SELECT DATE(created_at) dt, name, ticker, pnl, amount, cash_after
-            FROM trades WHERE action='SELL' AND pnl IS NOT NULL
-            ORDER BY id
-        """).fetchall()
+        if start_date:
+            sells = con.execute("""
+                SELECT DATE(created_at) dt, name, ticker, pnl, amount, cash_after
+                FROM trades WHERE action='SELL' AND pnl IS NOT NULL
+                  AND DATE(created_at) >= ?
+                ORDER BY id
+            """, [start_date]).fetchall()
+        else:
+            sells = con.execute("""
+                SELECT DATE(created_at) dt, name, ticker, pnl, amount, cash_after
+                FROM trades WHERE action='SELL' AND pnl IS NOT NULL
+                ORDER BY id
+            """).fetchall()
 
         bal = con.execute("SELECT value FROM account WHERE key='cash'").fetchone()
         cash = float(bal[0]) if bal else 0
@@ -169,13 +184,16 @@ def format_short(r: dict) -> str:
 if __name__ == "__main__":
     short_mode = "--short" in sys.argv
     json_mode  = "--json"  in sys.argv
+    all_mode   = "--all"   in sys.argv  # 전체 기간 (기준일 필터 없음)
+
+    start = None if all_mode else EFFECTIVE_START
 
     results = []
     for label, db_path in DB_ACCOUNTS:
         if not db_path.exists():
             continue
         try:
-            r = analyze(db_path, label)
+            r = analyze(db_path, label, start_date=start)
             if r["total_sells"] == 0:
                 continue  # 거래 없는 계좌 스킵
             results.append(r)
