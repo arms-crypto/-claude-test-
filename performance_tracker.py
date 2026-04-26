@@ -175,7 +175,10 @@ if __name__ == "__main__":
         if not db_path.exists():
             continue
         try:
-            results.append(analyze(db_path, label))
+            r = analyze(db_path, label)
+            if r["total_sells"] == 0:
+                continue  # 거래 없는 계좌 스킵
+            results.append(r)
         except Exception as e:
             print(f"[{label}] 분석 실패: {e}", file=sys.stderr)
 
