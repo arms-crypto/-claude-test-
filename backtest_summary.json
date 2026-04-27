@@ -1,0 +1,34 @@
+{
+  "generated_at": "2026-04-27",
+  "period": "2024-01-01 ~ 2026-04-25",
+  "description": "trend_filter_signal 백테스트 — trend_period별 최적 임계값 분석",
+  "findings": {
+    "반도체": {
+      "symbol": "005930",
+      "best_period": 120,
+      "best_return": 84.5,
+      "best_sharpe": 0.978,
+      "best_winrate": 48,
+      "recommended_min_signal": 7,
+      "note": "강한 추세필터(120일)가 압도적. 느린 추세 종목이라 노이즈 필터 강할수록 유리."
+    },
+    "방산": {
+      "symbol": "082740",
+      "best_period": 60,
+      "best_return": 381.9,
+      "best_sharpe": 1.863,
+      "best_winrate": 52,
+      "recommended_min_signal": 6,
+      "note": "중간 필터(60일) 최적. 정책 이벤트 기반 급등 많아 강한 필터(120일)는 기회 소실."
+    },
+    "에너지": {
+      "symbol": "034020",
+      "best_period": 60,
+      "best_return": 125.2,
+      "best_sharpe": 0.950,
+      "best_winrate": 45,
+      "recommended_min_signal": 6,
+      "note": "중간 필터(60일) 최적. 약한 필터(20일)는 승률 29%로 매우 불리."
+    }
+  }
+}

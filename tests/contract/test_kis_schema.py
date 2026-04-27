@@ -232,14 +232,14 @@ class TestReconcileHoldingsContract:
         db = {}
         kis = {"000660": {"qty": 5, "avg_price": 150000.0}}
         to_delete, to_add, to_update = reconcile_holdings(db, kis)
-        assert "000660" in to_add, "DB에 없는데 KIS에 있으면 추가 대상"
+        assert any(item["code"] == "000660" for item in to_add), "DB에 없는데 KIS에 있으면 추가 대상"
 
     def test_수량불일치_감지(self):
         from tests.unit.trading_logic import reconcile_holdings
         db  = {"005930": {"qty": 10, "avg_price": 70000.0}}
         kis = {"005930": {"qty":  7, "avg_price": 70000.0}}
         to_delete, to_add, to_update = reconcile_holdings(db, kis)
-        assert "005930" in to_update, "수량 다르면 업데이트 대상"
+        assert any(item["code"] == "005930" for item in to_update), "수량 다르면 업데이트 대상"
 
     def test_일치시_빈결과(self):
         from tests.unit.trading_logic import reconcile_holdings

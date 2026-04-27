@@ -491,6 +491,27 @@ def _collect_error_summary() -> str:
         return f"로그 조회 실패: {e}"
 
 
+def _collect_backtest_summary() -> str:
+    """백테스트 결과 요약 로드 (섹터별 최적 min_signal 힌트)."""
+    summary_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "backtest_summary.json")
+    if not os.path.exists(summary_path):
+        return "백테스트 요약 없음"
+    try:
+        with open(summary_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        lines = [f"백테스트 기간: {data.get('period', '')}"]
+        for sector, info in data.get("findings", {}).items():
+            lines.append(
+                f"- {sector}({info['symbol']}): 최적필터={info['best_period']}일 "
+                f"수익률={info['best_return']}% 샤프={info['best_sharpe']} "
+                f"승률={info['best_winrate']}% 권장min_signal={info['recommended_min_signal']} "
+                f"({info['note']})"
+            )
+        return "\n".join(lines)
+    except Exception as e:
+        return f"백테스트 요약 조회 실패: {e}"
+
+
 def system_review(context_label: str = "정기점검") -> dict:
     """
     장 시작 전(08:00~08:10) / 장 마감 후(20:05~20:15) 호출.
@@ -518,6 +539,7 @@ def system_review(context_label: str = "정기점검") -> dict:
     errors       = _collect_error_summary()
     market       = _get_market_context()
     holdings_news = _collect_holdings_news()
+    backtest_summary = _collect_backtest_summary()
 
     with _lock:
         strategy_txt = json.dumps(_current_strategy, ensure_ascii=False)
@@ -558,6 +580,9 @@ def system_review(context_label: str = "정기점검") -> dict:
 
 ## 보유종목 최신 뉴스
 {holdings_news}
+
+## 백테스트 결과 (섹터별 최적 신호 임계값 참고)
+{backtest_summary}
 
 ## 현재 전략
 {strategy_txt}
