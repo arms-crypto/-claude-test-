@@ -60,6 +60,11 @@ _pc_daily_calls_date: str = ""        # 날짜 기반 초기화용 (YYYY-MM-DD)
 PC_MAX_DAILY_CALLS: int = 30          # 일일 최대 호출 횟수
 PC_SIGNAL_THRESHOLD: int = 2          # 신호 변화 최소 임계값 (절대값)
 
+# 뉴스 악재 알림 제어
+_news_alert_cooldown: dict = {}       # ticker → last_alert (datetime), 2시간 쿨다운
+_news_price_cache: dict = {}          # ticker → (price, datetime), 실제 5분 변동 계산용
+NEWS_ALERT_COOLDOWN_MIN: int = 120    # 동일 종목 재알림 최소 간격(분)
+
 
 # ── 싱글턴/알림 헬퍼 ────────────────────────────────────────────────────────
 
@@ -1953,8 +1958,9 @@ def _log_holdings_status():
 
 def _news_watch_cycle():
     """
-    10분마다 보유종목 뉴스 + 5분 가격변동 체크 → Gemma 악재 판단 → 텔레그램 알림.
-    가격 변동이 1순위, 뉴스는 보조 기준 (Gemma 권고 반영).
+    10분마다 보유종목 뉴스 + 실제 가격변동 체크 → Gemma 악재 판단 → 텔레그램 알림.
+    - 실제 5분 변동: _news_price_cache 이전가와 비교 (avg_price 대비 pnl 아님)
+    - 쿨다운: 동일 종목 NEWS_ALERT_COOLDOWN_MIN(120분) 내 재알림 금지
     """
     if not is_trading_hours():
         return
@@ -1970,15 +1976,25 @@ def _news_watch_cycle():
         if not holdings:
             return
 
+        now = kst_now()
         items = []
         for name, ticker, avg_price in holdings:
             try:
                 cur = _get_price(ticker) or avg_price
                 pnl = (cur - avg_price) / avg_price * 100
-                news = naver_news(f"{name} 주가")
 
-                # 5분 가격변동 (현재가 vs avg 근사치 — 실시간 이전가 없으면 pnl 사용)
-                price_change_5m = pnl  # 향후 이전가 캐시로 개선 가능
+                # 실제 이전 가격과 비교해 5분 변동 계산
+                cached = _news_price_cache.get(ticker)
+                if cached:
+                    prev_price, prev_dt = cached
+                    price_change_5m = (cur - prev_price) / prev_price * 100
+                else:
+                    price_change_5m = 0.0  # 첫 사이클은 변동 없음으로 처리
+
+                # 이번 가격 캐시 갱신
+                _news_price_cache[ticker] = (cur, now)
+
+                news = naver_news(f"{name} 주가")
                 items.append({
                     "name": name, "ticker": ticker,
                     "pnl": round(pnl, 2),
@@ -1997,12 +2013,23 @@ def _news_watch_cycle():
             name     = item.get("name", "")
             ticker   = item.get("ticker", "")
             reason   = item.get("reason", "")
-            if severity in ("HIGH", "MEDIUM"):
-                emoji = "🚨" if severity == "HIGH" else "⚠️"
-                msg = (f"{emoji} Gemma 악재 포착 [{severity}]\n"
-                       f"{name}({ticker})\n{reason}")
-                _tg_notify(msg)
-                logger.info("악재 알림 발송 [%s] %s: %s", severity, name, reason)
+            if severity not in ("HIGH", "MEDIUM"):
+                continue
+
+            # 쿨다운 확인 — 같은 종목 120분 내 재알림 금지
+            last_alert = _news_alert_cooldown.get(ticker)
+            if last_alert:
+                elapsed = (now - last_alert).total_seconds() / 60
+                if elapsed < NEWS_ALERT_COOLDOWN_MIN:
+                    logger.debug("악재 쿨다운 중: %s (%.0f분 / %d분)", name, elapsed, NEWS_ALERT_COOLDOWN_MIN)
+                    continue
+
+            emoji = "🚨" if severity == "HIGH" else "⚠️"
+            msg = (f"{emoji} Gemma 악재 포착 [{severity}]\n"
+                   f"{name}({ticker})\n{reason}")
+            _tg_notify(msg)
+            _news_alert_cooldown[ticker] = now
+            logger.info("악재 알림 발송 [%s] %s: %s", severity, name, reason)
     except Exception as e:
         logger.debug("_news_watch_cycle 오류: %s", e)
 
